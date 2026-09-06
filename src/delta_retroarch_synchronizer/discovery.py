@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -151,10 +152,102 @@ def _registry_retroarch_dirs() -> list[Path]:
     return found
 
 
+#: Windows records the full path of every executable the user has actually run,
+#: keyed as "<path>.FriendlyAppName" and "<path>.ApplicationCompany".
+_MUICACHE_KEY = (
+    r"Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache"
+)
+_MUICACHE_SUFFIXES = (".FriendlyAppName", ".ApplicationCompany")
+
+
+def retroarch_dirs_from_muicache(names: Iterable[str]) -> list[Path]:
+    """Pull retroarch.exe's directory out of MuiCache value names.
+
+    Separated from the registry read so it can be tested without a registry.
+    """
+    directories: list[Path] = []
+    for name in names:
+        trimmed = name
+        for suffix in _MUICACHE_SUFFIXES:
+            if trimmed.endswith(suffix):
+                trimmed = trimmed[: -len(suffix)]
+                break
+        else:
+            continue
+        if not trimmed.lower().endswith("retroarch.exe"):
+            continue
+        directory = Path(trimmed).parent
+        if directory not in directories:
+            directories.append(directory)
+    return directories
+
+
+def _muicache_retroarch_dirs() -> list[Path]:
+    """Where RetroArch has been run from, which finds portable copies.
+
+    The uninstall registry only knows about installs made by the installer, and
+    it keeps pointing at them after the folder is deleted. A RetroArch extracted
+    from the portable zip is invisible to it. On this project's own machine the
+    uninstall entry named a stale C:\\RetroArch-Win64 that no longer existed
+    while the RetroArch actually in use sat under C:\\Media\\Games\\Emulators,
+    so discovery reported nothing and the user had to set the path by hand.
+
+    MuiCache is the difference: Windows writes an entry the first time you run
+    an executable, wherever it lives.
+    """
+    try:
+        import winreg
+    except ImportError:  # Not on Windows.
+        return []
+
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _MUICACHE_KEY)
+    except OSError:
+        return []
+
+    names: list[str] = []
+    with key:
+        for index in range(winreg.QueryInfoKey(key)[1]):
+            try:
+                names.append(winreg.EnumValue(key, index)[0])
+            except OSError:
+                continue
+    return retroarch_dirs_from_muicache(names)
+
+
+def _app_paths_retroarch_dir() -> list[Path]:
+    """The App Paths registration, when RetroArch's installer wrote one."""
+    try:
+        import winreg
+    except ImportError:
+        return []
+
+    subkey = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\retroarch.exe"
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            with winreg.OpenKey(hive, subkey) as key:
+                raw = str(winreg.QueryValueEx(key, "")[0]).strip('"').strip()
+        except OSError:
+            continue
+        if raw:
+            return [Path(raw).parent]
+    return []
+
+
 def find_retroarch_config() -> Discovery:
-    """Find retroarch.cfg across the usual Windows install layouts."""
+    """Find retroarch.cfg across the usual Windows install layouts.
+
+    Every source here is filtered by whether the file actually exists, which is
+    what makes it safe to consult sources that go stale -- the uninstall entry
+    and App Paths both keep naming a folder long after it is deleted.
+    """
     candidates = [
-        directory / "retroarch.cfg" for directory in _registry_retroarch_dirs()
+        directory / "retroarch.cfg"
+        for directory in (
+            _registry_retroarch_dirs()
+            + _app_paths_retroarch_dir()
+            + _muicache_retroarch_dirs()
+        )
     ] + [
         Path(os.environ.get("APPDATA", "")) / "RetroArch" / "retroarch.cfg",
         Path("C:/RetroArch-Win64/retroarch.cfg"),
