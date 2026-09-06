@@ -73,7 +73,14 @@ are hard-blocked in `systems.py` until then — see
 
 ## Usage
 
-Double-click **`Delta-RetroArch Synchronizer.bat`**.
+Add it to the Start menu once, then search for "Delta":
+
+```
+powershell -ExecutionPolicy Bypass -File tools\install_start_menu.ps1
+```
+
+That installs per-user, needs no admin rights, and takes `-Uninstall` to remove
+it. Or just double-click **`Delta-RetroArch Synchronizer.bat`** in this folder.
 
 The launcher window finds Delta's Dropbox folder and your RetroArch install by
 itself, shows what it found, and gives you one button: **Sync and Play**. That

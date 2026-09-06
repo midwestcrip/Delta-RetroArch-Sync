@@ -51,6 +51,15 @@ class LauncherWindow:
         root.title(WINDOW_TITLE)
         root.resizable(False, False)
 
+        # Gives the window its own taskbar and title-bar icon instead of the
+        # generic Python feather.
+        icon = _state_dir() / "assets" / "synchronizer.ico"
+        if icon.is_file():
+            try:
+                root.iconbitmap(default=str(icon))
+            except tk.TclError:
+                pass
+
         self.delta_var = tk.StringVar(value=str(self.config.delta_folder or ""))
         self.exe_var = tk.StringVar(value=str(self.config.retroarch_exe or ""))
         self.rom_var = tk.StringVar(value=str(self.config.retroarch_rom_dir or ""))

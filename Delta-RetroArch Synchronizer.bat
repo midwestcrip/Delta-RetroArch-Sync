@@ -1,6 +1,5 @@
 @echo off
-REM Double-click this to open the launcher.
-REM Uses pythonw so no console window appears behind the app.
-setlocal
+REM Double-click to open the launcher.
+REM pythonw keeps the console window from appearing behind it.
 cd /d "%~dp0"
-start "" pythonw -c "import sys; sys.path.insert(0, 'src'); from delta_retroarch_synchronizer import launcher; launcher.main()"
+start "" pythonw "launch_gui.pyw"
