@@ -216,3 +216,30 @@ def resolve_retroarch_dir(
 def truthy(settings: dict[str, str], key: str) -> bool:
     """RetroArch writes booleans as the strings 'true' / 'false'."""
     return settings.get(key, "").strip().lower() == "true"
+
+
+def installed_cores(config_path: Path, settings: dict[str, str]) -> dict[str, str]:
+    """Map each installed core's display name to its library filename.
+
+    RetroArch sorts saves by the core's ``corename``, not its filename, so the
+    name in the .info file is what decides the save folder. Only cores actually
+    present in the cores directory are returned -- info files ship for every
+    core in the catalogue, installed or not.
+    """
+    cores_dir = resolve_retroarch_dir(settings, "libretro_directory", config_path, "cores")
+    info_dir = resolve_retroarch_dir(settings, "libretro_info_path", config_path, "info")
+    if not cores_dir.is_dir():
+        return {}
+
+    found: dict[str, str] = {}
+    for library in cores_dir.glob("*_libretro.dll"):
+        info = info_dir / f"{library.stem}.info"
+        name = library.stem.replace("_libretro", "")
+        if info.is_file():
+            for line in info.read_text(encoding="utf-8", errors="replace").splitlines():
+                key, _, value = line.partition("=")
+                if key.strip() == "corename":
+                    name = value.strip().strip('"') or name
+                    break
+        found[name] = library.name
+    return found

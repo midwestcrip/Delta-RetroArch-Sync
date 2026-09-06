@@ -1,0 +1,185 @@
+"""Tests for the reconcile decision and the write path.
+
+The decision table is the safety-critical part of this project: every way a save
+can be lost runs through it. So each of the four outcomes is pinned, including
+the ones that must refuse to act.
+"""
+
+from __future__ import annotations
+
+import sys
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from delta_retroarch_sync import manifest, sync  # noqa: E402
+
+DELTA_BYTES = b"delta save" + b"\x00" * 1000
+RETRO_BYTES = b"retro save" + b"\x00" * 1000
+
+
+class DecideTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        root = Path(self._tmp.name)
+        self.delta = root / "GameSave-abc-gameSave"
+        self.retro = root / "Game.srm"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def write(self, path: Path, data: bytes) -> None:
+        path.write_bytes(data)
+
+    def agreed(self) -> manifest.Entry:
+        """A manifest entry recording both files exactly as they are now."""
+        return manifest.Entry(
+            delta=manifest.FileState.of(self.delta),
+            retroarch=manifest.FileState.of(self.retro),
+        )
+
+    def test_neither_side_has_a_save(self) -> None:
+        action, _ = sync.decide(manifest.Entry(), self.delta, self.retro)
+        self.assertIs(action, sync.Action.MISSING)
+
+    def test_first_sync_pulls_when_only_delta_has_one(self) -> None:
+        self.write(self.delta, DELTA_BYTES)
+        action, _ = sync.decide(manifest.Entry(), self.delta, self.retro)
+        self.assertIs(action, sync.Action.PULL)
+
+    def test_first_sync_pushes_when_only_retroarch_has_one(self) -> None:
+        self.write(self.retro, RETRO_BYTES)
+        action, _ = sync.decide(manifest.Entry(), self.delta, self.retro)
+        self.assertIs(action, sync.Action.PUSH)
+
+    def test_first_sync_with_identical_saves_is_a_no_op(self) -> None:
+        self.write(self.delta, DELTA_BYTES)
+        self.write(self.retro, DELTA_BYTES)
+        action, _ = sync.decide(manifest.Entry(), self.delta, self.retro)
+        self.assertIs(action, sync.Action.NOTHING)
+
+    def test_first_sync_with_two_different_saves_is_a_conflict(self) -> None:
+        # No agreed history and two different saves: picking either one would
+        # discard real progress, so it must refuse.
+        self.write(self.delta, DELTA_BYTES)
+        self.write(self.retro, RETRO_BYTES)
+        action, _ = sync.decide(manifest.Entry(), self.delta, self.retro)
+        self.assertIs(action, sync.Action.CONFLICT)
+
+    def test_unchanged_on_both_sides_does_nothing(self) -> None:
+        self.write(self.delta, DELTA_BYTES)
+        self.write(self.retro, RETRO_BYTES)
+        action, _ = sync.decide(self.agreed(), self.delta, self.retro)
+        self.assertIs(action, sync.Action.NOTHING)
+
+    def test_only_delta_changed_pulls(self) -> None:
+        self.write(self.delta, DELTA_BYTES)
+        self.write(self.retro, RETRO_BYTES)
+        entry = self.agreed()
+        self.write(self.delta, DELTA_BYTES + b"progress")
+        action, _ = sync.decide(entry, self.delta, self.retro)
+        self.assertIs(action, sync.Action.PULL)
+
+    def test_only_retroarch_changed_pushes(self) -> None:
+        self.write(self.delta, DELTA_BYTES)
+        self.write(self.retro, RETRO_BYTES)
+        entry = self.agreed()
+        self.write(self.retro, RETRO_BYTES + b"progress")
+        action, _ = sync.decide(entry, self.delta, self.retro)
+        self.assertIs(action, sync.Action.PUSH)
+
+    def test_both_changed_is_a_conflict(self) -> None:
+        # The crash-resilience case: played on desktop, RetroArch died before
+        # the post-close push, then played on the phone too.
+        self.write(self.delta, DELTA_BYTES)
+        self.write(self.retro, RETRO_BYTES)
+        entry = self.agreed()
+        self.write(self.delta, DELTA_BYTES + b"phone")
+        self.write(self.retro, RETRO_BYTES + b"desktop")
+        action, _ = sync.decide(entry, self.delta, self.retro)
+        self.assertIs(action, sync.Action.CONFLICT)
+
+    def test_a_deleted_save_counts_as_a_change(self) -> None:
+        self.write(self.delta, DELTA_BYTES)
+        self.write(self.retro, RETRO_BYTES)
+        entry = self.agreed()
+        self.retro.unlink()
+        action, _ = sync.decide(entry, self.delta, self.retro)
+        self.assertIs(action, sync.Action.PULL)
+
+    def test_same_size_different_content_is_still_a_change(self) -> None:
+        # Size is only a fast path; the hash has to be what decides.
+        self.write(self.delta, DELTA_BYTES)
+        self.write(self.retro, RETRO_BYTES)
+        entry = self.agreed()
+        self.write(self.delta, b"DELTA save" + b"\x00" * 1000)
+        self.assertEqual(len(DELTA_BYTES), self.delta.stat().st_size)
+        action, _ = sync.decide(entry, self.delta, self.retro)
+        self.assertIs(action, sync.Action.PULL)
+
+
+class WritePathTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_copy_is_byte_exact_and_leaves_no_partial_file(self) -> None:
+        source = self.root / "src.bin"
+        source.write_bytes(DELTA_BYTES)
+        destination = self.root / "nested" / "dst.srm"
+        sync.copy_atomically(source, destination)
+        self.assertEqual(destination.read_bytes(), DELTA_BYTES)
+        self.assertEqual(list(destination.parent.glob("*.partial")), [])
+
+    def test_backup_is_made_before_overwrite_and_pruned(self) -> None:
+        target = self.root / "Game.srm"
+        backups = self.root / "backups"
+        for index in range(15):
+            target.write_bytes(b"version %d" % index)
+            sync.backup(target, backups, keep=10)
+        kept = sorted(backups.glob("Game.srm.*.bak"))
+        self.assertEqual(len(kept), 10)
+        # The most recent backup holds the most recent pre-overwrite content.
+        self.assertEqual(kept[-1].read_bytes(), b"version 14")
+
+    def test_backup_of_a_missing_file_is_a_no_op(self) -> None:
+        self.assertIsNone(sync.backup(self.root / "nope.srm", self.root / "backups"))
+
+
+class ManifestTests(unittest.TestCase):
+    def test_round_trips_through_disk(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            save = root / "a.srm"
+            save.write_bytes(DELTA_BYTES)
+
+            state = manifest.Manifest(root / "manifest.json")
+            state.record("sha1-key", save, save)
+            state.save()
+
+            reloaded = manifest.Manifest.load(root / "manifest.json")
+            entry = reloaded.get("sha1-key")
+            self.assertIsNotNone(entry.delta)
+            assert entry.delta is not None
+            self.assertTrue(entry.delta.matches(save))
+
+    def test_corrupt_manifest_reads_as_empty_rather_than_raising(self) -> None:
+        # An unreadable manifest must degrade to "no agreed state", which shows
+        # up as a conflict to resolve -- never as a silent overwrite.
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "manifest.json"
+            path.write_text("{ this is not json", encoding="utf-8")
+            self.assertEqual(manifest.Manifest.load(path).entries, {})
+
+    def test_apple_reference_date_converts_to_unix(self) -> None:
+        # Delta's modifiedDate is seconds since 2001-01-01, not 1970-01-01.
+        self.assertEqual(manifest.apple_timestamp_to_unix(0.0), 978307200.0)
+
+
+if __name__ == "__main__":
+    unittest.main()
