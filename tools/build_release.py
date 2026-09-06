@@ -57,8 +57,19 @@ EXCLUDE_NAMES = {
 }
 
 
-def build_exe() -> Path | None:
-    """One-file windowed build. Returns the executable, or None if it failed."""
+def build_exe(onefile: bool = False) -> Path | None:
+    """Windowed build. Returns the executable or its folder, None on failure.
+
+    Defaults to a **one-directory** build. A one-file build unpacks itself into
+    a temporary folder on every launch, which is behaviourally what a packer or
+    dropper does -- Microsoft Defender's ML heuristic flags it as
+    Trojan:Win32/Wacatac.B!ml, and Defender is on by default on every Windows
+    machine. A one-directory build performs no self-extraction, so it sidesteps
+    the heuristic, and starts faster for the same reason.
+
+    The cost is that it is a folder rather than one file, which is why it ships
+    zipped.
+    """
     icon = ROOT / "assets" / "synchronizer.ico"
     work = ROOT / "build"
 
@@ -66,7 +77,11 @@ def build_exe() -> Path | None:
         sys.executable, "-m", "PyInstaller",
         "--noconfirm",
         "--clean",
-        "--onefile",
+        "--onefile" if onefile else "--onedir",
+        # UPX compression is an antivirus trigger in its own right. It is not
+        # installed here, but this stops a machine that happens to have it from
+        # silently producing a more-flagged binary.
+        "--noupx",
         # No console window: this is a GUI tool, and a black rectangle behind it
         # looks like something went wrong.
         "--windowed",
@@ -88,8 +103,22 @@ def build_exe() -> Path | None:
         print(f"PyInstaller failed (exit {result.returncode}).")
         return None
 
-    produced = DIST / f"{NAME}.exe"
-    return produced if produced.is_file() else None
+    if onefile:
+        produced = DIST / f"{NAME}.exe"
+        return produced if produced.is_file() else None
+
+    folder = DIST / NAME
+    return folder if (folder / f"{NAME}.exe").is_file() else None
+
+
+def zip_folder(folder: Path) -> Path:
+    """Zip a one-directory build so it remains a single download."""
+    target = DIST / f"{folder.name}.zip"
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(folder.rglob("*")):
+            if path.is_file():
+                archive.write(path, Path(folder.name) / path.relative_to(folder))
+    return target
 
 
 def _should_skip(path: Path) -> bool:
@@ -122,6 +151,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Build the downloadable releases.")
     parser.add_argument("--exe", action="store_true", help="build only the executable")
     parser.add_argument("--zip", action="store_true", help="build only the source zip")
+    parser.add_argument(
+        "--onefile",
+        action="store_true",
+        help="single self-extracting exe; convenient, but Defender flags it",
+    )
     args = parser.parse_args()
 
     both = not (args.exe or args.zip)
@@ -132,11 +166,13 @@ def main() -> int:
         built.append(build_zip())
 
     if both or args.exe:
-        exe = build_exe()
+        exe = build_exe(onefile=args.onefile)
         if exe is None:
             print("\nExecutable build failed. The source zip is unaffected.")
             if not both:
                 return 1
+        elif exe.is_dir():
+            built.append(zip_folder(exe))
         else:
             built.append(exe)
 

@@ -74,10 +74,14 @@ are hard-blocked in `systems.py` until then — see
 
 ## Install
 
-**Download the executable.** No Python, nothing else to install. Put it wherever
-you like and run it — it keeps its settings, credentials and save backups in the
-same folder, so a portable location works fine. (In Program Files or anywhere
-else non-writable it falls back to `%LOCALAPPDATA%`.)
+**Download the zip**, extract it, run the .exe inside. No Python, nothing else
+to install. It keeps its settings, credentials and save backups in that folder,
+so a portable location works fine. (In Program Files or anywhere else
+non-writable it falls back to `%LOCALAPPDATA%`.)
+
+Windows will show *"Windows protected your PC"* the first time — **More info →
+Run anyway**. The program is not code-signed, and Windows shows that for every
+unsigned program it has not seen before.
 
 The window finds Delta's Dropbox folder and your RetroArch install by itself.
 If it cannot, the paths are editable in the window.
@@ -187,9 +191,15 @@ prints a note and the commit stays safely in local history.
 python tools/build_release.py
 ```
 
-Produces both the standalone executable and a source zip in `dist/`.
+Produces both the packaged application and a source zip in `dist/`.
 PyInstaller is needed for the executable and is a build dependency only —
 nothing it produces is imported by the tool, and the zip build does not use it.
+
+The default is a **one-directory** build, deliberately. A one-file build unpacks
+itself to a temp folder on every launch, which is what a packer or dropper does,
+and Defender's ML heuristic flags it as `Trojan:Win32/Wacatac.B!ml` — on a
+machine where Defender is on by default. `--onefile` is still available if you
+want the convenience and can live with that.
 
 The zip's contents are an explicit list rather than "everything not gitignored",
 so a release cannot accidentally carry a `config.toml`, a Dropbox token, a
