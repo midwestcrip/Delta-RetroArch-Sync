@@ -19,6 +19,7 @@ tool, and the zip build does not use it at all.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -57,18 +58,76 @@ EXCLUDE_NAMES = {
 }
 
 
+# Finding PyInstaller's bootloader directory is fiddly enough to be worth one
+# implementation rather than two: an install can carry several platform
+# directories, so the right one has to be derived from the running interpreter.
+# build_bootloader.py owns that, and both scripts live in tools/, which is on
+# sys.path whenever either is run directly. Guarded so that a checkout missing
+# build_bootloader.py can still produce a release, just without the warning.
+try:
+    from build_bootloader import MARKER_NAME as BOOTLOADER_MARKER
+    from build_bootloader import bootloader_dir
+except ImportError:  # pragma: no cover -- only when tools/ is incomplete
+    BOOTLOADER_MARKER = "LOCALLY_BUILT.txt"
+
+    def bootloader_dir() -> Path | None:
+        return None
+
+
+def _report_bootloader(windowed: bool = True) -> None:
+    """Say which bootloader is about to be baked into the executable.
+
+    Not a gate, deliberately -- a release can still be built without this, and
+    on a machine with no compiler that may be the only option. But it must never
+    happen *silently*, because the stock bootloader is the known cause of
+    Trojan:Win32/Wacatac.C!ml and the failure is invisible until a stranger's
+    Defender deletes the download.
+    """
+    directory = bootloader_dir()
+    if directory is None:
+        print("Bootloader   : could not locate PyInstaller's bootloader directory")
+        return
+
+    binary = directory / ("runw.exe" if windowed else "run.exe")
+    if not binary.is_file():
+        print(f"Bootloader   : expected {binary.name} in {directory}, not found")
+        return
+
+    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    local = (directory / BOOTLOADER_MARKER).is_file()
+    print(f"Bootloader   : {binary.name} {digest[:16]}...")
+    if local:
+        print("               locally compiled")
+    else:
+        print("               *** STOCK BOOTLOADER -- shipped with the PyInstaller wheel.")
+        print("               *** Defender flags these as Trojan:Win32/Wacatac.C!ml.")
+        print("               *** Run tools/build_bootloader.py before releasing.")
+
+
 def build_exe(onefile: bool = False) -> Path | None:
     """Windowed build. Returns the executable or its folder, None on failure.
 
     Defaults to a **one-directory** build. A one-file build unpacks itself into
     a temporary folder on every launch, which is behaviourally what a packer or
-    dropper does -- Microsoft Defender's ML heuristic flags it as
-    Trojan:Win32/Wacatac.B!ml, and Defender is on by default on every Windows
-    machine. A one-directory build performs no self-extraction, so it sidesteps
-    the heuristic, and starts faster for the same reason.
+    dropper does. One-directory performs no self-extraction and starts faster
+    for the same reason, so it remains the default.
 
-    The cost is that it is a folder rather than one file, which is why it ships
-    zipped.
+    It does **not**, however, avoid Microsoft Defender. An earlier version of
+    this docstring claimed it "sidesteps the heuristic"; the naive-user test on
+    2026-09-06 falsified that. A one-directory build downloaded onto a clean
+    Windows account was quarantined on execution as Trojan:Win32/Wacatac.C!ml
+    (severity Severe) and the executable deleted. Note the C variant: VirusTotal's
+    Microsoft engine predicts B!ml, the shipping product fires C!ml, and only the
+    latter is what users actually meet.
+
+    What does clear it is compiling PyInstaller's bootloader locally, because the
+    stock bootloader ships byte-identical to everyone and is shared with a great
+    deal of real malware. See tools/build_bootloader.py, which must be run before
+    a release build; this script does not do it, it only reports which bootloader
+    it used.
+
+    The cost of one-directory is that it is a folder rather than one file, which
+    is why it ships zipped.
     """
     icon = ROOT / "assets" / "synchronizer.ico"
     work = ROOT / "build"
@@ -97,7 +156,9 @@ def build_exe(onefile: bool = False) -> Path | None:
         str(ROOT / "launch_gui.pyw"),
     ]
 
-    print("Building executable…")
+    _report_bootloader(windowed=True)
+
+    print("Building executable...")
     result = subprocess.run(command, cwd=ROOT)
     if result.returncode != 0:
         print(f"PyInstaller failed (exit {result.returncode}).")
@@ -130,7 +191,7 @@ def build_zip() -> Path:
     DIST.mkdir(parents=True, exist_ok=True)
     target = DIST / f"{NAME} (source).zip"
 
-    print("Building source zip…")
+    print("Building source zip...")
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         for entry in SOURCE_INCLUDES:
             source = ROOT / entry
@@ -154,7 +215,7 @@ def main() -> int:
     parser.add_argument(
         "--onefile",
         action="store_true",
-        help="single self-extracting exe; convenient, but Defender flags it",
+        help="single self-extracting exe; convenient, but slower to start",
     )
     args = parser.parse_args()
 
