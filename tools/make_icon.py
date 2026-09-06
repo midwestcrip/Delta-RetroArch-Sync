@@ -29,6 +29,18 @@ SIZES = (256, 128, 64, 48, 32, 16)
 DELTA_PURPLE = (124, 77, 217, 255)
 DELTA_PURPLE_DARK = (86, 50, 160, 255)
 RING = (255, 255, 255, 128)
+
+#: A triangle's visual mass sits low -- most of its area is near the base -- so
+#: centring its bounding box makes it look like it has sagged. Lifting it by a
+#: few percent of the icon reads as centred. The ring is geometrically centred,
+#: which makes any sag on the delta obvious by comparison.
+#:
+#: The value is a compromise between two measurable targets, because neither
+#: alone looks right. Centring the bounding box (lift ~0.008) leaves the mass
+#: visibly low. Centring the centroid (lift 0.074) puts the apex hard against
+#: the top arc with an obvious gap under the base, because inside a ring the
+#: eye reads the gaps, not the mass. This sits between them.
+OPTICAL_LIFT = 0.042
 WHITE = (255, 255, 255, 255)
 
 
@@ -71,9 +83,10 @@ def delta(draw: ImageDraw.ImageDraw, size: int, *, bold: bool) -> None:
     triangle fills the space the ring vacated instead of floating in it.
     """
     centre = size / 2
+    lift = size * OPTICAL_LIFT
     half_width = size * (0.315 if bold else 0.235)
-    top = size * (0.235 if bold else 0.30)
-    bottom = size * (0.775 if bold else 0.715)
+    top = size * (0.235 if bold else 0.30) - lift
+    bottom = size * (0.775 if bold else 0.715) - lift
     stroke = max(2, int(size * (0.105 if bold else 0.075)))
 
     outer = [(centre, top), (centre + half_width, bottom), (centre - half_width, bottom)]
