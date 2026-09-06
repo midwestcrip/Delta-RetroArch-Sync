@@ -143,11 +143,26 @@ SYSTEMS: dict[str, System] = {
 #: is the one that matters, because it is precisely how DS differs: Delta
 #: declares .dsv there and the payload may carry a trailing DeSmuME marker.
 #:
-#: nes and gbc are modelled and raw_compatible too, and are still not enabled,
-#: because no real save for either has been seen yet. gbc additionally syncs a
-#: second file for the RTC clock (see extra_files), which is unverified against
-#: whatever RetroArch's Gambatte core expects.
-ENABLED_SYSTEMS: frozenset[str] = frozenset({"gba", "snes"})
+#: gbc added 2026-09-06 against a real Pokemon Crystal save: 32768 bytes exactly,
+#: the cartridge's 32KB SRAM, raw with no header or footer.
+#:
+#: Its clock is deliberately not synced. Delta carries a second file on the same
+#: record, `gameTimeSave` -- four bytes, a big-endian Unix timestamp of when the
+#: game was last played, used to advance Crystal's real-time clock. Nothing in
+#: this tool writes it: `extra_files` is read by the inspector for reporting and
+#: by nothing else, so only the battery save moves. What RetroArch's Gambatte and
+#: mGBA cores expect for RTC state has not been checked against a real file, and
+#: guessing would be the exact mistake this gate exists to prevent.
+#:
+#: The consequence is bounded and not corruption: a save carries across intact,
+#: and the in-game clock may be out by however long the two sides were apart,
+#: which for Crystal affects day/night and daily events.
+#:
+#: nes is modelled and raw_compatible and still not enabled: no real save has
+#: been seen. Note that Super Mario Bros. cannot supply one -- the cartridge has
+#: no SRAM at all. Verifying NES needs a game with a battery, such as Zelda,
+#: Metroid or Final Fantasy.
+ENABLED_SYSTEMS: frozenset[str] = frozenset({"gba", "snes", "gbc"})
 
 BY_DELTA_TYPE: dict[str, System] = {s.delta_type: s for s in SYSTEMS.values()}
 

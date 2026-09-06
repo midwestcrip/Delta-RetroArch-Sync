@@ -32,14 +32,15 @@ def test_systems_needing_conversion_stay_blocked(key):
     assert systems.SYSTEMS[key].conversion_note
 
 
-@pytest.mark.parametrize("key", ["nes", "gbc"])
-def test_unverified_raw_systems_stay_blocked(key):
-    """Modelled and copyable, but no real save has been inspected yet.
+def test_nes_stays_blocked_until_a_real_save_exists():
+    """Modelled and copyable, but no real NES save has been inspected.
 
     Being raw_compatible is not on its own a reason to enable something: the
-    rule is a real save file, checked. Delete the case when that happens.
+    rule is a real save file, checked. Note that Super Mario Bros. cannot
+    supply one -- that cartridge has no SRAM -- so verifying NES needs a game
+    with a battery.
     """
-    assert key not in systems.ENABLED_SYSTEMS
+    assert "nes" not in systems.ENABLED_SYSTEMS
 
 
 def test_every_enabled_system_can_actually_be_played():
@@ -51,9 +52,19 @@ def test_every_enabled_system_can_actually_be_played():
         assert system.retroarch_db_name, key
 
 
-def test_gba_and_snes_are_the_enabled_set():
+def test_the_enabled_set_is_exactly_what_was_verified():
     """Deliberately exact: widening this set is a decision, not a side effect."""
-    assert systems.ENABLED_SYSTEMS == frozenset({"gba", "snes"})
+    assert systems.ENABLED_SYSTEMS == frozenset({"gba", "snes", "gbc"})
+
+
+def test_gbc_carries_a_clock_file_that_is_not_synced():
+    """Delta pairs a 4-byte RTC timestamp with the save; we move only the save.
+
+    extra_files is read by the inspector for reporting and by nothing else. If
+    that ever changes, RTC handling must first be checked against what
+    RetroArch's Gambatte and mGBA cores actually expect.
+    """
+    assert systems.SYSTEMS["gbc"].extra_files == ("gameTimeSave",)
 
 
 def test_snes_is_a_plain_copy_with_the_same_extension():
