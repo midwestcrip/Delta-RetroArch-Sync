@@ -97,9 +97,19 @@ class PushTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def push(self) -> str:
+        # allow_known_broken: the on-disk write is correct and still tested; it
+        # is the Dropbox property groups it cannot update. See PUSH_BLOCKED.
         return delta_writer.push_save(
-            self.delta, GAME_SHA1, self.source, self.backups
+            self.delta, GAME_SHA1, self.source, self.backups,
+            allow_known_broken=True,
         )
+
+    def test_push_refuses_by_default(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            delta_writer.push_save(
+                self.delta, GAME_SHA1, self.source, self.backups
+            )
+        self.assertIn("property groups", str(caught.exception))
 
     def test_push_updates_save_record_and_hash_consistently(self) -> None:
         self.push()

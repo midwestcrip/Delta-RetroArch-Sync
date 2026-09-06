@@ -19,7 +19,9 @@ which differs from the on-disk form in two ways: ``files`` becomes an
 and hashing it regenerates the stored value exactly for every real record --
 see ``tests/test_delta_writer.py``, which pins this against a real record.
 
-The one genuinely uncertain part is ``versionIdentifier``; see INVALID_REVISION.
+None of that is enough. Harmony's real index lives in Dropbox property
+groups, which the desktop client does not expose -- so this path is guarded
+off. See ``PUSH_BLOCKED``.
 """
 
 from __future__ import annotations
@@ -32,6 +34,43 @@ from pathlib import Path
 from typing import Any
 
 from .manifest import APPLE_EPOCH_OFFSET, sha1_of
+
+#: Why pushing through the local mirror cannot work, confirmed by a real
+#: attempt on 2026-09-05: Delta downloaded, then reported a failed sync.
+#:
+#: Harmony does not treat the record JSON as the source of truth. A record's
+#: identity and change-detection live in Dropbox **file property groups**:
+#:
+#:     RemoteRecord+Dropbox.swift
+#:       guard let identifier = file.pathLower,
+#:             let metadata = file.propertyGroups?.first?.metadata ?? ... else { return nil }
+#:
+#:     RemoteRecord.swift
+#:       guard let recordedObjectType = metadata[.recordedObjectType],
+#:             let recordedObjectIdentifier = metadata[.recordedObjectIdentifier]
+#:       else { throw ValidationError.invalidMetadata(metadata) }
+#:       ...
+#:       self.sha1Hash = metadata[.sha1Hash]   // the record hash Harmony compares
+#:
+#: UploadRecordOperation sets that property group at upload time
+#: (`metadata[.sha1Hash] = localRecord.sha1Hash`). So the hash Harmony compares
+#: against is the one in the *property group*, not the one inside the JSON.
+#:
+#: Property groups are cloud-side metadata. The Dropbox desktop client does not
+#: mirror them to disk and offers no way to write them. Rewriting the record on
+#: disk therefore leaves Harmony with a record whose property-group metadata
+#: disagrees with its contents -- which is exactly the failed sync observed.
+#:
+#: Making push work needs the Dropbox API directly (files/upload plus
+#: file_properties/properties/update), i.e. an OAuth app -- a real scope change
+#: from "read the local mirror" that the project brief assumed was unnecessary.
+#: That assumption was reasonable and is now disproven.
+PUSH_BLOCKED = (
+    "pushing through the local Dropbox mirror cannot work: Harmony stores record "
+    "identity and its comparison hash in Dropbox file property groups, which the "
+    "desktop client neither mirrors to disk nor lets us write. Needs the Dropbox "
+    "API. See PUSH_BLOCKED in delta_writer.py."
+)
 
 #: A well-formed but nonexistent Dropbox revision.
 #:
@@ -124,6 +163,7 @@ def push_save(
     backup_dir: Path,
     *,
     file_identifier: str = "gameSave",
+    allow_known_broken: bool = False,
 ) -> str:
     """Write ``source_save`` into Delta's folder for the game ``identifier``.
 
@@ -133,6 +173,12 @@ def push_save(
     """
     record_path = delta_folder / f"GameSave-{identifier}"
     save_path = delta_folder / f"GameSave-{identifier}-{file_identifier}"
+
+    if not allow_known_broken:
+        # Guarded rather than deleted: everything below is correct as far as the
+        # on-disk format goes, and becomes usable the moment the property groups
+        # can be written too. Deleting it would mean re-deriving the record hash.
+        raise ValueError(PUSH_BLOCKED)
 
     if not record_path.is_file():
         raise FileNotFoundError(f"no GameSave record for {identifier}")

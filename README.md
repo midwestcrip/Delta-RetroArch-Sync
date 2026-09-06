@@ -22,8 +22,9 @@ real folder layout on a real machine.
 | Phase | State |
 | --- | --- |
 | 1. Read-only inspector | Working |
-| 2. Save sync + manifest + backups | Not started |
-| 3. ROM sync | Not started |
+| 2. Save sync, Delta -> RetroArch | Working, verified on real data |
+| 2b. Save sync, RetroArch -> Delta | Blocked: needs the Dropbox API, see docs/research.md |
+| 3. ROM sync | Working |
 | 4. Cheat sync (`.cht` generation) | Not started |
 | 5. Launcher wrapper | Not started |
 

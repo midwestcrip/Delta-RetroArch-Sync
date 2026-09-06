@@ -159,6 +159,54 @@ Both DS and N64 are excluded from `ENABLED_SYSTEMS` in `systems.py`. The
 inspector reports them; the sync will never write them until their conversion is
 implemented and tested against real data.
 
+## Why push through the local mirror cannot work
+
+Tested for real on 2026-09-05. The write itself was correct — the save landed
+byte-identical, and `record.sha1`, `files[0].sha1Hash` and the file's actual hash
+all agreed, with the record's own `sha1Hash` recomputed by the verified scheme.
+Delta still reported a failed sync.
+
+The reason is that **Harmony does not treat the record JSON as the source of
+truth**. A record's identity and its change-detection hash live in Dropbox
+*file property groups*:
+
+```swift
+// RemoteRecord+Dropbox.swift
+guard let identifier = file.pathLower,
+      let metadata = file.propertyGroups?.first?.metadata ?? ... else { return nil }
+
+// RemoteRecord.swift
+guard let recordedObjectType = metadata[.recordedObjectType],
+      let recordedObjectIdentifier = metadata[.recordedObjectIdentifier]
+else { throw ValidationError.invalidMetadata(metadata) }
+...
+self.sha1Hash = metadata[.sha1Hash]   // the hash Harmony actually compares
+```
+
+`UploadRecordOperation` sets that property group when Delta uploads
+(`metadata[.sha1Hash] = localRecord.sha1Hash`). So the hash Harmony compares is
+the one in the property group, **not** the one inside the JSON we can rewrite.
+
+Property groups are cloud-side metadata. The Dropbox desktop client does not
+mirror them to disk and gives no way to write them. Any record we rewrite on
+disk therefore ends up with property-group metadata that disagrees with its own
+contents — which is precisely the failed sync that was observed.
+
+This retires the earlier open question about `versionIdentifier`. That inference
+may well have been right; it was never reached, because the record is rejected
+before any file download is attempted.
+
+### What would make push work
+
+The Dropbox API directly: `files/upload` plus
+`file_properties/properties/update`, replicating what `UploadRecordOperation`
+does. That needs a registered Dropbox app and an OAuth flow — a real scope
+change from the brief's "no cloud API integration beyond reading the local
+mirror". The brief's assumption was reasonable, and is now disproven.
+
+The pull direction is unaffected: reading the mirror needs none of this, and is
+verified working.
+
 ## RetroArch side
 
 Confirmed live on 2026-09-05 against `C:\Media\Games\Emulators\RetroArch`:
