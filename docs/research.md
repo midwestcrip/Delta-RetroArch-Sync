@@ -116,6 +116,38 @@ cheat records cannot be located by game; they must be grouped by walking every
 (`com.rileytestut.MelonDSDeltaCore.BIOS` / `.DSiBIOS`) are pseudo-games carrying
 BIOS and firmware, not real content. They must be filtered out.
 
+### Cheat records, confirmed from real data
+
+A real `Cheat-<uuid>` record, 2026-09-05:
+
+```json
+{
+  "type": "Cheat",
+  "identifier": "2946F7C3-1C4C-46D6-932F-E3F199A7ED0C",
+  "record": {
+    "name": "Faster Text Display",
+    "code": "00000000 18002C02
+0000E01A 00000000",
+    "type": "<base64 NSKeyedArchiver plist -> \"ActionReplay\">",
+    "creationDate": 810357820.687162,
+    "modifiedDate": 810357820.687162
+  },
+  "files": [],
+  "relationships": {"game": {"type": "Game", "identifier": "<rom sha1>"}}
+}
+```
+
+Two things this pins down:
+
+- The code is stored **formatted** — display spacing and a newline per line —
+  not as bare hex. Converting works from the hex digits regardless.
+- `files` is empty. Cheats have no attachments, which is why pushing a cheat
+  edit would need no Dropbox revision and therefore no API call, unlike a save.
+
+Converting that record produced
+`cheat0_code = "00000000+18002C02+0000E01A+00000000"`, byte-identical to
+libretro-database's own entry for the same cheat.
+
 ## Save format compatibility
 
 `gameSaveFileExtension` read from each core repo; `GameType` raw values read
