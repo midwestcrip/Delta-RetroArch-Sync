@@ -148,8 +148,12 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
     # the install and let config.toml override it.
     config = config_module.load()
     rom_dir = config.retroarch_rom_dir or (retroarch_config.parent / "roms")
+    cheat_dir = discovery.resolve_retroarch_dir(
+        settings, "cheat_database_path", retroarch_config, "cheats"
+    )
 
     entries = inspect_module.collect_games(delta_folder)
+    cheats_by_game = inspect_module.collect_cheats(delta_folder)
     if not entries:
         print("Nothing synced by Delta yet.")
         return 1
@@ -197,6 +201,8 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
             allow_push=allow_push,
             rom_dir=rom_dir,
             dropbox=dropbox,
+            cheat_dir=cheat_dir,
+            cheats_by_game=cheats_by_game,
         )
         report.outcomes.extend(single.outcomes)
 

@@ -17,8 +17,13 @@ hardcore mode rules them out anyway), controller skins, and app configs. See
 
 Bidirectional save sync works, confirmed on a real device in both directions:
 progress made on the phone appears in RetroArch, and progress made in RetroArch
-appears in Delta. ROM export works. Cheats and the launcher wrapper are still to
-do.
+appears in Delta. ROM export and cheat export work. The launcher wrapper is
+still to do.
+
+Cheats go one way only, and that is a hard limit rather than a missing feature:
+creating a cheat in Delta would mean creating a new record in its Dropbox folder,
+and a file we create has no Dropbox property groups — which Harmony requires to
+see a record at all, and only Delta's own app can write.
 
 | Phase | State |
 | --- | --- |
@@ -26,7 +31,7 @@ do.
 | 2. Save sync, Delta -> RetroArch | Working, verified on real data |
 | 2b. Save sync, RetroArch -> Delta | Working, confirmed on device (needs `auth`) |
 | 3. ROM sync | Working |
-| 4. Cheat sync (`.cht` generation) | Not started |
+| 4. Cheat sync (`.cht` generation) | Working, Delta -> RetroArch only |
 | 5. Launcher wrapper | Not started |
 
 Currently cleared for sync: **GBA only**. NES, SNES and GBC are trivial

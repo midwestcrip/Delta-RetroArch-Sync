@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
+from . import cheats as cheats_module
 from . import delta_writer, dropbox_api
 from . import inspect as inspect_module
 from . import manifest as manifest_module
@@ -284,6 +285,56 @@ def push_with_revision(
     return f"{note}, revision {revision}"
 
 
+def sync_cheats(
+    entry: inspect_module.GameEntry,
+    game_cheats: list[dict[str, str]],
+    cheat_dir: Path,
+    *,
+    dry_run: bool = False,
+) -> Outcome | None:
+    """Write a game's Delta cheats out as a RetroArch `.cht` file.
+
+    Delta -> RetroArch only. A cheat created on the RetroArch side would need a
+    brand-new Cheat record in Delta's folder, and a file we create has no Dropbox
+    property groups -- which Harmony requires to see a record at all and only
+    Delta's app can write. So that direction is not possible, rather than merely
+    unimplemented.
+    """
+    if entry.system is None or not entry.system.retroarch_db_name:
+        return None
+    if not game_cheats:
+        return None
+
+    path = cheats_module.cheat_file_path(
+        cheat_dir, entry.system.retroarch_db_name, entry.name
+    )
+    parsed = [
+        cheats_module.Cheat(
+            name=cheat.get("name", ""),
+            code=cheat.get("code", ""),
+            type=cheat.get("type", ""),
+        )
+        for cheat in game_cheats
+    ]
+
+    if dry_run:
+        return Outcome(
+            entry.name,
+            Action.PULL,
+            f"would write {len(parsed)} cheat(s) to {path}",
+        )
+
+    changed = cheats_module.write_cheat_file(path, parsed)
+    if not changed:
+        return Outcome(entry.name, Action.NOTHING, f"cheats already current at {path}")
+    return Outcome(
+        entry.name,
+        Action.PULL,
+        f"wrote {len(parsed)} cheat(s) to {path}",
+        applied=True,
+    )
+
+
 def run_sync(
     paths: Paths,
     entries: list[inspect_module.GameEntry],
@@ -294,6 +345,8 @@ def run_sync(
     allow_push: bool = False,
     rom_dir: Path | None = None,
     dropbox: "dropbox_api.DropboxClient | None" = None,
+    cheat_dir: Path | None = None,
+    cheats_by_game: dict[str, list[dict[str, str]]] | None = None,
 ) -> SyncReport:
     """Reconcile every supported game. Returns what was done or would be done."""
     state = manifest_module.Manifest.load(paths.manifest_path)
@@ -313,6 +366,16 @@ def run_sync(
             rom_outcome = sync_rom(entry, rom_dir, dry_run=dry_run)
             if rom_outcome is not None:
                 report.outcomes.append(rom_outcome)
+
+        if cheat_dir is not None and cheats_by_game is not None:
+            cheat_outcome = sync_cheats(
+                entry,
+                cheats_by_game.get(entry.identifier, []),
+                cheat_dir,
+                dry_run=dry_run,
+            )
+            if cheat_outcome is not None:
+                report.outcomes.append(cheat_outcome)
 
         target = retroarch_save_path(
             paths.save_dir, entry, core_name, sorted_by_core

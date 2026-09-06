@@ -33,6 +33,9 @@ class System:
     conversion_note: str = ""
     #: Common ROM extensions, used to name the file we hand to RetroArch.
     rom_exts: tuple[str, ...] = field(default_factory=tuple)
+    #: libretro-database's folder name for this system, which is how RetroArch
+    #: organises cheat files.
+    retroarch_db_name: str = ""
     #: RetroArch core display names ("corename") that can run this system, in
     #: preference order. The name matters beyond selection: RetroArch sorts
     #: saves into a folder named after it.
@@ -49,6 +52,7 @@ SYSTEMS: dict[str, System] = {
         retroarch_save_ext="srm",
         raw_compatible=True,
         rom_exts=("gba",),
+        retroarch_db_name="Nintendo - Game Boy Advance",
         retroarch_cores=("mGBA", "VBA-M", "VBA Next", "gpSP", "Beetle GBA"),
     ),
     "gbc": System(
@@ -62,6 +66,7 @@ SYSTEMS: dict[str, System] = {
         extra_files=("gameTimeSave",),
         raw_compatible=True,
         rom_exts=("gbc", "gb"),
+        retroarch_db_name="Nintendo - Game Boy Color",
         retroarch_cores=("Gambatte", "SameBoy", "mGBA", "TGB Dual"),
     ),
     "nes": System(
@@ -73,6 +78,7 @@ SYSTEMS: dict[str, System] = {
         retroarch_save_ext="srm",
         raw_compatible=True,
         rom_exts=("nes",),
+        retroarch_db_name="Nintendo - Nintendo Entertainment System",
         retroarch_cores=("Nestopia", "Mesen", "FCEUmm", "QuickNES"),
     ),
     "snes": System(
@@ -84,6 +90,7 @@ SYSTEMS: dict[str, System] = {
         retroarch_save_ext="srm",
         raw_compatible=True,
         rom_exts=("sfc", "smc"),
+        retroarch_db_name="Nintendo - Super Nintendo Entertainment System",
         retroarch_cores=("Snes9x", "Snes9x - Current", "bsnes", "Beetle Supafaust"),
     ),
     "n64": System(
@@ -101,6 +108,7 @@ SYSTEMS: dict[str, System] = {
             "conversion step (see ra_mp64_srm_convert) before it is safe to sync."
         ),
         rom_exts=("n64", "z64", "v64"),
+        retroarch_db_name="Nintendo - Nintendo 64",
         retroarch_cores=("Mupen64Plus-Next", "ParaLLEl N64"),
     ),
     "ds": System(
@@ -118,6 +126,7 @@ SYSTEMS: dict[str, System] = {
             "real save before converting; strip or append the footer accordingly."
         ),
         rom_exts=("nds",),
+        retroarch_db_name="Nintendo - Nintendo DS",
         retroarch_cores=("melonDS DS", "melonDS", "DeSmuME"),
     ),
 }
