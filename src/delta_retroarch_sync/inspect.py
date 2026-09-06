@@ -28,6 +28,9 @@ class GameEntry:
     rom_path: Path | None
     save_path: Path | None
     extra_paths: dict[str, Path]
+    #: Extension from Delta's stored filename ("<sha1>.gba"), which is
+    #: authoritative -- the file in Dropbox carries no extension of its own.
+    rom_extension: str = ""
     retroarch_save: Path | None = None
 
     @property
@@ -66,6 +69,13 @@ def collect_games(delta_folder: Path) -> list[GameEntry]:
                 if found:
                     extra_paths[file_id] = found
 
+        # Delta stores the ROM as "<sha1>.<ext>"; the extension is the only
+        # record of the original format, so prefer it over guessing per system.
+        stored_filename = str(game.fields.get("filename", ""))
+        extension = stored_filename.rpartition(".")[2] if "." in stored_filename else ""
+        if not extension and system is not None and system.rom_exts:
+            extension = system.rom_exts[0]
+
         entries.append(
             GameEntry(
                 identifier=identifier,
@@ -75,6 +85,7 @@ def collect_games(delta_folder: Path) -> list[GameEntry]:
                 rom_path=harmony.attached_file(delta_folder, game, "game"),
                 save_path=save_path,
                 extra_paths=extra_paths,
+                rom_extension=extension,
             )
         )
 

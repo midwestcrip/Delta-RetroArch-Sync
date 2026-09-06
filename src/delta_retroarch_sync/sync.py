@@ -208,6 +208,44 @@ def retroarch_save_path(
     return folder / naming.save_filename(entry.name, entry.system.retroarch_save_ext)
 
 
+def sync_rom(
+    entry: inspect_module.GameEntry, rom_dir: Path, *, dry_run: bool = False
+) -> Outcome | None:
+    """Copy a game's ROM out of Delta so RetroArch has something to load.
+
+    The filename matters more than it looks: RetroArch names a battery save
+    after the content file, so this stem and the save's stem must agree or
+    RetroArch will not find the save this tool just wrote.
+
+    ROMs are content, not progress -- they never change once written, so unlike
+    saves they get no rolling backups and an existing matching ROM is left
+    alone rather than rewritten.
+    """
+    if entry.rom_path is None or not entry.rom_path.is_file():
+        return None
+    if entry.system is None or not entry.rom_extension:
+        return None
+
+    destination = rom_dir / naming.rom_filename(entry.name, entry.rom_extension)
+
+    if destination.is_file():
+        # Compare by size first: these are tens of megabytes and identical size
+        # with different content is not a case that arises for a ROM we wrote.
+        if destination.stat().st_size == entry.rom_path.stat().st_size:
+            return Outcome(entry.name, Action.NOTHING, f"ROM already at {destination}")
+
+    if dry_run:
+        return Outcome(entry.name, Action.PULL, f"would copy ROM to {destination}")
+
+    copy_atomically(entry.rom_path, destination)
+    return Outcome(
+        entry.name,
+        Action.PULL,
+        f"copied ROM ({entry.rom_path.stat().st_size:,} B) to {destination}",
+        applied=True,
+    )
+
+
 def run_sync(
     paths: Paths,
     entries: list[inspect_module.GameEntry],
@@ -216,6 +254,7 @@ def run_sync(
     *,
     dry_run: bool = False,
     allow_push: bool = False,
+    rom_dir: Path | None = None,
 ) -> SyncReport:
     """Reconcile every supported game. Returns what was done or would be done."""
     state = manifest_module.Manifest.load(paths.manifest_path)
@@ -230,6 +269,11 @@ def run_sync(
             )
             report.outcomes.append(Outcome(entry.name, Action.SKIPPED, note))
             continue
+
+        if rom_dir is not None:
+            rom_outcome = sync_rom(entry, rom_dir, dry_run=dry_run)
+            if rom_outcome is not None:
+                report.outcomes.append(rom_outcome)
 
         target = retroarch_save_path(
             paths.save_dir, entry, core_name, sorted_by_core

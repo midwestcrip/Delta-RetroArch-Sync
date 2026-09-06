@@ -67,6 +67,11 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
     sorted_by_core = discovery.truthy(settings, "sort_savefiles_enable")
     installed = discovery.installed_cores(retroarch_config, settings)
 
+    # RetroArch has no canonical ROM location, so default to a folder beside
+    # the install and let config.toml override it.
+    config = config_module.load()
+    rom_dir = config.retroarch_rom_dir or (retroarch_config.parent / "roms")
+
     entries = inspect_module.collect_games(delta_folder)
     if not entries:
         print("Nothing synced by Delta yet.")
@@ -111,6 +116,7 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
             sorted_by_core,
             dry_run=dry_run,
             allow_push=allow_push,
+            rom_dir=rom_dir,
         )
         report.outcomes.extend(single.outcomes)
 
