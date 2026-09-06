@@ -155,5 +155,61 @@ class FileTests(unittest.TestCase):
             self.assertEqual(list(path.parent.glob("*.partial")), [])
 
 
+class DryRunAccuracyTests(unittest.TestCase):
+    """A dry run must predict the real run, or it teaches you to ignore it."""
+
+    def test_dry_run_agrees_with_a_real_run_on_an_up_to_date_file(self) -> None:
+        import sys as _sys
+
+        _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+        from delta_retroarch_synchronizer import inspect, sync, systems
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            entry = inspect.GameEntry(
+                identifier="a" * 40,
+                name="Test Game",
+                delta_type="com.rileytestut.delta.game.gba",
+                system=systems.SYSTEMS["gba"],
+                rom_path=None,
+                save_path=None,
+                extra_paths={},
+            )
+            payload = [{"name": "A", "code": "042257BC 000F423F", "type": "ActionReplay"}]
+
+            first = sync.sync_cheats(entry, payload, root)
+            assert first is not None
+            self.assertTrue(first.applied)
+
+            # Now the file is current: both the dry run and the real run must
+            # agree that there is nothing to do.
+            dry = sync.sync_cheats(entry, payload, root, dry_run=True)
+            real = sync.sync_cheats(entry, payload, root)
+            assert dry is not None and real is not None
+            self.assertIs(dry.action, sync.Action.NOTHING)
+            self.assertIs(real.action, sync.Action.NOTHING)
+
+    def test_dry_run_writes_nothing(self) -> None:
+        import sys as _sys
+
+        _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+        from delta_retroarch_synchronizer import inspect, sync, systems
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            entry = inspect.GameEntry(
+                identifier="a" * 40,
+                name="Test Game",
+                delta_type="com.rileytestut.delta.game.gba",
+                system=systems.SYSTEMS["gba"],
+                rom_path=None,
+                save_path=None,
+                extra_paths={},
+            )
+            payload = [{"name": "A", "code": "042257BC 000F423F", "type": "ActionReplay"}]
+            sync.sync_cheats(entry, payload, root, dry_run=True)
+            self.assertEqual(list(root.rglob("*.cht")), [])
+
+
 if __name__ == "__main__":
     unittest.main()

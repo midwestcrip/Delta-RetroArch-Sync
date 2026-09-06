@@ -318,6 +318,19 @@ def sync_cheats(
     ]
 
     if dry_run:
+        # Report what a real run would actually do, not just what it would
+        # consider. A dry run that claims a write it would skip is worse than
+        # no dry run, because it teaches you to ignore the output.
+        current = ""
+        if path.is_file():
+            try:
+                current = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                current = ""
+        if current == cheats_module.render(parsed):
+            return Outcome(
+                entry.name, Action.NOTHING, f"cheats already current at {path}"
+            )
         return Outcome(
             entry.name,
             Action.PULL,
