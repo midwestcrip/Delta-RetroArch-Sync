@@ -173,6 +173,30 @@ registration is bundled so this works out of the box, and **Use own app key…**
 swaps in your own. See [docs/dropbox-app.md](docs/dropbox-app.md) for what the
 permission covers, how to register your own app, and how to revoke access.
 
+### Delta asks you to resolve a conflict afterwards
+
+Every push does this. The save itself arrives correctly — Delta shows the right
+content, and its own screen reports "On Device" and "Cloud" as *Normal* with the
+same timestamp — but Harmony marks the record conflicted and asks you to pick a
+version on the phone. Both versions are the same bytes, so either choice is
+safe, and resolving leaves the save untouched.
+
+Established by controlled test on 2026-09-06: a push with Delta closed on the
+device and no other activity for 35 minutes, every desktop check green, and a
+conflict appeared on the next sync regardless. An earlier theory that this came
+from the desktop and the phone writing at the same time was wrong, and the
+guard written against that theory has been removed.
+
+The likely reason it cannot be avoided from here: Harmony's per-record version
+bookkeeping lives in Dropbox **property groups**, which only the app that
+created the template can write. A record whose bytes change without Harmony
+having originated the change therefore reads as modified elsewhere. This is
+under investigation; until it is settled, treat the resolve prompt as the cost
+of pushing rather than as a fault.
+
+`doctor` cannot see it. It checks everything on this side and Delta's conflict
+state is not on this side — see `docs/research.md`.
+
 ## Auto-push
 
 Commits push to `origin` automatically. The hook lives in `.githooks/` so it is
