@@ -276,6 +276,43 @@ Delta on the phone and loaded correctly. The record named revision
 `65ac7c6d4d5cdcb175c93`, which is exactly what Dropbox held — the difference
 from the failed attempt, which named a revision that did not exist.
 
+### Why the second and third pushes failed, and what fixed them
+
+The first push worked. The next ones did not, and the cause was the write
+itself rather than the format.
+
+`push_save` wrote via the usual temp-file-then-rename. That is the safer pattern
+almost everywhere and the wrong one here: a rename over the target is a new file
+as far as Dropbox *property groups* are concerned. Harmony builds a record's
+identity from those groups and `compactMap`s away anything without them, so the
+record became **invisible to Delta** — not rejected, never seen. Delta then
+concluded it had no remote copy and switched to `mode = .add`, which fails
+forever against a path that already exists. Hence "sync complete" with nothing
+applied, an upload error that survived a per-record toggle, and a full
+disconnect/reconnect that changed nothing.
+
+Recovering meant deleting the record file so the path was free, letting Delta's
+`.add` recreate it with fresh property groups.
+
+The fix is `write_in_place`: keep the file object, change only its bytes. The
+atomicity rename gave up is recovered at the call site — back up first, verify
+afterwards by re-reading the record and re-deriving its hash.
+
+Verified 2026-09-05: a push with the in-place write reached Delta cleanly on the
+first attempt, with all health checks green before and after.
+
+### Detecting this class of failure
+
+None of it surfaced an error. `doctor` (see `health.py`) checks the specific
+things that were wrong: the record's stored hash against its contents, the
+record against the save on disk, the revision the record names against the one
+Dropbox holds, and whether the desktop client has finished uploading.
+
+What it cannot see is Delta's own state — a record it has marked conflicted or
+pinned to a chosen version — or the property groups themselves, which are
+readable only by the app that wrote them. A failure with every check green
+points there.
+
 ## RetroArch side
 
 Confirmed live on 2026-09-05 against `C:\Media\Games\Emulators\RetroArch`:

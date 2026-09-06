@@ -53,6 +53,7 @@ inside it.
 | 1. Read-only inspector | Working |
 | 2. Save sync, Delta -> RetroArch | Working, verified on real data |
 | 2b. Save sync, RetroArch -> Delta | Working, confirmed on device (needs `auth`) |
+| 6. Health checks (`doctor`) | Working |
 | 3. ROM sync | Working |
 | 4. Cheat sync (`.cht` generation) | Working, Delta -> RetroArch only |
 | 5. Launcher window | Working |
