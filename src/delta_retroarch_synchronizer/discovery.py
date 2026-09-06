@@ -243,3 +243,21 @@ def installed_cores(config_path: Path, settings: dict[str, str]) -> dict[str, st
                     break
         found[name] = library.name
     return found
+
+
+def find_retroarch_exe(config_path: Path | None = None) -> Path | None:
+    """Locate retroarch.exe, preferring the folder its config lives in.
+
+    The config is already discovered via the registry, and the executable sits
+    beside it in every normal install, so that is a better first guess than
+    re-deriving the install location.
+    """
+    candidates: list[Path] = []
+    if config_path is not None:
+        candidates.append(config_path.parent / "retroarch.exe")
+    candidates += [d / "retroarch.exe" for d in _registry_retroarch_dirs()]
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None

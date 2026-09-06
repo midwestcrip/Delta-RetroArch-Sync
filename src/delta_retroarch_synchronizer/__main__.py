@@ -231,6 +231,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser(
+        "gui", help="Open the launcher window."
+    )
+    subparsers.add_parser(
         "inspect",
         help="Report what Delta and RetroArch have on disk. Writes nothing.",
     )
@@ -260,6 +263,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     _force_utf8_output()
 
+    if args.command == "gui":
+        from . import launcher
+
+        return launcher.main()
     if args.command == "inspect":
         return inspect_module.run()
     if args.command == "sync":
@@ -267,8 +274,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "auth":
         return run_auth_command(args.app_key, args.code)
 
-    parser.print_help()
-    return 0
+    # Double-clicking the shortcut passes no arguments, so the window is the
+    # right default. The CLI is the secondary interface here.
+    from . import launcher
+
+    return launcher.main()
 
 
 if __name__ == "__main__":

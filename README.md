@@ -55,7 +55,7 @@ inside it.
 | 2b. Save sync, RetroArch -> Delta | Working, confirmed on device (needs `auth`) |
 | 3. ROM sync | Working |
 | 4. Cheat sync (`.cht` generation) | Working, Delta -> RetroArch only |
-| 5. Launcher wrapper | Not started |
+| 5. Launcher window | Working |
 
 Currently cleared for sync: **GBA only**. NES, SNES and GBC are trivial
 extensions of the same path. N64 and DS need real format conversion first and
@@ -72,6 +72,19 @@ are hard-blocked in `systems.py` until then — see
 - RetroArch, launched at least once so it has written its config
 
 ## Usage
+
+Double-click **`Delta-RetroArch Synchronizer.bat`**.
+
+The launcher window finds Delta's Dropbox folder and your RetroArch install by
+itself, shows what it found, and gives you one button: **Sync and Play**. That
+syncs, launches RetroArch, waits for you to finish, and syncs again once it
+closes — the save is copied after the process exits, because mGBA only flushes
+it to disk on a clean quit.
+
+Paths, and whether to sync ROMs and cheats, are editable in the window and
+saved to `config.toml`.
+
+There is also a CLI, if you prefer it:
 
 ```
 python -m delta_retroarch_synchronizer inspect
