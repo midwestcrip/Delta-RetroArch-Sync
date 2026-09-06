@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .harmony import resolve_existing
 from .manifest import APPLE_EPOCH_OFFSET, sha1_of
 
 #: Delta downloads the *exact* revision a record names
@@ -138,8 +139,12 @@ def push_save(
     is not as expected -- a half-applied push is worse than no push, so every
     check happens before the first write.
     """
-    record_path = delta_folder / f"GameSave-{identifier}"
-    save_path = delta_folder / f"GameSave-{identifier}-{file_identifier}"
+    # Resolve the real spelling rather than constructing one: writing to a
+    # differently-cased name renames Delta's file on Dropbox.
+    record_path = resolve_existing(delta_folder, f"GameSave-{identifier}")
+    save_path = resolve_existing(
+        delta_folder, f"GameSave-{identifier}-{file_identifier}"
+    )
 
     if not record_path.is_file():
         raise FileNotFoundError(f"no GameSave record for {identifier}")

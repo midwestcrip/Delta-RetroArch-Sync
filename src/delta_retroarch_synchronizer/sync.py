@@ -20,6 +20,7 @@ from enum import Enum
 from pathlib import Path
 
 from . import cheats as cheats_module
+from . import harmony
 from . import delta_writer, dropbox_api
 from . import inspect as inspect_module
 from . import manifest as manifest_module
@@ -266,7 +267,9 @@ def push_with_revision(
     If step 2 fails the record still points at the old save, so Delta simply
     carries on with what it had. Nothing is left half-applied.
     """
-    save_name = f"GameSave-{entry.identifier}-gameSave"
+    save_name = harmony.resolve_existing(
+        paths.delta_folder, f"GameSave-{entry.identifier}-gameSave"
+    ).name
     delta_writer.push_save(
         paths.delta_folder, entry.identifier, source, paths.backup_dir, revision=None
     )

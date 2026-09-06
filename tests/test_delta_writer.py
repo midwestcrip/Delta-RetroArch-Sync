@@ -88,10 +88,10 @@ class PushTests(unittest.TestCase):
         self.record_path.write_text(
             json.dumps(REAL_GAMESAVE_RECORD, separators=(",", ":")), encoding="utf-8"
         )
-        self.save_path.write_bytes(b"\xff" * 131072)
+        self.save_path.write_bytes(bytes([0xFF]) * 131072)
 
         self.source = self.root / "new.srm"
-        self.source.write_bytes(b"\x00" * 131072)
+        self.source.write_bytes(bytes(131072))
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -162,6 +162,64 @@ class PushTests(unittest.TestCase):
         unix = 1757000000.0
         apple = delta_writer.unix_to_apple(unix)
         self.assertAlmostEqual(manifest.apple_timestamp_to_unix(apple), unix, places=6)
+
+
+class FilenameCasingTests(unittest.TestCase):
+    """Writing must not rename Delta's files.
+
+    Delta re-uploads records to Dropbox's lowercased path, so a record it has
+    touched is "gamesave-<sha1>" on disk. os.replace renames the target to
+    whatever spelling it is given, so constructing the name silently renames
+    Delta's file -- a real change to another app's storage.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.delta = self.root / "Delta Emulator"
+        self.delta.mkdir()
+
+        # Named the way Delta leaves it after re-uploading: all lowercase.
+        self.record_path = self.delta / f"gamesave-{GAME_SHA1}"
+        self.save_path = self.delta / f"gamesave-{GAME_SHA1}-gameSave"
+        self.record_path.write_text(
+            json.dumps(REAL_GAMESAVE_RECORD, separators=(",", ":")), encoding="utf-8"
+        )
+        self.save_path.write_bytes(bytes([0xFF]) * 131072)
+
+        self.source = self.root / "new.srm"
+        self.source.write_bytes(bytes(131072))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_lowercase_names_are_found_and_preserved(self) -> None:
+        # The file *identifier* inside the record stays "gameSave" -- that is
+        # Harmony's key, not a path. Only the on-disk spelling is lowercase.
+        delta_writer.push_save(
+            self.delta,
+            GAME_SHA1,
+            self.source,
+            self.root / "backups",
+            revision="0123456789abcdef01234",
+        )
+        names = sorted(p.name for p in self.delta.iterdir())
+        self.assertIn(f"gamesave-{GAME_SHA1}", names)
+        self.assertIn(f"gamesave-{GAME_SHA1}-gameSave", names)
+        # No capitalised twin was created alongside.
+        self.assertNotIn(f"GameSave-{GAME_SHA1}", names)
+
+    def test_resolve_existing_returns_the_real_spelling(self) -> None:
+        from delta_retroarch_synchronizer import harmony
+
+        found = harmony.resolve_existing(self.delta, f"GameSave-{GAME_SHA1}")
+        self.assertEqual(found.name, f"gamesave-{GAME_SHA1}")
+
+    def test_resolve_existing_falls_back_to_the_requested_name(self) -> None:
+        from delta_retroarch_synchronizer import harmony
+
+        found = harmony.resolve_existing(self.delta, "Cheat-does-not-exist")
+        self.assertEqual(found.name, "Cheat-does-not-exist")
 
 
 if __name__ == "__main__":

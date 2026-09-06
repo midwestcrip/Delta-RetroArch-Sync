@@ -240,3 +240,26 @@ def attached_file(folder: Path, record: HarmonyRecord, file_id: str) -> Path | N
     """
     candidate = folder / f"{record.type}-{record.identifier}-{file_id}"
     return candidate if candidate.is_file() else None
+
+
+def resolve_existing(folder: Path, name: str) -> Path:
+    """Return the on-disk path for ``name``, preserving its real capitalisation.
+
+    Delta re-uploads a record to ``remoteRecord.identifier``, which Harmony took
+    from Dropbox's ``pathLower`` -- so a record Delta has touched is named
+    ``gamesave-<sha1>`` on disk, not ``GameSave-<sha1>``.
+
+    Reading is unaffected (NTFS is case-insensitive), but *writing* is not:
+    ``os.replace`` renames the target to whatever spelling it is given, so
+    writing to the constructed name silently renames Delta's file. That is a
+    real change to Dropbox, and it is not the kind of change we want to be
+    making to another app's storage. Always write through this.
+    """
+    lowered = name.lower()
+    try:
+        for entry in folder.iterdir():
+            if entry.name.lower() == lowered:
+                return entry
+    except OSError:
+        pass
+    return folder / name
