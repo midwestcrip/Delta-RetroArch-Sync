@@ -1,0 +1,50 @@
+# --- Never commit game data or anything derived from it ---
+# This repo is public. Save files, ROMs and cheat dumps are personal data
+# and/or copyrighted content. Keep all of it out of git.
+*.sav
+*.srm
+*.rtc
+*.dsv
+*.sra
+*.eep
+*.fla
+*.mpk
+*.gba
+*.gbc
+*.gb
+*.nes
+*.sfc
+*.smc
+*.n64
+*.z64
+*.v64
+*.nds
+*.cht
+
+# Local state produced at runtime
+config.toml
+manifest.json
+logs/
+backups/
+inspect-report.*
+
+# RetroArch / Delta artifacts that may get dropped in here while testing
+retroarch.cfg
+Delta Emulator/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

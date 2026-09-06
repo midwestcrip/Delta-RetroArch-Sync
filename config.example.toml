@@ -1,0 +1,18 @@
+# Copy to config.toml and fill in only what automatic discovery gets wrong.
+# config.toml is gitignored on purpose: it contains absolute paths specific to
+# your machine, and this repository is public.
+
+[paths]
+# Delta's synced folder inside Dropbox. Normally found automatically by reading
+# the Dropbox client's info.json; set this only if that fails.
+# delta_folder = "C:/Users/you/Dropbox/Delta Emulator"
+
+# Path to retroarch.cfg. Normally found automatically.
+# retroarch_config = "C:/Users/you/AppData/Roaming/RetroArch/retroarch.cfg"
+
+# RetroArch's save directory. Read from retroarch.cfg by default; override only
+# if you keep saves somewhere the config does not describe.
+# retroarch_save_dir = "C:/Users/you/AppData/Roaming/RetroArch/saves"
+
+# Where ROMs pulled from Delta should be written for RetroArch to scan.
+# retroarch_rom_dir = "C:/Users/you/Games/ROMs"
