@@ -220,6 +220,11 @@ upload it, read back the real revision (confirming via Dropbox's `content_hash`
 that the upload is the file we wrote), then write the record referencing that
 revision.
 
+**Confirmed working on device, 2026-09-05.** A save made in RetroArch reached
+Delta on the phone and loaded correctly. The record named revision
+`65ac7c6d4d5cdcb175c93`, which is exactly what Dropbox held — the difference
+from the failed attempt, which named a revision that did not exist.
+
 ## RetroArch side
 
 Confirmed live on 2026-09-05 against `C:\Media\Games\Emulators\RetroArch`:

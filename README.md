@@ -15,16 +15,16 @@ hardcore mode rules them out anyway), controller skins, and app configs. See
 
 ## Status
 
-Delta -> RetroArch works and is verified against real data: saves and ROMs land
-correctly and byte-identically. The reverse direction is built but not yet
-confirmed on a real device — the first attempt failed for a known reason and the
-fix needs one round trip to verify. See [docs/research.md](docs/research.md).
+Bidirectional save sync works, confirmed on a real device in both directions:
+progress made on the phone appears in RetroArch, and progress made in RetroArch
+appears in Delta. ROM export works. Cheats and the launcher wrapper are still to
+do.
 
 | Phase | State |
 | --- | --- |
 | 1. Read-only inspector | Working |
 | 2. Save sync, Delta -> RetroArch | Working, verified on real data |
-| 2b. Save sync, RetroArch -> Delta | Built, needs `auth` + a real round trip to confirm |
+| 2b. Save sync, RetroArch -> Delta | Working, confirmed on device (needs `auth`) |
 | 3. ROM sync | Working |
 | 4. Cheat sync (`.cht` generation) | Not started |
 | 5. Launcher wrapper | Not started |
