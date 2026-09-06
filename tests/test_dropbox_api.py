@@ -15,7 +15,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from delta_retroarch_sync import dropbox_api  # noqa: E402
+from delta_retroarch_synchronizer import dropbox_api  # noqa: E402
 
 
 class ContentHashTests(unittest.TestCase):

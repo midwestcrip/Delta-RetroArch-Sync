@@ -3,14 +3,14 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "delta-retroarch-sync"
+name = "delta-retroarch-synchronizer"
 version = "0.1.0"
 description = "Sync battery saves, ROMs and cheats between Delta (iOS) and RetroArch (Windows)."
 requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
-delta-retroarch-sync = "delta_retroarch_sync.__main__:main"
+delta-retroarch-synchronizer = "delta_retroarch_synchronizer.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

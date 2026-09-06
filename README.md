@@ -1,4 +1,4 @@
-# Delta ↔ RetroArch Sync
+# Delta-RetroArch Synchronizer
 
 Keeps battery saves, ROMs and cheats in sync between
 [Delta](https://deltaemulator.com) on iOS and RetroArch on Windows, with no
@@ -46,7 +46,7 @@ are hard-blocked in `systems.py` until then — see
 ## Usage
 
 ```
-python -m delta_retroarch_sync inspect
+python -m delta_retroarch_synchronizer inspect
 ```
 
 Reports where it found Delta's Dropbox folder and RetroArch's config, then lists
@@ -96,8 +96,8 @@ Dropbox on upload — it is not derivable locally and not exposed in the mirror.
 So pushing requires read-only Dropbox API access, authorised once:
 
 ```
-python -m delta_retroarch_sync auth --app-key <your app key>
-python -m delta_retroarch_sync sync --push
+python -m delta_retroarch_synchronizer auth --app-key <your app key>
+python -m delta_retroarch_synchronizer sync --push
 ```
 
 The scope is `files.metadata.read` and nothing more. The tool never uploads —

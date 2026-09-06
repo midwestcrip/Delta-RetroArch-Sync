@@ -51,3 +51,4 @@ desktop.ini
 
 # Dropbox OAuth refresh token -- machine-specific credential, never commit.
 dropbox-token.json
+.dropbox-auth-pending.json

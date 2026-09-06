@@ -19,7 +19,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from delta_retroarch_sync import delta_writer  # noqa: E402
+from delta_retroarch_synchronizer import delta_writer  # noqa: E402
 
 GAME_SHA1 = "dd5945db9b930750cb39d00c84da8571feebf417"
 SAVE_SHA1 = "22afa41d1347ca65f58c279747ea9a9bdbd7f901"
@@ -157,7 +157,7 @@ class PushTests(unittest.TestCase):
             self.push()
 
     def test_apple_epoch_round_trips(self) -> None:
-        from delta_retroarch_sync import manifest
+        from delta_retroarch_synchronizer import manifest
 
         unix = 1757000000.0
         apple = delta_writer.unix_to_apple(unix)

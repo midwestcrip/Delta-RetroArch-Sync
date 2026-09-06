@@ -14,7 +14,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from delta_retroarch_sync import manifest, sync  # noqa: E402
+from delta_retroarch_synchronizer import manifest, sync  # noqa: E402
 
 DELTA_BYTES = b"delta save" + b"\x00" * 1000
 RETRO_BYTES = b"retro save" + b"\x00" * 1000

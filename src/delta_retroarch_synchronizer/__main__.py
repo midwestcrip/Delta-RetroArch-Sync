@@ -63,47 +63,71 @@ def load_dropbox() -> "dropbox_api.DropboxClient | None":
     return dropbox_api.DropboxClient(credentials) if credentials else None
 
 
-def run_auth_command(app_key: str | None) -> int:
+def pending_path() -> Path:
+    return Path(__file__).resolve().parents[2] / ".dropbox-auth-pending.json"
+
+
+def run_auth_command(app_key: str | None, code: str | None) -> int:
     """One-time Dropbox authorisation, needed only for pushing.
 
-    Uses PKCE with no client secret, which is the right flow for a desktop app:
-    a secret shipped in source is not a secret. Only files.metadata.read is
-    needed -- this never uploads and never touches file properties.
+    Split into two invocations rather than one interactive prompt, because the
+    browser step happens outside this process anyway and a blocking `input()`
+    makes the command unusable from any non-interactive context.
+
+    Uses PKCE with no client secret, which is the correct flow for a desktop
+    app: a secret shipped in source is not a secret. The app's *secret* is never
+    needed and should never be pasted anywhere.
     """
+    import json
+
+    if code:
+        try:
+            pending = json.loads(pending_path().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            print("No pending authorisation. Run `auth --app-key <key>` first.")
+            return 1
+
+        try:
+            credentials = dropbox_api.exchange_code(
+                pending["app_key"], pending["verifier"], code
+            )
+        except (dropbox_api.DropboxError, KeyError) as error:
+            print(f"Authorisation failed: {error}")
+            return 1
+
+        credentials.save(token_path())
+        pending_path().unlink(missing_ok=True)
+        print(f"Authorised. Token saved to {token_path().name} (gitignored).")
+        print("Pushing is now available: sync --push")
+        return 0
+
     if not app_key:
-        print(
-            "A Dropbox app key is required.\n\n"
-            "  1. Go to https://www.dropbox.com/developers/apps\n"
-            "  2. Create app -> Scoped access -> Full Dropbox -> name it anything\n"
-            "  3. On the Permissions tab, tick files.metadata.read, then Submit\n"
-            "  4. Copy the App key from the Settings tab\n\n"
-            "Then run:  delta-retroarch-sync auth --app-key <key>"
-        )
+        for line in (
+            "A Dropbox app key is required.",
+            "",
+            "  1. https://www.dropbox.com/developers/apps -> Create app",
+            "  2. Scoped access -> Full Dropbox",
+            "  3. Permissions tab -> tick files.metadata.read -> Submit",
+            "  4. Copy the App key from Settings (NOT the app secret --",
+            "     PKCE does not use it and it should never be shared)",
+            "",
+            "Then run:  auth --app-key <key>",
+        ):
+            print(line)
         return 1
 
     verifier = dropbox_api.make_verifier()
-    url = dropbox_api.build_authorize_url(app_key, verifier)
-    print("Open this URL, approve access, and paste the code below:")
-    print()
-    print(f"  {url}")
-    print()
-    try:
-        code = input("Authorisation code: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print("cancelled")
-        return 1
-    if not code:
-        print("No code entered.")
-        return 1
+    # The verifier must survive until the code comes back, and it is a
+    # short-lived secret, so it lives in a gitignored file next to the token.
+    pending_path().write_text(
+        json.dumps({"app_key": app_key, "verifier": verifier}), encoding="utf-8"
+    )
 
-    try:
-        credentials = dropbox_api.exchange_code(app_key, verifier, code)
-    except dropbox_api.DropboxError as error:
-        print(f"Authorisation failed: {error}")
-        return 1
-
-    credentials.save(token_path())
-    print(f"Saved to {token_path().name} (gitignored). Pushing is now available.")
+    print("Open this URL and approve access:")
+    print()
+    print(f"  {dropbox_api.build_authorize_url(app_key, verifier)}")
+    print()
+    print("Then run:  auth --code <the code Dropbox shows you>")
     return 0
 
 
@@ -196,7 +220,7 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="delta-retroarch-sync",
+        prog="delta-retroarch-synchronizer",
         description="Sync saves, ROMs and cheats between Delta and RetroArch.",
     )
     subparsers = parser.add_subparsers(dest="command")
@@ -215,7 +239,8 @@ def main(argv: list[str] | None = None) -> int:
     auth_parser = subparsers.add_parser(
         "auth", help="Authorise Dropbox once, so pushing can read file revisions."
     )
-    auth_parser.add_argument("--app-key", help="Dropbox app key.")
+    auth_parser.add_argument("--app-key", help="Dropbox app key (not the secret).")
+    auth_parser.add_argument("--code", help="Authorisation code from the browser step.")
     sync_parser.add_argument(
         "--push",
         action="store_true",
@@ -234,7 +259,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sync":
         return run_sync_command(dry_run=args.dry_run, allow_push=args.push)
     if args.command == "auth":
-        return run_auth_command(args.app_key)
+        return run_auth_command(args.app_key, args.code)
 
     parser.print_help()
     return 0

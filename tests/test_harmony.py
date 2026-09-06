@@ -22,7 +22,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from delta_retroarch_sync import harmony, inspect, naming, systems  # noqa: E402
+from delta_retroarch_synchronizer import harmony, inspect, naming, systems  # noqa: E402
 
 FIRERED_SHA1 = "0" * 40
 UNSUPPORTED_SHA1 = "1" * 40
@@ -178,7 +178,7 @@ class HarmonyFolderTests(unittest.TestCase):
 
 class RetroArchConfigTests(unittest.TestCase):
     def test_parses_quoted_values_and_resolves_default_dir(self) -> None:
-        from delta_retroarch_sync import discovery
+        from delta_retroarch_synchronizer import discovery
 
         with TemporaryDirectory() as tmp:
             cfg = Path(tmp) / "retroarch.cfg"
