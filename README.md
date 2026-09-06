@@ -15,9 +15,10 @@ hardcore mode rules them out anyway), controller skins, and app configs. See
 
 ## Status
 
-Early. Only the **read-only inspector** exists — it writes nothing to either
-side. Sync is deliberately not implemented until the inspector has confirmed the
-real folder layout on a real machine.
+Delta -> RetroArch works and is verified against real data: saves and ROMs land
+correctly and byte-identically. The reverse direction is blocked by something
+Delta's design does not allow from the local mirror — see
+[docs/research.md](docs/research.md).
 
 | Phase | State |
 | --- | --- |
