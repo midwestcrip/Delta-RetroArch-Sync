@@ -22,10 +22,11 @@ from __future__ import annotations
 import queue
 import subprocess
 import threading
+import webbrowser
 import tkinter as tk
 from dataclasses import replace
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from . import config as config_module
 from . import discovery, dropbox_api, health
@@ -66,6 +67,7 @@ class LauncherWindow:
         self.push_var = tk.BooleanVar(value=self.config.push_enabled)
         self.roms_var = tk.BooleanVar(value=self.config.sync_roms)
         self.cheats_var = tk.BooleanVar(value=self.config.sync_cheats)
+        self.open_sync_var = tk.BooleanVar(value=self.config.sync_on_open)
 
         self._build()
         self._report_startup()
@@ -93,20 +95,29 @@ class LauncherWindow:
         options.grid(row=2, column=0, sticky="ew", pady=(0, 6))
 
         ttk.Checkbutton(
-            options, text="Copy ROMs from Delta", variable=self.roms_var
+            options, text="Sync as soon as this window opens", variable=self.open_sync_var
         ).grid(row=0, column=0, sticky="w")
         ttk.Checkbutton(
-            options, text="Export cheats as .cht files", variable=self.cheats_var
+            options, text="Copy ROMs from Delta", variable=self.roms_var
         ).grid(row=1, column=0, sticky="w")
+        ttk.Checkbutton(
+            options, text="Export cheats as .cht files", variable=self.cheats_var
+        ).grid(row=2, column=0, sticky="w")
         ttk.Checkbutton(
             options,
             text="Send desktop saves back to Delta (experimental)",
             variable=self.push_var,
             command=self._push_toggled,
-        ).grid(row=2, column=0, sticky="w")
+        ).grid(row=3, column=0, sticky="w")
 
-        self.dropbox_label = ttk.Label(options, text="", foreground="#666666")
-        self.dropbox_label.grid(row=3, column=0, sticky="w", pady=(4, 0))
+        dropbox_row = ttk.Frame(options)
+        dropbox_row.grid(row=4, column=0, sticky="w", pady=(4, 0))
+        self.dropbox_label = ttk.Label(dropbox_row, text="", foreground="#666666")
+        self.dropbox_label.grid(row=0, column=0, sticky="w")
+        self.auth_button = ttk.Button(
+            dropbox_row, text="Authorise Dropbox…", command=self.on_authorise
+        )
+        self.auth_button.grid(row=0, column=1, padx=(10, 0))
 
         actions = ttk.Frame(outer)
         actions.grid(row=3, column=0, sticky="ew", pady=(0, 6))
@@ -200,6 +211,10 @@ class LauncherWindow:
         self._refresh_dropbox_label()
         if delta and exe:
             self.write("Ready. Press Sync and Play.")
+            if self.config.sync_on_open:
+                # Pull straight away: by the time you have read this line the
+                # desktop already has whatever you did on your phone.
+                self.root.after(200, self.on_sync)
         else:
             self.write("Set the missing paths above, then Save settings.")
 
@@ -249,9 +264,57 @@ class LauncherWindow:
             retroarch_exe=path_or_none(self.exe_var.get()),
             retroarch_rom_dir=path_or_none(self.rom_var.get()),
             push_enabled=self.push_var.get(),
+            sync_on_open=self.open_sync_var.get(),
             sync_roms=self.roms_var.get(),
             sync_cheats=self.cheats_var.get(),
         )
+
+    def on_authorise(self) -> None:
+        """Run the Dropbox PKCE flow from inside the window.
+
+        Two steps with a browser in between, so it cannot be a single blocking
+        call: open the consent page, then take the code the user pastes back.
+        """
+        app_key = self.config.dropbox_app_key or dropbox_api.DEFAULT_APP_KEY
+        if not app_key:
+            app_key = simpledialog.askstring(
+                WINDOW_TITLE,
+                "No Dropbox app key is configured.\n\n"
+                "Create an app at dropbox.com/developers/apps (Scoped access, "
+                "Full Dropbox, permission files.metadata.read) and paste its "
+                "App key here.",
+                parent=self.root,
+            )
+            if not app_key:
+                return
+            app_key = app_key.strip()
+            self.config = replace(self.config, dropbox_app_key=app_key)
+            config_module.save(self.config)
+
+        verifier = dropbox_api.make_verifier()
+        url = dropbox_api.build_authorize_url(app_key, verifier)
+        webbrowser.open(url)
+        self.write("Opened Dropbox in your browser. Approve access, then paste the code.")
+
+        code = simpledialog.askstring(
+            WINDOW_TITLE,
+            "Paste the code Dropbox showed you:",
+            parent=self.root,
+        )
+        if not code:
+            self.write("Authorisation cancelled.")
+            return
+
+        try:
+            credentials = dropbox_api.exchange_code(app_key, verifier, code.strip())
+        except dropbox_api.DropboxError as error:
+            self.write(f"Authorisation failed: {error}")
+            messagebox.showerror(WINDOW_TITLE, str(error), parent=self.root)
+            return
+
+        credentials.save(_state_dir() / dropbox_api.TOKEN_FILENAME)
+        self.write("Dropbox authorised. Sending saves back to Delta is now available.")
+        self._refresh_dropbox_label()
 
     def on_save(self) -> None:
         self.config = self._current_config()

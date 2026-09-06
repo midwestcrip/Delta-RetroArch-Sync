@@ -36,6 +36,12 @@ class Config:
     sync_roms: bool = True
     #: Write Delta's cheats out as RetroArch .cht files.
     sync_cheats: bool = True
+    #: Pull from Delta as soon as the launcher opens, so the desktop is
+    #: current before you press Play.
+    sync_on_open: bool = True
+    #: Overrides the bundled Dropbox app key. Only needed by someone who
+    #: would rather use their own app registration.
+    dropbox_app_key: str = ""
 
 
 def _path(raw: object) -> Path | None:
@@ -75,6 +81,8 @@ def load(path: Path | None = None) -> Config:
         push_enabled=flag("push_enabled", False),
         sync_roms=flag("sync_roms", True),
         sync_cheats=flag("sync_cheats", True),
+        sync_on_open=flag("sync_on_open", True),
+        dropbox_app_key=str(options.get("dropbox_app_key", "") or ""),
     )
 
 
@@ -107,6 +115,8 @@ def save(config: Config, path: Path | None = None) -> Path:
         f"push_enabled = {str(config.push_enabled).lower()}",
         f"sync_roms = {str(config.sync_roms).lower()}",
         f"sync_cheats = {str(config.sync_cheats).lower()}",
+        f"sync_on_open = {str(config.sync_on_open).lower()}",
+        f'dropbox_app_key = "{config.dropbox_app_key}"',
         "",
     ]
     path.write_text("\n".join(body) + "\n", encoding="utf-8")

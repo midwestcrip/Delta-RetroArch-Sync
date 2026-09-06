@@ -41,6 +41,12 @@ CONTENT_HASH_BLOCK = 4 * 1024 * 1024
 
 TOKEN_FILENAME = "dropbox-token.json"
 
+#: App key shipped with the tool, so a download works without every user
+#: registering their own Dropbox app. An app key is a public identifier, not a
+#: secret -- PKCE exists precisely so a desktop app can authenticate without
+#: holding one. Blank means the user must supply their own in Settings.
+DEFAULT_APP_KEY = ""
+
 
 class DropboxError(RuntimeError):
     pass
