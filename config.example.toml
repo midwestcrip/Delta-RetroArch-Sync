@@ -16,3 +16,13 @@
 
 # Where ROMs pulled from Delta should be written for RetroArch to scan.
 # retroarch_rom_dir = "C:/Users/you/Games/ROMs"
+
+[options]
+# push_enabled = false     # send desktop saves back to Delta
+# sync_roms = true         # copy ROMs out of Delta
+# sync_cheats = true       # export Delta's cheats as .cht files
+# sync_on_open = true      # pull as soon as the launcher window opens
+
+# Only needed to use your own Dropbox app registration instead of the bundled
+# one. See docs/dropbox-app.md. The App *key*, never the App secret.
+# dropbox_app_key = ""

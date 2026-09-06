@@ -42,10 +42,20 @@ CONTENT_HASH_BLOCK = 4 * 1024 * 1024
 TOKEN_FILENAME = "dropbox-token.json"
 
 #: App key shipped with the tool, so a download works without every user
-#: registering their own Dropbox app. An app key is a public identifier, not a
-#: secret -- PKCE exists precisely so a desktop app can authenticate without
-#: holding one. Blank means the user must supply their own in Settings.
-DEFAULT_APP_KEY = ""
+#: registering their own Dropbox app.
+#:
+#: This is deliberately public. An app key is an identifier, not a credential --
+#: PKCE exists so a desktop app can authenticate without holding a secret, which
+#: is why this flow never uses the app *secret* and never should. Anyone reading
+#: this cannot use it to reach anybody's Dropbox; authorisation still happens in
+#: the user's own browser, against their own account, for `files.metadata.read`
+#: and nothing else.
+#:
+#: The app is in Dropbox's development status, which links up to 50 users before
+#: production approval is required. `dropbox_app_key` in config.toml overrides
+#: this for anyone who hits that or prefers their own registration -- see
+#: docs/dropbox-app.md.
+DEFAULT_APP_KEY = "j817l20q0w1nfkd"
 
 
 class DropboxError(RuntimeError):

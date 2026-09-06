@@ -118,6 +118,9 @@ class LauncherWindow:
             dropbox_row, text="Authorise Dropbox…", command=self.on_authorise
         )
         self.auth_button.grid(row=0, column=1, padx=(10, 0))
+        ttk.Button(
+            dropbox_row, text="Use own app key…", command=self.on_change_app_key
+        ).grid(row=0, column=2, padx=(6, 0))
 
         actions = ttk.Frame(outer)
         actions.grid(row=3, column=0, sticky="ew", pady=(0, 6))
@@ -220,12 +223,11 @@ class LauncherWindow:
 
     def _refresh_dropbox_label(self) -> None:
         token = _state_dir() / dropbox_api.TOKEN_FILENAME
+        own = " (your app)" if self.config.dropbox_app_key else ""
         if token.is_file():
-            self.dropbox_label.configure(text="Dropbox authorised — sending back is available.")
+            self.dropbox_label.configure(text=f"Dropbox authorised{own}")
         else:
-            self.dropbox_label.configure(
-                text="Dropbox not authorised — run `auth` first to send saves back."
-            )
+            self.dropbox_label.configure(text=f"Dropbox not authorised{own}")
 
     def _push_toggled(self) -> None:
         if not self.push_var.get():
@@ -235,8 +237,7 @@ class LauncherWindow:
             messagebox.showinfo(
                 WINDOW_TITLE,
                 "Sending saves back to Delta needs Dropbox authorisation first.\n\n"
-                "Run this once in a terminal:\n\n"
-                "    python -m delta_retroarch_synchronizer auth --app-key <key>",
+                "Press “Authorise Dropbox…” just below, then turn this on.",
                 parent=self.root,
             )
             self.push_var.set(False)
@@ -314,6 +315,30 @@ class LauncherWindow:
 
         credentials.save(_state_dir() / dropbox_api.TOKEN_FILENAME)
         self.write("Dropbox authorised. Sending saves back to Delta is now available.")
+        self._refresh_dropbox_label()
+
+    def on_change_app_key(self) -> None:
+        """Swap the bundled Dropbox app registration for the user's own.
+
+        For anyone who would rather not authorise against someone else's app, or
+        who hits the 50-user limit the bundled one carries while it is in
+        development status. Clearing the field restores the bundled key.
+        """
+        entered = simpledialog.askstring(
+            WINDOW_TITLE,
+            "Dropbox App key (leave blank to use the bundled one).\n\n"
+            "docs/dropbox-app.md explains how to register your own.\n"
+            "This is the App key, never the App secret.",
+            initialvalue=self.config.dropbox_app_key,
+            parent=self.root,
+        )
+        if entered is None:
+            return
+
+        self.config = replace(self.config, dropbox_app_key=entered.strip())
+        config_module.save(self.config)
+        which = "your own" if entered.strip() else "the bundled"
+        self.write(f"Using {which} Dropbox app key. Authorise again to apply it.")
         self._refresh_dropbox_label()
 
     def on_save(self) -> None:

@@ -145,7 +145,6 @@ Dropbox on upload — it is not derivable locally and not exposed in the mirror.
 So pushing requires read-only Dropbox API access, authorised once:
 
 ```
-python -m delta_retroarch_synchronizer auth --app-key <your app key>
 python -m delta_retroarch_synchronizer sync --push
 ```
 
@@ -153,6 +152,11 @@ The scope is `files.metadata.read` and nothing more. The tool never uploads —
 the desktop client already does that — and never touches file property groups,
 which Dropbox scopes to the app that created them and are therefore Delta's
 alone.
+
+Press **Authorise Dropbox…** in the launcher; there is no terminal step. An app
+registration is bundled so this works out of the box, and **Use own app key…**
+swaps in your own. See [docs/dropbox-app.md](docs/dropbox-app.md) for what the
+permission covers, how to register your own app, and how to revoke access.
 
 ## Auto-push
 
