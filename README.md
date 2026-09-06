@@ -20,10 +20,33 @@ progress made on the phone appears in RetroArch, and progress made in RetroArch
 appears in Delta. ROM export and cheat export work. The launcher wrapper is
 still to do.
 
-Cheats go one way only, and that is a hard limit rather than a missing feature:
-creating a cheat in Delta would mean creating a new record in its Dropbox folder,
-and a file we create has no Dropbox property groups — which Harmony requires to
-see a record at all, and only Delta's own app can write.
+### Cheats only travel one way
+
+**Make cheats on your phone.** They appear in RetroArch automatically. A cheat
+created in RetroArch will never reach Delta.
+
+| | |
+| --- | --- |
+| Cheat made in Delta → appears in RetroArch | Works |
+| Editing a cheat that already exists, from the desktop | Possible, not built |
+| Brand-new cheat made in RetroArch → Delta | **Impossible** |
+
+That last row is a hard limit, not a missing feature. Every item in Delta's
+Dropbox folder carries metadata ("property groups") that Harmony requires in
+order to see it at all, and Dropbox scopes that metadata to the app that created
+it — *"Templates and their associated properties can't be accessed by any app
+other than the app that created them."* Only Delta can write it.
+
+So a file this tool creates is invisible to Delta. Not rejected, not an error:
+Harmony's listing drops it silently, because `RemoteRecord(file:)` returns `nil`
+without the metadata and the result is `compactMap`ped away.
+
+Editing an *existing* cheat is a different matter — its record already carries
+the metadata, so rewriting its contents works the same way a save push does, and
+in fact more simply, since cheats have no attached files and therefore no Dropbox
+revision to resolve. Saves are bidirectional for exactly this reason: Delta
+created the record the first time you saved, and we only ever change what is
+inside it.
 
 | Phase | State |
 | --- | --- |

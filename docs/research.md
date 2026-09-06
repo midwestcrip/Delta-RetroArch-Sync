@@ -148,6 +148,25 @@ Converting that record produced
 `cheat0_code = "00000000+18002C02+0000E01A+00000000"`, byte-identical to
 libretro-database's own entry for the same cheat.
 
+### Why cheats cannot sync RetroArch -> Delta
+
+Three cases, and only the third is impossible:
+
+| Operation | Possible? | Why |
+| --- | --- | --- |
+| Read Delta's cheats | Yes | Plain JSON in the local mirror |
+| Rewrite an existing cheat | Yes (not built) | Its record already has property groups; cheats have no files, so no revision to fix |
+| Create a new cheat | **No** | A new file has no property groups, and only Delta's app can write them |
+
+`RemoteRecord+Dropbox.swift` returns `nil` without property-group metadata, and
+`DropboxService+Records.swift` `compactMap`s the listing — so a file we create is
+not rejected, it is silently never seen.
+
+A workaround exists but is not worth much: cheats created in Delta are editable
+from the desktop, so pre-creating placeholder cheats on the phone gives the
+desktop that many writable slots. It costs manual typing per placeholder and
+clutters Delta's cheat list, so it scales to perhaps a dozen, not hundreds.
+
 ## Save format compatibility
 
 `gameSaveFileExtension` read from each core repo; `GameType` raw values read
