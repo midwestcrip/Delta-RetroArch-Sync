@@ -1,0 +1,4 @@
+# Git runs hooks through sh, which fails on CRLF ("\r: command not found").
+# autocrlf is on for this user, so the hook must be pinned to LF explicitly or
+# it breaks on the next checkout.
+.githooks/** text eol=lf

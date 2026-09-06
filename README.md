@@ -84,6 +84,18 @@ Data loss is the failure mode this is designed against.
 - **Unverified conversions never run.** N64 and DS are reported by the inspector
   and refused by the sync until their formats are confirmed against real files.
 
+## Auto-push
+
+Commits push to `origin` automatically. The hook lives in `.githooks/` so it is
+version-controlled; enabling it is one command per clone:
+
+```
+git config core.hooksPath .githooks
+```
+
+It never blocks a commit — if the push fails (offline, no remote, rejected) it
+prints a note and the commit stays safely in local history.
+
 ## Tests
 
 ```

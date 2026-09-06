@@ -1,0 +1,25 @@
+#!/bin/sh
+# Auto-push every commit to origin.
+#
+# Enabled by `git config core.hooksPath .githooks` (see README). Lives in the
+# repo rather than .git/hooks so it is version-controlled and survives a fresh
+# clone -- the one-time config command is all a new clone needs.
+#
+# This never blocks a commit: if the push fails (offline, no upstream, rejected)
+# it says so and exits 0, leaving the commit safely in local history.
+
+branch=$(git rev-parse --abbrev-ref HEAD)
+
+# Detached HEAD has no branch to push.
+[ "$branch" = "HEAD" ] && exit 0
+
+# No remote configured yet (e.g. right after git init) is not an error.
+git remote get-url origin >/dev/null 2>&1 || exit 0
+
+if git push -q origin "$branch" 2>/dev/null; then
+  echo "auto-push: $branch -> origin"
+else
+  echo "auto-push: failed for $branch -- commit is safe locally, push manually"
+fi
+
+exit 0
