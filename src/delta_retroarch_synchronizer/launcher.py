@@ -40,6 +40,54 @@ def _state_dir() -> Path:
     return paths.state_dir()
 
 
+def resolve_paths(
+    config: config_module.Config,
+) -> tuple[config_module.Config, list[str]]:
+    """Fill in anything the user has not configured, and say what is still missing.
+
+    Discovery is good enough that a first run usually needs no setup at all; the
+    fields in the window exist for the installs it cannot guess.
+
+    When it cannot guess, the Discovery it returns carries a ``detail`` that
+    explains why in terms the person at the window can act on -- which Dropbox
+    root was actually looked in, or that Delta has not finished a first sync.
+    Those are returned alongside the config and shown at startup. Discarding
+    them is what made a first run report only that a path was missing, which
+    both naive-user tests landed on as the worst thing about the tool: the CLI
+    has always printed these, and the window is what people actually run.
+
+    Kept out of the window class so it can be tested without a Tk display.
+    """
+    notes: list[str] = []
+
+    if config.delta_folder is None:
+        found = discovery.find_delta_folder()
+        if found.path is not None:
+            config = replace(config, delta_folder=found.path)
+        elif found.detail:
+            notes.append(found.detail)
+
+    if config.retroarch_config is None:
+        found = discovery.find_retroarch_config()
+        if found.path is not None:
+            config = replace(config, retroarch_config=found.path)
+        elif found.detail:
+            notes.append(found.detail)
+
+    if config.retroarch_exe is None:
+        exe = discovery.find_retroarch_exe(config.retroarch_config)
+        if exe is not None:
+            config = replace(config, retroarch_exe=exe)
+
+    if config.retroarch_rom_dir is None and config.retroarch_config:
+        config = replace(
+            config,
+            retroarch_rom_dir=config.retroarch_config.parent / "roms",
+        )
+
+    return config, notes
+
+
 class LauncherWindow:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -47,6 +95,7 @@ class LauncherWindow:
         self.busy = False
 
         self.config = config_module.load()
+        self.discovery_notes: list[str] = []
         self._fill_in_discovered_paths()
 
         root.title(WINDOW_TITLE)
@@ -172,31 +221,7 @@ class LauncherWindow:
     # ----------------------------------------------------------- discovery
 
     def _fill_in_discovered_paths(self) -> None:
-        """Prefill anything the user has not configured.
-
-        Discovery is good enough that a first run usually needs no setup at
-        all; the fields exist for the installs it cannot guess.
-        """
-        if self.config.delta_folder is None:
-            found = discovery.find_delta_folder()
-            if found.path is not None:
-                self.config = replace(self.config, delta_folder=found.path)
-
-        if self.config.retroarch_config is None:
-            found = discovery.find_retroarch_config()
-            if found.path is not None:
-                self.config = replace(self.config, retroarch_config=found.path)
-
-        if self.config.retroarch_exe is None:
-            exe = discovery.find_retroarch_exe(self.config.retroarch_config)
-            if exe is not None:
-                self.config = replace(self.config, retroarch_exe=exe)
-
-        if self.config.retroarch_rom_dir is None and self.config.retroarch_config:
-            self.config = replace(
-                self.config,
-                retroarch_rom_dir=self.config.retroarch_config.parent / "roms",
-            )
+        self.config, self.discovery_notes = resolve_paths(self.config)
 
     # ----------------------------------------------------------------- log
 
@@ -220,7 +245,15 @@ class LauncherWindow:
                 # desktop already has whatever you did on your phone.
                 self.root.after(200, self.on_sync)
         else:
-            self.write("Set the missing paths above, then Save settings.")
+            # What to do comes before how to override it. Someone who has never
+            # heard of Delta's Dropbox folder cannot act on "a path is missing",
+            # and that was the single most repeated complaint from both
+            # naive-user tests.
+            for note in self.discovery_notes:
+                self.write("")
+                self.write(note)
+            self.write("")
+            self.write("Or set the paths above by hand, then press Save settings.")
 
     def _refresh_dropbox_label(self) -> None:
         token = _state_dir() / dropbox_api.TOKEN_FILENAME
