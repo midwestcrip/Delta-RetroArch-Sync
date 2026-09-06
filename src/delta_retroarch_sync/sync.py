@@ -3,8 +3,9 @@
 Compares each game's save on both sides against the manifest and acts on the
 difference. Data loss is the failure mode being designed against, so:
 
-- Delta's Dropbox folder is never written to. See ``PUSH_BLOCKED`` below.
-- Anything about to be overwritten is backed up first.
+- Delta's Dropbox folder is only written to when pushing is explicitly enabled,
+  and never as a side effect of a pull. See ``PUSH_IS_EXPERIMENTAL`` below.
+- Anything about to be overwritten is backed up first, on both sides.
 - A save is written to a temporary file and moved into place, so a crash
   mid-write cannot leave a half-written save where a good one used to be.
 - A real conflict is reported, never resolved by guessing.
@@ -18,24 +19,23 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
+from . import delta_writer
 from . import inspect as inspect_module
 from . import manifest as manifest_module
 from . import naming
 
-#: Why the RetroArch -> Delta direction is not implemented.
+#: The RetroArch -> Delta direction writes into Delta's Dropbox folder, which
+#: Delta's own docs warn against. It is off by default and enabled per run.
 #:
-#: Writing a save back to Delta means overwriting GameSave-<sha1>-gameSave in
-#: the Dropbox folder AND updating the record JSON's `sha1` to match, because
-#: Delta verifies the file against that hash. The record also carries a
-#: top-level `sha1Hash` that Harmony computes over the record itself by a
-#: scheme we have not confirmed. Getting that wrong risks Delta rejecting the
-#: record, or worse, accepting a save it then treats as corrupt.
-#:
-#: That is a reverse-engineering exercise whose failure mode is the user's real
-#: save file, so it stays unimplemented until it can be tested against a
-#: throwaway game rather than guessed at.
-PUSH_BLOCKED = (
-    "writing to Delta's Dropbox folder is not yet implemented -- see PUSH_BLOCKED"
+#: The record format is fully modelled (see delta_writer), and every push
+#: verifies the existing record's hash before touching anything. The remaining
+#: unknown is whether pointing `versionIdentifier` at a nonexistent revision
+#: reliably drives Harmony's "fall back to latest version" path -- that depends
+#: on Dropbox's error mapping, which can only be confirmed by watching a real
+#: round trip. Until it has been, pushing stays opt-in.
+PUSH_IS_EXPERIMENTAL = (
+    "push writes into Delta's Dropbox folder; verify the change reaches your "
+    "phone before relying on it"
 )
 
 BACKUP_DIRNAME = "backups"
@@ -215,6 +215,7 @@ def run_sync(
     sorted_by_core: bool,
     *,
     dry_run: bool = False,
+    allow_push: bool = False,
 ) -> SyncReport:
     """Reconcile every supported game. Returns what was done or would be done."""
     state = manifest_module.Manifest.load(paths.manifest_path)
@@ -236,8 +237,32 @@ def run_sync(
         action, detail = decide(state.get(entry.identifier), entry.save_path, target)
 
         if action is Action.PUSH:
+            if not allow_push:
+                report.outcomes.append(
+                    Outcome(
+                        entry.name,
+                        Action.PUSH,
+                        f"{detail}; not pushed (pass --push to enable)",
+                    )
+                )
+                continue
+            if dry_run:
+                report.outcomes.append(
+                    Outcome(entry.name, Action.PUSH, f"{detail} (dry run)")
+                )
+                continue
+            try:
+                note = delta_writer.push_save(
+                    paths.delta_folder, entry.identifier, target, paths.backup_dir
+                )
+            except (OSError, ValueError) as error:
+                report.outcomes.append(
+                    Outcome(entry.name, Action.PUSH, f"{detail}; FAILED: {error}")
+                )
+                continue
+            state.record(entry.identifier, entry.save_path, target)
             report.outcomes.append(
-                Outcome(entry.name, Action.PUSH, f"{detail}; {PUSH_BLOCKED}")
+                Outcome(entry.name, Action.PUSH, f"{detail}; {note}", applied=True)
             )
             continue
 

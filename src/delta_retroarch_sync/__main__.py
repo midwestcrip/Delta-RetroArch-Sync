@@ -54,7 +54,7 @@ def _core_for(system_cores: tuple[str, ...], installed: dict[str, str]) -> str |
     return None
 
 
-def run_sync_command(dry_run: bool) -> int:
+def run_sync_command(dry_run: bool, allow_push: bool) -> int:
     resolved = _resolve()
     if resolved is None:
         return 1
@@ -105,7 +105,12 @@ def run_sync_command(dry_run: bool) -> int:
             state_dir=state_dir,
         )
         single = sync_module.run_sync(
-            paths, [entry], core, sorted_by_core, dry_run=dry_run
+            paths,
+            [entry],
+            core,
+            sorted_by_core,
+            dry_run=dry_run,
+            allow_push=allow_push,
         )
         report.outcomes.extend(single.outcomes)
 
@@ -145,6 +150,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Show what would happen without writing anything.",
     )
+    sync_parser.add_argument(
+        "--push",
+        action="store_true",
+        help=(
+            "Also write RetroArch's newer saves back into Delta's Dropbox "
+            "folder. Off by default: this is the only direction that writes to "
+            "Delta, and it should be verified on a throwaway save first."
+        ),
+    )
 
     args = parser.parse_args(argv)
     _force_utf8_output()
@@ -152,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "inspect":
         return inspect_module.run()
     if args.command == "sync":
-        return run_sync_command(dry_run=args.dry_run)
+        return run_sync_command(dry_run=args.dry_run, allow_push=args.push)
 
     parser.print_help()
     return 0
