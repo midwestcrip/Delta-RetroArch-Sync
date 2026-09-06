@@ -16,15 +16,15 @@ hardcore mode rules them out anyway), controller skins, and app configs. See
 ## Status
 
 Delta -> RetroArch works and is verified against real data: saves and ROMs land
-correctly and byte-identically. The reverse direction is blocked by something
-Delta's design does not allow from the local mirror — see
-[docs/research.md](docs/research.md).
+correctly and byte-identically. The reverse direction is built but not yet
+confirmed on a real device — the first attempt failed for a known reason and the
+fix needs one round trip to verify. See [docs/research.md](docs/research.md).
 
 | Phase | State |
 | --- | --- |
 | 1. Read-only inspector | Working |
 | 2. Save sync, Delta -> RetroArch | Working, verified on real data |
-| 2b. Save sync, RetroArch -> Delta | Blocked: needs the Dropbox API, see docs/research.md |
+| 2b. Save sync, RetroArch -> Delta | Built, needs `auth` + a real round trip to confirm |
 | 3. ROM sync | Working |
 | 4. Cheat sync (`.cht` generation) | Not started |
 | 5. Launcher wrapper | Not started |
@@ -85,6 +85,25 @@ Data loss is the failure mode this is designed against.
 - **Rolling backups** are kept before any save is overwritten.
 - **Unverified conversions never run.** N64 and DS are reported by the inspector
   and refused by the sync until their formats are confirmed against real files.
+
+## Pushing back to Delta
+
+The Delta -> RetroArch direction needs nothing but the local Dropbox folder.
+The reverse direction needs one extra thing: the save's Dropbox *revision*.
+Delta downloads the exact revision a record names, and that value is assigned by
+Dropbox on upload — it is not derivable locally and not exposed in the mirror.
+
+So pushing requires read-only Dropbox API access, authorised once:
+
+```
+python -m delta_retroarch_sync auth --app-key <your app key>
+python -m delta_retroarch_sync sync --push
+```
+
+The scope is `files.metadata.read` and nothing more. The tool never uploads —
+the desktop client already does that — and never touches file property groups,
+which Dropbox scopes to the app that created them and are therefore Delta's
+alone.
 
 ## Auto-push
 

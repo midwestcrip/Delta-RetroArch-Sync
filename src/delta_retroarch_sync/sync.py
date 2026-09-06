@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
-from . import delta_writer
+from . import delta_writer, dropbox_api
 from . import inspect as inspect_module
 from . import manifest as manifest_module
 from . import naming
@@ -27,12 +27,10 @@ from . import naming
 #: The RetroArch -> Delta direction writes into Delta's Dropbox folder, which
 #: Delta's own docs warn against. It is off by default and enabled per run.
 #:
-#: The record format is fully modelled (see delta_writer), and every push
-#: verifies the existing record's hash before touching anything. The remaining
-#: unknown is whether pointing `versionIdentifier` at a nonexistent revision
-#: reliably drives Harmony's "fall back to latest version" path -- that depends
-#: on Dropbox's error mapping, which can only be confirmed by watching a real
-#: round trip. Until it has been, pushing stays opt-in.
+#: The record format is fully modelled (see delta_writer) and every push verifies
+#: the existing record's hash before touching anything. The one part that cannot
+#: be derived locally is the save's Dropbox revision, which is read back from the
+#: API after the desktop client uploads -- see push_with_revision.
 PUSH_IS_EXPERIMENTAL = (
     "push writes into Delta's Dropbox folder; verify the change reaches your "
     "phone before relying on it"
@@ -246,6 +244,46 @@ def sync_rom(
     )
 
 
+def push_with_revision(
+    paths: "Paths",
+    entry: inspect_module.GameEntry,
+    source: Path,
+    dropbox: "dropbox_api.DropboxClient",
+) -> str:
+    """Push a save, then repair the record to name its real Dropbox revision.
+
+    Two writes are needed, and the order matters. The save has to reach Dropbox
+    before its revision exists, so:
+
+      1. Write the save (record still names the old revision, so Delta ignores
+         it -- an inconsistent intermediate state that is safe rather than
+         misleading).
+      2. Wait for the desktop client to upload it and read the new revision back,
+         confirming by content hash that it is *our* upload.
+      3. Rewrite the record with that revision and the new hashes.
+
+    If step 2 fails the record still points at the old save, so Delta simply
+    carries on with what it had. Nothing is left half-applied.
+    """
+    save_name = f"GameSave-{entry.identifier}-gameSave"
+    delta_writer.push_save(
+        paths.delta_folder, entry.identifier, source, paths.backup_dir, revision=None
+    )
+
+    expected = dropbox_api.content_hash(paths.delta_folder / save_name)
+    remote_path = f"/{paths.delta_folder.name}/{save_name}"
+    revision = dropbox.wait_for_revision(remote_path, expected)
+
+    note = delta_writer.push_save(
+        paths.delta_folder,
+        entry.identifier,
+        source,
+        paths.backup_dir,
+        revision=revision,
+    )
+    return f"{note}, revision {revision}"
+
+
 def run_sync(
     paths: Paths,
     entries: list[inspect_module.GameEntry],
@@ -255,6 +293,7 @@ def run_sync(
     dry_run: bool = False,
     allow_push: bool = False,
     rom_dir: Path | None = None,
+    dropbox: "dropbox_api.DropboxClient | None" = None,
 ) -> SyncReport:
     """Reconcile every supported game. Returns what was done or would be done."""
     state = manifest_module.Manifest.load(paths.manifest_path)
@@ -295,11 +334,20 @@ def run_sync(
                     Outcome(entry.name, Action.PUSH, f"{detail} (dry run)")
                 )
                 continue
-            try:
-                note = delta_writer.push_save(
-                    paths.delta_folder, entry.identifier, target, paths.backup_dir
+            if dropbox is None:
+                report.outcomes.append(
+                    Outcome(
+                        entry.name,
+                        Action.PUSH,
+                        f"{detail}; {delta_writer.REVISION_MUST_BE_REAL}",
+                    )
                 )
-            except (OSError, ValueError) as error:
+                continue
+            try:
+                note = push_with_revision(
+                    paths, entry, target, dropbox
+                )
+            except (OSError, ValueError, dropbox_api.DropboxError) as error:
                 report.outcomes.append(
                     Outcome(entry.name, Action.PUSH, f"{detail}; FAILED: {error}")
                 )

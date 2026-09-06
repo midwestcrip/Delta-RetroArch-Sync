@@ -96,20 +96,12 @@ class PushTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def push(self) -> str:
-        # allow_known_broken: the on-disk write is correct and still tested; it
-        # is the Dropbox property groups it cannot update. See PUSH_BLOCKED.
-        return delta_writer.push_save(
-            self.delta, GAME_SHA1, self.source, self.backups,
-            allow_known_broken=True,
-        )
+    NEW_REVISION = "0123456789abcdef01234"
 
-    def test_push_refuses_by_default(self) -> None:
-        with self.assertRaises(ValueError) as caught:
-            delta_writer.push_save(
-                self.delta, GAME_SHA1, self.source, self.backups
-            )
-        self.assertIn("property groups", str(caught.exception))
+    def push(self, revision: str | None = NEW_REVISION) -> str:
+        return delta_writer.push_save(
+            self.delta, GAME_SHA1, self.source, self.backups, revision=revision
+        )
 
     def test_push_updates_save_record_and_hash_consistently(self) -> None:
         self.push()
@@ -123,15 +115,18 @@ class PushTests(unittest.TestCase):
         self.assertEqual(entry["size"], 131072)
         self.assertEqual(self.save_path.read_bytes(), self.source.read_bytes())
 
-    def test_version_identifier_is_invalidated(self) -> None:
+    def test_version_identifier_becomes_the_real_revision(self) -> None:
         # Leaving the old revision makes Delta re-download the previous save,
-        # silently undoing the push.
+        # silently undoing the push. A bogus one makes the sync fail outright --
+        # both were observed. It has to be the actual new revision.
         self.push()
         raw = json.loads(self.record_path.read_text(encoding="utf-8"))
+        self.assertEqual(raw["files"][0]["versionIdentifier"], self.NEW_REVISION)
+
+    def test_no_revision_leaves_the_existing_one_untouched(self) -> None:
+        self.push(revision=None)
+        raw = json.loads(self.record_path.read_text(encoding="utf-8"))
         self.assertEqual(
-            raw["files"][0]["versionIdentifier"], delta_writer.INVALID_REVISION
-        )
-        self.assertNotEqual(
             raw["files"][0]["versionIdentifier"], "65ac6bfd57295cb175c93"
         )
 

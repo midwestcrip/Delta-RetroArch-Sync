@@ -48,3 +48,6 @@ build/
 .idea/
 Thumbs.db
 desktop.ini
+
+# Dropbox OAuth refresh token -- machine-specific credential, never commit.
+dropbox-token.json

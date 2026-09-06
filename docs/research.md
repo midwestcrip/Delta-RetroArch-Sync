@@ -159,53 +159,66 @@ Both DS and N64 are excluded from `ENABLED_SYSTEMS` in `systems.py`. The
 inspector reports them; the sync will never write them until their conversion is
 implemented and tested against real data.
 
-## Why push through the local mirror cannot work
+## Push: what actually failed
 
 Tested for real on 2026-09-05. The write itself was correct — the save landed
-byte-identical, and `record.sha1`, `files[0].sha1Hash` and the file's actual hash
-all agreed, with the record's own `sha1Hash` recomputed by the verified scheme.
-Delta still reported a failed sync.
+byte-identical, `record.sha1`, `files[0].sha1Hash` and the file's actual hash all
+agreed, and the record's own `sha1Hash` was recomputed by the verified scheme.
+Delta reported: it attempted a download, then failed to sync.
 
-The reason is that **Harmony does not treat the record JSON as the source of
-truth**. A record's identity and its change-detection hash live in Dropbox
-*file property groups*:
+### First diagnosis, and why it was wrong
+
+The initial conclusion was that Dropbox *file property groups* were to blame.
+Harmony does build a record's identity from them, and they are genuinely
+unreachable for us — Dropbox's API spec is explicit:
+
+> Templates and their associated properties can't be accessed by any app other
+> than the app that created them.
+
+So we can never write the `Harmony` template's property groups. That part is
+true. It is not what failed, and the observed behaviour rules it out:
 
 ```swift
-// RemoteRecord+Dropbox.swift
-guard let identifier = file.pathLower,
-      let metadata = file.propertyGroups?.first?.metadata ?? ... else { return nil }
-
-// RemoteRecord.swift
-guard let recordedObjectType = metadata[.recordedObjectType],
-      let recordedObjectIdentifier = metadata[.recordedObjectIdentifier]
-else { throw ValidationError.invalidMetadata(metadata) }
-...
-self.sha1Hash = metadata[.sha1Hash]   // the hash Harmony actually compares
+// DropboxService+Records.swift
+result.entries.lazy.compactMap { $0 as? Files.FileMetadata }
+              .compactMap { RemoteRecord(file: $0, metadata: nil, ...) }
 ```
 
-`UploadRecordOperation` sets that property group when Delta uploads
-(`metadata[.sha1Hash] = localRecord.sha1Hash`). So the hash Harmony compares is
-the one in the property group, **not** the one inside the JSON we can rewrite.
+A record whose property groups are missing returns `nil` from that initializer
+and is **silently dropped from the listing**. There would have been no download
+attempt at all. Since Delta did attempt one, the record was constructed
+correctly, which means the property groups survived the desktop client's
+overwrite and still carry the right `recordedObjectType` / `recordedObjectIdentifier`.
 
-Property groups are cloud-side metadata. The Dropbox desktop client does not
-mirror them to disk and gives no way to write them. Any record we rewrite on
-disk therefore ends up with property-group metadata that disagrees with its own
-contents — which is precisely the failed sync that was observed.
+The failure is later, at the file download.
 
-This retires the earlier open question about `versionIdentifier`. That inference
-may well have been right; it was never reached, because the record is rejected
-before any file download is attempted.
+### The real cause: the invalidated revision
 
-### What would make push work
+`DownloadRecordOperation` asks Dropbox for the *exact* revision named in the
+record, and falls back to the latest version only on one specific error:
 
-The Dropbox API directly: `files/upload` plus
-`file_properties/properties/update`, replicating what `UploadRecordOperation`
-does. That needs a registered Dropbox app and an OAuth flow — a real scope
-change from the brief's "no cloud API integration beyond reading the local
-mirror". The brief's assumption was reasonable, and is now disproven.
+```swift
+service.download(remoteFile, version: versionID) { result in
+    ...
+    catch .doesNotExist(let fileID) { /* fall back to version: nil */ }
+```
 
-The pull direction is unaffected: reading the mirror needs none of this, and is
-verified working.
+The push wrote a deliberately nonexistent revision (`"0" * 21`) to force that
+fallback. Dropbox evidently does not answer a bogus revision with the error that
+maps to `.doesNotExist`, so the fallback never fires and the error propagates as
+a failed sync.
+
+### The fix: use the real revision
+
+The revision cannot be computed locally, but it can be *read*: once the desktop
+client has uploaded the file, `files/get_metadata` returns the new `rev`. That
+needs only the `files.metadata.read` scope on our own Dropbox app — no property
+groups, no template ownership, nothing that belongs to Delta's app.
+
+The push therefore becomes: write the save, wait for the desktop client to
+upload it, read back the real revision (confirming via Dropbox's `content_hash`
+that the upload is the file we wrote), then write the record referencing that
+revision.
 
 ## RetroArch side
 

@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from . import config as config_module
-from . import discovery
+from . import discovery, dropbox_api
 from . import inspect as inspect_module
 from . import sync as sync_module
 
@@ -54,6 +54,59 @@ def _core_for(system_cores: tuple[str, ...], installed: dict[str, str]) -> str |
     return None
 
 
+def token_path() -> Path:
+    return Path(__file__).resolve().parents[2] / dropbox_api.TOKEN_FILENAME
+
+
+def load_dropbox() -> "dropbox_api.DropboxClient | None":
+    credentials = dropbox_api.Credentials.load(token_path())
+    return dropbox_api.DropboxClient(credentials) if credentials else None
+
+
+def run_auth_command(app_key: str | None) -> int:
+    """One-time Dropbox authorisation, needed only for pushing.
+
+    Uses PKCE with no client secret, which is the right flow for a desktop app:
+    a secret shipped in source is not a secret. Only files.metadata.read is
+    needed -- this never uploads and never touches file properties.
+    """
+    if not app_key:
+        print(
+            "A Dropbox app key is required.\n\n"
+            "  1. Go to https://www.dropbox.com/developers/apps\n"
+            "  2. Create app -> Scoped access -> Full Dropbox -> name it anything\n"
+            "  3. On the Permissions tab, tick files.metadata.read, then Submit\n"
+            "  4. Copy the App key from the Settings tab\n\n"
+            "Then run:  delta-retroarch-sync auth --app-key <key>"
+        )
+        return 1
+
+    verifier = dropbox_api.make_verifier()
+    url = dropbox_api.build_authorize_url(app_key, verifier)
+    print("Open this URL, approve access, and paste the code below:")
+    print()
+    print(f"  {url}")
+    print()
+    try:
+        code = input("Authorisation code: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("cancelled")
+        return 1
+    if not code:
+        print("No code entered.")
+        return 1
+
+    try:
+        credentials = dropbox_api.exchange_code(app_key, verifier, code)
+    except dropbox_api.DropboxError as error:
+        print(f"Authorisation failed: {error}")
+        return 1
+
+    credentials.save(token_path())
+    print(f"Saved to {token_path().name} (gitignored). Pushing is now available.")
+    return 0
+
+
 def run_sync_command(dry_run: bool, allow_push: bool) -> int:
     resolved = _resolve()
     if resolved is None:
@@ -98,6 +151,8 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
     syncable = [entry for entry in entries if entry not in missing]
     state_dir = Path(__file__).resolve().parents[2]
 
+    dropbox = load_dropbox() if allow_push else None
+
     report = sync_module.SyncReport()
     for entry in syncable:
         if entry.system is None:
@@ -117,6 +172,7 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
             dry_run=dry_run,
             allow_push=allow_push,
             rom_dir=rom_dir,
+            dropbox=dropbox,
         )
         report.outcomes.extend(single.outcomes)
 
@@ -156,6 +212,10 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Show what would happen without writing anything.",
     )
+    auth_parser = subparsers.add_parser(
+        "auth", help="Authorise Dropbox once, so pushing can read file revisions."
+    )
+    auth_parser.add_argument("--app-key", help="Dropbox app key.")
     sync_parser.add_argument(
         "--push",
         action="store_true",
@@ -173,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
         return inspect_module.run()
     if args.command == "sync":
         return run_sync_command(dry_run=args.dry_run, allow_push=args.push)
+    if args.command == "auth":
+        return run_auth_command(args.app_key)
 
     parser.print_help()
     return 0

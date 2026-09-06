@@ -19,9 +19,9 @@ which differs from the on-disk form in two ways: ``files`` becomes an
 and hashing it regenerates the stored value exactly for every real record --
 see ``tests/test_delta_writer.py``, which pins this against a real record.
 
-None of that is enough. Harmony's real index lives in Dropbox property
-groups, which the desktop client does not expose -- so this path is guarded
-off. See ``PUSH_BLOCKED``.
+4. Point the record at the save's real Dropbox revision, which has to be read
+   back from the API after the desktop client uploads. See
+   ``REVISION_MUST_BE_REAL``.
 """
 
 from __future__ import annotations
@@ -35,60 +35,23 @@ from typing import Any
 
 from .manifest import APPLE_EPOCH_OFFSET, sha1_of
 
-#: Why pushing through the local mirror cannot work, confirmed by a real
-#: attempt on 2026-09-05: Delta downloaded, then reported a failed sync.
+#: Delta downloads the *exact* revision a record names
+#: (``DownloadRecordOperation``: ``service.download(remoteFile, version: versionID)``),
+#: so a record whose revision is stale makes Delta re-download the previous save
+#: and silently undo the push.
 #:
-#: Harmony does not treat the record JSON as the source of truth. A record's
-#: identity and change-detection live in Dropbox **file property groups**:
+#: A first attempt wrote a deliberately nonexistent revision, aiming to trigger
+#: Harmony's own fallback ("Exact version does not exist, so fall back to latest
+#: version"). Tested against real Delta: it does not work. Dropbox answers a
+#: bogus revision with something other than the error that maps to
+#: ``.doesNotExist``, so the fallback never fires and the sync fails.
 #:
-#:     RemoteRecord+Dropbox.swift
-#:       guard let identifier = file.pathLower,
-#:             let metadata = file.propertyGroups?.first?.metadata ?? ... else { return nil }
-#:
-#:     RemoteRecord.swift
-#:       guard let recordedObjectType = metadata[.recordedObjectType],
-#:             let recordedObjectIdentifier = metadata[.recordedObjectIdentifier]
-#:       else { throw ValidationError.invalidMetadata(metadata) }
-#:       ...
-#:       self.sha1Hash = metadata[.sha1Hash]   // the record hash Harmony compares
-#:
-#: UploadRecordOperation sets that property group at upload time
-#: (`metadata[.sha1Hash] = localRecord.sha1Hash`). So the hash Harmony compares
-#: against is the one in the *property group*, not the one inside the JSON.
-#:
-#: Property groups are cloud-side metadata. The Dropbox desktop client does not
-#: mirror them to disk and offers no way to write them. Rewriting the record on
-#: disk therefore leaves Harmony with a record whose property-group metadata
-#: disagrees with its contents -- which is exactly the failed sync observed.
-#:
-#: Making push work needs the Dropbox API directly (files/upload plus
-#: file_properties/properties/update), i.e. an OAuth app -- a real scope change
-#: from "read the local mirror" that the project brief assumed was unnecessary.
-#: That assumption was reasonable and is now disproven.
-PUSH_BLOCKED = (
-    "pushing through the local Dropbox mirror cannot work: Harmony stores record "
-    "identity and its comparison hash in Dropbox file property groups, which the "
-    "desktop client neither mirrors to disk nor lets us write. Needs the Dropbox "
-    "API. See PUSH_BLOCKED in delta_writer.py."
+#: The revision therefore has to be the real one, read back from Dropbox after
+#: the desktop client uploads. See ``dropbox_api.wait_for_revision``.
+REVISION_MUST_BE_REAL = (
+    "pushing needs the save's real Dropbox revision; run "
+    "`delta-retroarch-sync auth` once to enable it"
 )
-
-#: A well-formed but nonexistent Dropbox revision.
-#:
-#: Delta downloads the *exact* revision named in the record
-#: (``DownloadRecordOperation``: ``service.download(remoteFile, version: versionID)``).
-#: Dropbox keeps revision history, so leaving the old revision in place means
-#: Delta faithfully re-downloads the *previous* save and the push is undone.
-#:
-#: We cannot know the new revision: Dropbox assigns it when the desktop client
-#: uploads, and it is not exposed in the local mirror. So the record is pointed
-#: at a revision that cannot exist, which drives Harmony down its own documented
-#: fallback -- "Exact version does not exist, so fall back to latest version" --
-#: and it downloads the current file instead.
-#:
-#: This is the part of the push path that rests on an inference about Dropbox's
-#: error mapping rather than on Delta's source, so it is verified by observing a
-#: real round trip rather than assumed.
-INVALID_REVISION = "0" * 21
 
 
 def encode_for_hashing(payload: dict[str, Any]) -> bytes:
@@ -163,9 +126,13 @@ def push_save(
     backup_dir: Path,
     *,
     file_identifier: str = "gameSave",
-    allow_known_broken: bool = False,
+    revision: str | None = None,
 ) -> str:
     """Write ``source_save`` into Delta's folder for the game ``identifier``.
+
+    ``revision`` is the save file's real Dropbox revision, read back after the
+    desktop client has uploaded it. Passing ``None`` leaves the record's existing
+    revision alone, which is only correct when the save content did not change.
 
     Returns a description of what changed. Raises if anything about the record
     is not as expected -- a half-applied push is worse than no push, so every
@@ -173,12 +140,6 @@ def push_save(
     """
     record_path = delta_folder / f"GameSave-{identifier}"
     save_path = delta_folder / f"GameSave-{identifier}-{file_identifier}"
-
-    if not allow_known_broken:
-        # Guarded rather than deleted: everything below is correct as far as the
-        # on-disk format goes, and becomes usable the moment the property groups
-        # can be written too. Deleting it would mean re-deriving the record hash.
-        raise ValueError(PUSH_BLOCKED)
 
     if not record_path.is_file():
         raise FileNotFoundError(f"no GameSave record for {identifier}")
@@ -233,7 +194,8 @@ def push_save(
 
     file_entry["sha1Hash"] = new_hash
     file_entry["size"] = new_size
-    file_entry["versionIdentifier"] = INVALID_REVISION
+    if revision is not None:
+        file_entry["versionIdentifier"] = revision
 
     record_fields = raw.setdefault("record", {})
     record_fields["sha1"] = new_hash
