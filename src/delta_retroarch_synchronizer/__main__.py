@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from . import config as config_module
-from . import discovery, dropbox_api
+from . import discovery, dropbox_api, health
 from . import inspect as inspect_module
 from . import sync as sync_module
 
@@ -131,6 +131,39 @@ def run_auth_command(app_key: str | None, code: str | None) -> int:
     return 0
 
 
+def run_doctor_command() -> int:
+    """Report whether each game's pushed state is one Delta can act on."""
+    resolved = _resolve()
+    if resolved is None:
+        return 1
+    delta_folder, _ = resolved
+
+    dropbox = load_dropbox()
+    if dropbox is None:
+        print("Dropbox not authorised: revision checks will be skipped.")
+        print()
+
+    entries = inspect_module.collect_games(delta_folder)
+    failures = 0
+    for entry in entries:
+        if entry.save_path is None:
+            continue
+        print(f"{entry.name}")
+        report = health.check_game(delta_folder, entry.identifier, dropbox)
+        for check in report.checks:
+            mark = "ok  " if check.ok else "FAIL"
+            print(f"  [{mark}] {check.name}: {check.detail}")
+        if not report.ok:
+            failures += 1
+        print()
+
+    if failures:
+        print(f"{failures} game(s) in a state Delta cannot act on.")
+        return 2
+    print("All checks passed.")
+    return 0
+
+
 def run_sync_command(dry_run: bool, allow_push: bool) -> int:
     resolved = _resolve()
     if resolved is None:
@@ -237,6 +270,10 @@ def main(argv: list[str] | None = None) -> int:
         "inspect",
         help="Report what Delta and RetroArch have on disk. Writes nothing.",
     )
+    subparsers.add_parser(
+        "doctor",
+        help="Check that pushed saves are in a state Delta can act on.",
+    )
     sync_parser = subparsers.add_parser(
         "sync", help="Reconcile saves between Delta and RetroArch."
     )
@@ -267,6 +304,8 @@ def main(argv: list[str] | None = None) -> int:
         from . import launcher
 
         return launcher.main()
+    if args.command == "doctor":
+        return run_doctor_command()
     if args.command == "inspect":
         return inspect_module.run()
     if args.command == "sync":

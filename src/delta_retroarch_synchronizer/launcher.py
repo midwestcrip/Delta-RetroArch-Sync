@@ -28,7 +28,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from . import config as config_module
-from . import discovery, dropbox_api
+from . import discovery, dropbox_api, health
 from . import inspect as inspect_module
 from . import sync as sync_module
 
@@ -352,6 +352,25 @@ class LauncherWindow:
             mark = " " if entry.supported else "!"
             self._say(f"  {mark} {entry.name} [{entry.system_label}]")
         self._say(f"Installed cores: {', '.join(sorted(installed)) or 'none'}")
+
+        # Only meaningful once something has been pushed, but cheap, and it is
+        # the check that would have surfaced the 2026-09-05 breakage instead of
+        # leaving it to be found by hand.
+        credentials = dropbox_api.Credentials.load(
+            _state_dir() / dropbox_api.TOKEN_FILENAME
+        )
+        client = dropbox_api.DropboxClient(credentials) if credentials else None
+        for entry in entries:
+            if entry.save_path is None:
+                continue
+            report = health.check_game(
+                self.config.delta_folder, entry.identifier, client
+            )
+            if report.ok:
+                self._say(f"  {entry.name}: sync state healthy")
+            else:
+                for problem in report.problems:
+                    self._say(f"  {entry.name}: {problem.name} — {problem.detail}")
 
     def _sync_once(self, label: str) -> None:
         prepared = self._prepare()

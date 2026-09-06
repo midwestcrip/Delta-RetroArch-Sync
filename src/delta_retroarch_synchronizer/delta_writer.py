@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -113,11 +114,30 @@ def unix_to_apple(timestamp: float) -> float:
     return timestamp - APPLE_EPOCH_OFFSET
 
 
-def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
-    text = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-    temporary = path.with_name(path.name + ".partial")
-    temporary.write_text(text, encoding="utf-8")
-    temporary.replace(path)
+def write_in_place(path: Path, data: bytes) -> None:
+    """Replace a file's contents without replacing the file.
+
+    The usual write-a-temp-then-rename dance is the safer pattern almost
+    everywhere, and it is the wrong one here. Delta's records carry Dropbox
+    *property groups* -- cloud-side metadata that Harmony needs in order to see
+    a record at all, and that only Delta's own app can write. A rename over the
+    target is a new file as far as that metadata is concerned, and losing it
+    makes the record invisible to Delta permanently. That is exactly what went
+    wrong on 2026-09-05.
+
+    So the file object is kept and only its bytes change. The cost is the
+    atomicity that rename would have given, which is bought back by the caller:
+    a backup is taken first and the result is verified afterwards.
+    """
+    with path.open("r+b") as handle:
+        handle.write(data)
+        handle.truncate()
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _record_bytes(payload: dict[str, Any]) -> bytes:
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
 def push_save(
@@ -190,12 +210,12 @@ def push_save(
 
     # Save file first: if the record update fails, the record still points at
     # the old hash, so Delta ignores the file rather than acting on a mismatch.
-    temporary = save_path.with_name(save_path.name + ".partial")
-    shutil.copy2(source_save, temporary)
-    if temporary.stat().st_size != new_size:
-        temporary.unlink(missing_ok=True)
-        raise OSError("short copy while writing save into Delta's folder")
-    temporary.replace(save_path)
+    write_in_place(save_path, source_save.read_bytes())
+    if sha1_of(save_path) != new_hash:
+        raise OSError(
+            f"{save_path.name} does not match the source after writing; "
+            "restore it from the backup taken above"
+        )
 
     file_entry["sha1Hash"] = new_hash
     file_entry["size"] = new_size
@@ -207,7 +227,18 @@ def push_save(
     record_fields["modifiedDate"] = unix_to_apple(datetime.now(timezone.utc).timestamp())
 
     raw["sha1Hash"] = record_hash(raw)
-    _write_json_atomically(record_path, raw)
+    write_in_place(record_path, _record_bytes(raw))
+
+    # Read the record back and re-derive its hash. A record whose stored hash
+    # does not match its contents is one Delta treats as corrupt, and a short
+    # write is the one failure the in-place approach cannot rule out by
+    # construction.
+    written = json.loads(record_path.read_text(encoding="utf-8"))
+    if not verify_record_hash(written):
+        raise OSError(
+            f"{record_path.name} did not verify after writing; "
+            "restore it and the save from the backups taken above"
+        )
 
     return (
         f"wrote {new_size:,} B to {save_path.name}, "
