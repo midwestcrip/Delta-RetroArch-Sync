@@ -73,3 +73,37 @@ def test_snes_is_a_plain_copy_with_the_same_extension():
     assert snes.delta_save_ext == "srm"
     assert snes.retroarch_save_ext == "srm"
     assert snes.extra_files == ()
+
+
+def test_missing_core_advice_names_the_core_and_the_menu_path():
+    """"No core installed for Super Nintendo" is not a task anyone can act on.
+
+    Both naive-user tests found messages that stated a fact and left the reader
+    to work out what to do. This one has to name the core and say where the
+    button is.
+    """
+    advice = systems.missing_core_advice(systems.SYSTEMS["snes"])
+
+    assert "Snes9x" in advice
+    assert "Download a Core" in advice
+    # The trap that would otherwise waste an evening: year-suffixed forks and
+    # bsnes variants carry different display names and are never matched.
+    assert "suffixed" in advice
+
+
+def test_missing_core_advice_leads_with_the_preferred_core():
+    """The first line must be the one to act on, not a list to choose from."""
+    advice = systems.missing_core_advice(systems.SYSTEMS["gbc"]).splitlines()
+
+    assert "Gambatte" in advice[1]
+    assert "SameBoy" not in advice[1]
+    assert "SameBoy" in advice[-1]
+
+
+def test_missing_core_advice_survives_a_system_with_no_known_cores():
+    bare = systems.System(
+        key="x", name="Nothing", delta_type="t", delta_core="c",
+        delta_save_ext="sav", retroarch_save_ext="srm",
+    )
+
+    assert systems.missing_core_advice(bare) == "no core installed for Nothing."

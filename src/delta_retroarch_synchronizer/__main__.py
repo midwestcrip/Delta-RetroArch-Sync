@@ -11,6 +11,7 @@ from . import config as config_module
 from . import discovery, dropbox_api, health, paths
 from . import inspect as inspect_module
 from . import sync as sync_module
+from . import systems
 
 
 def _force_utf8_output() -> None:
@@ -225,11 +226,7 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
     ]
     for entry in missing:
         assert entry.system is not None
-        wanted = ", ".join(entry.system.retroarch_cores)
-        print(
-            f"  [MISS] no core installed for {entry.system.name} "
-            f"({entry.name}). Install one of: {wanted}"
-        )
+        print(f"  [MISS] {entry.name}: {systems.missing_core_advice(entry.system)}")
 
     syncable = [entry for entry in entries if entry not in missing]
 

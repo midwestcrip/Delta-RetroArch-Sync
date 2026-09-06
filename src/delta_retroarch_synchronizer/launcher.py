@@ -36,6 +36,7 @@ from . import config as config_module
 from . import discovery, dropbox_api, health, paths, theme
 from . import inspect as inspect_module
 from . import sync as sync_module
+from . import systems
 
 WINDOW_TITLE = "Delta-RetroArch Synchronizer"
 
@@ -791,7 +792,10 @@ class LauncherWindow:
                 None,
             )
             if entry.supported and core is None:
-                self._say(f"  {entry.name}: no core installed for {entry.system.name}")
+                self._say(
+                    f"  {entry.name}: "
+                    f"{systems.missing_core_advice(entry.system)}"
+                )
                 continue
 
             report = sync_module.run_sync(

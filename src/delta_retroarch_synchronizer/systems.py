@@ -170,3 +170,34 @@ BY_DELTA_TYPE: dict[str, System] = {s.delta_type: s for s in SYSTEMS.values()}
 def for_delta_type(delta_type: str) -> System | None:
     """Look up a system by the ``GameType`` string found in a Harmony record."""
     return BY_DELTA_TYPE.get(delta_type)
+
+
+def missing_core_advice(system: System) -> str:
+    """What to actually do about a system with no core installed.
+
+    Deliberately a set of directions rather than an offer to fetch the core.
+    Downloading a .dll and placing it where RetroArch will execute it would make
+    this program something that installs executable code from the internet --
+    which breaks the claim that it talks to nothing but Dropbox, materially
+    worsens the antivirus problem it already has, and reimplements a downloader
+    RetroArch ships and keeps matched to its own build.
+
+    So the tool says exactly which core and exactly where the button is, which
+    is what turns a dead end into a task. Both naive-user tests found the old
+    message -- "no core installed for Super Nintendo" -- unusable by someone who
+    does not already know what a core is.
+    """
+    preferred = system.retroarch_cores[0] if system.retroarch_cores else ""
+    if not preferred:
+        return f"no core installed for {system.name}."
+
+    others = ", ".join(system.retroarch_cores[1:])
+    lines = [
+        f"no core installed for {system.name}.",
+        f"    In RetroArch: Load Core -> Download a Core -> {preferred}.",
+        "    Take the plainly named one; suffixed variants are different cores "
+        "and will not be matched.",
+    ]
+    if others:
+        lines.append(f"    These also work: {others}.")
+    return "\n".join(lines)
