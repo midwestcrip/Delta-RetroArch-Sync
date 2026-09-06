@@ -233,7 +233,7 @@ SETTING_HELP: dict[str, str] = {
 class LauncherWindow:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.messages: queue.Queue[tuple[str, str]] = queue.Queue()
+        self.messages: queue.Queue[tuple[str, str, str]] = queue.Queue()
         self.busy = False
 
         self.config = config_module.load()
@@ -469,21 +469,31 @@ class LauncherWindow:
 
     # ----------------------------------------------------------------- log
 
-    def write(self, text: str) -> None:
+    def write(self, text: str, level: str = "") -> None:
+        """Append a line, optionally tagged with a severity.
+
+        Colour is deliberately redundant with the wording: a line that reads
+        "FAILED" or "skipped" says so whether or not the reader can tell red
+        from amber. The colour makes the log scannable; it never carries
+        meaning on its own.
+        """
         self.log.configure(state="normal")
+        start = self.log.index("end-1c")
         self.log.insert("end", text + "\n")
+        if level:
+            self.log.tag_add(level, start, "end-1c")
         self.log.see("end")
         self.log.configure(state="disabled")
 
     def _report_startup(self) -> None:
-        self.write(f"{WINDOW_TITLE}")
+        self.write(f"{WINDOW_TITLE}", "heading")
         delta = self.config.delta_folder
         exe = self.config.retroarch_exe
         self.write(f"Delta folder : {delta or 'not found — set it below'}")
         self.write(f"RetroArch    : {exe or 'not found — set it below'}")
         self._refresh_dropbox_label()
         if delta and exe:
-            self.write("Ready. Press Sync and Play.")
+            self.write("Ready. Press Sync and Play.", "ok")
             if self.config.sync_on_open:
                 # Pull straight away: by the time you have read this line the
                 # desktop already has whatever you did on your phone.
@@ -495,9 +505,9 @@ class LauncherWindow:
             # naive-user tests.
             for note in self.discovery_notes:
                 self.write("")
-                self.write(note)
+                self.write(note, "warn")
             self.write("")
-            self.write("Or set the paths above by hand, then press Save settings.")
+            self.write("Or set the paths above by hand, then press Save settings.", "muted")
 
     def _refresh_dropbox_label(self) -> None:
         token = _state_dir() / dropbox_api.TOKEN_FILENAME
@@ -670,20 +680,20 @@ class LauncherWindow:
             try:
                 work()
             except Exception as error:  # surfaced in the log, never a silent stop
-                self.messages.put(("log", f"ERROR: {error}"))
+                self.messages.put(("log", f"ERROR: {error}", "error"))
             finally:
-                self.messages.put(("done", ""))
+                self.messages.put(("done", "", ""))
 
         threading.Thread(target=runner, daemon=True).start()
 
     def _drain(self) -> None:
         while True:
             try:
-                kind, text = self.messages.get_nowait()
+                kind, text, level = self.messages.get_nowait()
             except queue.Empty:
                 break
             if kind == "log":
-                self.write(text)
+                self.write(text, level)
             elif kind == "done":
                 self.busy = False
                 self.play_button.configure(state="normal")
@@ -691,18 +701,35 @@ class LauncherWindow:
 
     # ----------------------------------------------------------------- work
 
-    def _say(self, text: str) -> None:
-        self.messages.put(("log", text))
+    def _say(self, text: str, level: str = "") -> None:
+        self.messages.put(("log", text, level))
+
+    @staticmethod
+    def _level_for(outcome: "sync_module.Outcome") -> str:
+        """Severity of one sync outcome, from its action rather than its words.
+
+        Taken from the structured result so the colouring cannot drift out of
+        step with the message text.
+        """
+        if outcome.action is sync_module.Action.CONFLICT:
+            return "error"
+        if outcome.action is sync_module.Action.SKIPPED:
+            return "warn"
+        if outcome.action is sync_module.Action.NOTHING:
+            return "muted"
+        # A pull or push that was decided but not carried out -- a dry run, or a
+        # push blocked for want of Dropbox authorisation.
+        return "ok" if outcome.applied else "warn"
 
     def _prepare(self) -> tuple[sync_module.Paths, list, str, bool, Path, Path] | None:
         config = self.config
         if config.delta_folder is None or not config.delta_folder.is_dir():
-            self._say("Delta folder not set or missing.")
+            self._say("Delta folder not set or missing.", "error")
             return None
 
         retroarch_config = config.retroarch_config
         if retroarch_config is None or not retroarch_config.is_file():
-            self._say("retroarch.cfg not found. Set the RetroArch path.")
+            self._say("retroarch.cfg not found. Set the RetroArch path.", "error")
             return None
 
         settings = discovery.parse_retroarch_config(retroarch_config)
@@ -720,7 +747,7 @@ class LauncherWindow:
 
         entries = inspect_module.collect_games(config.delta_folder)
         if not entries:
-            self._say("Delta has not synced any games yet.")
+            self._say("Delta has not synced any games yet.", "warn")
             return None
 
         paths = sync_module.Paths(
@@ -782,7 +809,7 @@ class LauncherWindow:
             else None
         )
 
-        self._say(f"--- {label} ---")
+        self._say(f"--- {label} ---", "heading")
         changed_anything = False
         for entry in entries:
             if entry.system is None:
@@ -794,7 +821,8 @@ class LauncherWindow:
             if entry.supported and core is None:
                 self._say(
                     f"  {entry.name}: "
-                    f"{systems.missing_core_advice(entry.system)}"
+                    f"{systems.missing_core_advice(entry.system)}",
+                    "warn",
                 )
                 continue
 
@@ -814,10 +842,11 @@ class LauncherWindow:
                 if outcome.action is sync_module.Action.NOTHING:
                     continue
                 changed_anything = True
-                self._say(f"  {outcome.game}: {outcome.action.value}")
-                self._say(f"      {outcome.detail}")
+                level = self._level_for(outcome)
+                self._say(f"  {outcome.game}: {outcome.action.value}", level)
+                self._say(f"      {outcome.detail}", level)
             if not any(o.action is not sync_module.Action.NOTHING for o in report.outcomes):
-                self._say(f"  {entry.name}: already up to date")
+                self._say(f"  {entry.name}: already up to date", "muted")
 
         # "Already up to date" is the one message that looks identical whether
         # the sync worked perfectly or Delta has been writing to a different
@@ -826,7 +855,7 @@ class LauncherWindow:
         if not changed_anything and config.delta_folder is not None:
             activity = health.delta_activity(config.delta_folder)
             self._say("")
-            self._say(f"  {health.idle_sync_note(activity, time.time())}")
+            self._say(f"  {health.idle_sync_note(activity, time.time())}", "muted")
 
     def _sync_work(self) -> None:
         self._sync_once("Sync")
@@ -834,25 +863,28 @@ class LauncherWindow:
     def _play_work(self) -> None:
         exe = self.config.retroarch_exe
         if exe is None or not exe.is_file():
-            self._say("RetroArch executable not found. Set the path above.")
+            self._say("RetroArch executable not found. Set the path above.", "error")
             return
 
         self._sync_once("Sync before playing")
 
-        self._say("Launching RetroArch…")
+        self._say("Launching RetroArch…", "muted")
         try:
             process = subprocess.Popen([str(exe)], cwd=str(exe.parent))
         except OSError as error:
-            self._say(f"Could not launch RetroArch: {error}")
+            self._say(f"Could not launch RetroArch: {error}", "error")
             return
 
         process.wait()
-        self._say(f"RetroArch closed (exit code {process.returncode}).")
+        self._say(
+            f"RetroArch closed (exit code {process.returncode}).",
+            "muted" if process.returncode == 0 else "warn",
+        )
 
         # Sync after the process exits, not on a timer: mGBA flushes its save on
         # clean exit, so syncing earlier would copy a stale file.
         self._sync_once("Sync after playing")
-        self._say("Done.")
+        self._say("Done.", "ok")
 
 
 def main() -> int:

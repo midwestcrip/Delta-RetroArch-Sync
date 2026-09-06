@@ -48,6 +48,13 @@ class Palette:
     #: The log panel, which is the main element of the window.
     log_bg: str
     log_fg: str
+    #: Severity in the log. Always redundant with the wording, never the
+    #: only signal -- a line that reads 'FAILED' says so whether or not the
+    #: reader can see the colour.
+    log_ok: str
+    log_warn: str
+    log_error: str
+    log_muted: str
     select_bg: str
     select_fg: str
     #: Hover descriptions, which are their own small window.
@@ -67,6 +74,10 @@ LIGHT_PALETTE = Palette(
     accent_ink="#ffffff",
     log_bg="#ffffff",
     log_fg="#1b1b1b",
+    log_ok="#1a7f37",
+    log_warn="#8a6100",
+    log_error="#b3261e",
+    log_muted="#6f6f6f",
     select_bg="#cfe3ff",
     select_fg="#000000",
     tip_bg="#ffffe0",
@@ -87,6 +98,10 @@ DARK_PALETTE = Palette(
     # uses for its code panel and reads as a console rather than a void.
     log_bg="#001b33",
     log_fg="#d6dde6",
+    log_ok="#6fdc8c",
+    log_warn="#f5c451",
+    log_error="#ff8a80",
+    log_muted="#87a0b8",
     select_bg="#2f5b8c",
     select_fg="#ffffff",
     tip_bg="#3c3c3c",
@@ -280,6 +295,10 @@ def apply(root: tk.Misc, palette: Palette) -> None:
     )
 
 
+#: Tag names the launcher applies to log lines. "" means ordinary text.
+LOG_LEVELS = ("heading", "ok", "warn", "error", "muted")
+
+
 def apply_to_log(widget: tk.Text, palette: Palette) -> None:
     """The log is a tk.Text, which ttk styles do not reach."""
     widget.configure(
@@ -291,3 +310,12 @@ def apply_to_log(widget: tk.Text, palette: Palette) -> None:
         highlightthickness=0,
         borderwidth=0,
     )
+
+    # Re-applied on every theme change, which is why these are configured here
+    # rather than once at build time.
+    family = str(widget.cget("font")).split()[0] or "Consolas"
+    widget.tag_configure("heading", foreground=palette.ink, font=(family, 10, "bold"))
+    widget.tag_configure("ok", foreground=palette.log_ok)
+    widget.tag_configure("warn", foreground=palette.log_warn)
+    widget.tag_configure("error", foreground=palette.log_error)
+    widget.tag_configure("muted", foreground=palette.log_muted)
