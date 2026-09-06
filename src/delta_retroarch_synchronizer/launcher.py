@@ -33,7 +33,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
 
 from . import config as config_module
-from . import discovery, dropbox_api, health, paths
+from . import discovery, dropbox_api, health, paths, theme
 from . import inspect as inspect_module
 from . import sync as sync_module
 
@@ -136,24 +136,39 @@ class Tooltip:
         try:
             x = self.widget.winfo_pointerx() + 14
             y = self.widget.winfo_pointery() + 20
+            screen_w = self.widget.winfo_screenwidth()
+            screen_h = self.widget.winfo_screenheight()
         except tk.TclError:
             return
 
+        palette = theme.current()
         tip = tk.Toplevel(self.widget)
         tip.wm_overrideredirect(True)
-        tip.wm_geometry(f"+{x}+{y}")
+        # Placed off-screen first so the unpositioned window never flashes in
+        # the corner while its size is being measured.
+        tip.wm_geometry("+-2000+-2000")
         tk.Label(
             tip,
             text=self.text,
             justify="left",
             wraplength=self.WRAP_PIXELS,
-            background="#ffffe0",
-            foreground="#1a1a1a",
+            background=palette.tip_bg,
+            foreground=palette.tip_fg,
             relief="solid",
             borderwidth=1,
             padx=8,
             pady=6,
         ).pack()
+
+        # A tooltip opened near the right or bottom edge would otherwise be cut
+        # off by the screen, which is where the longest descriptions live.
+        tip.update_idletasks()
+        width = tip.winfo_reqwidth()
+        height = tip.winfo_reqheight()
+        x = min(x, screen_w - width - 8)
+        if y + height > screen_h - 8:
+            y = self.widget.winfo_pointery() - height - 12
+        tip.wm_geometry(f"+{max(8, x)}+{max(8, y)}")
         self.tip = tip
 
     def _hide(self, _event: object = None) -> None:
@@ -245,14 +260,44 @@ class LauncherWindow:
         self.open_sync_var = tk.BooleanVar(value=self.config.sync_on_open)
 
         self._build()
+
+        # Applied after the widgets exist, then rechecked on a timer so that
+        # changing the OS theme restyles this window without restarting it.
+        self.appearance = ""
+        self._follow_system_appearance()
+
         self._report_startup()
         self.root.after(100, self._drain)
 
     # ---------------------------------------------------------------- layout
 
+    # ---------------------------------------------------------------- theme
+
+    def _follow_system_appearance(self) -> None:
+        """Restyle when the OS light/dark setting changes, then check again.
+
+        Polled rather than event-driven because Tk has no notification for it
+        and the Windows read is a single registry lookup. Nothing is redrawn
+        unless the value actually changed.
+        """
+        current = theme.system_appearance()
+        if current != self.appearance:
+            self.appearance = current
+            palette = theme.palette_for(current)
+            theme.apply(self.root, palette)
+            theme.apply_to_log(self.log, palette)
+        self.root.after(theme.POLL_MS, self._follow_system_appearance)
+
+    # --------------------------------------------------------------- layout
+
     def _build(self) -> None:
+        self.root.rowconfigure(0, weight=1)
+        self.root.columnconfigure(0, weight=1)
+
         outer = ttk.Frame(self.root, padding=8)
         outer.grid(sticky="nsew")
+        outer.rowconfigure(0, weight=1)
+        outer.columnconfigure(0, weight=1)
 
         # Sync and Play stays outside the tabs. It is the reason the program
         # exists, and burying the primary action behind a tab someone might be
@@ -269,13 +314,23 @@ class LauncherWindow:
         self._build_settings_tab(settings_tab)
 
         self.play_button = ttk.Button(
-            outer, text="Sync and Play", command=self.on_play, padding=8
+            outer, text="Sync and Play", command=self.on_play,
+            style="Primary.TButton",
         )
         self.play_button.grid(row=1, column=0, sticky="ew")
 
     def _build_sync_tab(self, parent: ttk.Frame) -> None:
-        self.log = tk.Text(parent, height=13, width=78, wrap="word")
-        self.log.configure(state="disabled", relief="sunken", borderwidth=1)
+        # A notebook is as tall as its tallest tab, so without this the log
+        # keeps its requested height and leaves dead space under the buttons
+        # whenever the Settings tab is the taller of the two.
+        parent.rowconfigure(0, weight=1)
+        parent.columnconfigure(0, weight=1)
+
+        self.log = tk.Text(
+            parent, height=14, width=82, wrap="word",
+            font=("Consolas", 10), padx=8, pady=6,
+        )
+        self.log.configure(state="disabled", relief="flat")
         self.log.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
 
         actions = ttk.Frame(parent)
@@ -295,7 +350,7 @@ class LauncherWindow:
         ttk.Label(
             parent,
             text="Hover any setting for what it does.",
-            foreground="#666666",
+            style="Muted.TLabel",
         ).grid(row=0, column=0, sticky="w", pady=(0, 6))
 
         # Not named `paths`: that shadows the paths module this file imports.
@@ -336,7 +391,7 @@ class LauncherWindow:
 
         dropbox_row = ttk.Frame(options)
         dropbox_row.grid(row=4, column=0, sticky="w", pady=(6, 0))
-        self.dropbox_label = ttk.Label(dropbox_row, text="", foreground="#666666")
+        self.dropbox_label = ttk.Label(dropbox_row, text="", style="Muted.TLabel")
         self.dropbox_label.grid(row=0, column=0, sticky="w")
         self.auth_button = ttk.Button(
             dropbox_row, text="Authorise Dropbox…", command=self.on_authorise
