@@ -175,10 +175,13 @@ permission covers, how to register your own app, and how to revoke access.
 
 ### Why Delta used to ask you to resolve a conflict
 
-It no longer should. Every push used to leave Delta asking you to pick a version
-on the phone, even though the save arrived correctly and Delta's own screen
-showed both sides as *Normal* with the same timestamp. The data always agreed;
-only Harmony's bookkeeping did not.
+Fixed, and confirmed on device on 2026-09-06: a push followed by two clean Delta
+syncs, no conflict, and Delta left the record untouched.
+
+Every push used to leave Delta asking you to pick a version on the phone, even
+though the save arrived correctly and Delta's own screen showed both sides as
+*Normal* with the same timestamp. The data always agreed; only Harmony's
+bookkeeping did not.
 
 Harmony stores each record's hash twice: in the record JSON, and in a Dropbox
 **property group** attached to the same file, written together in one upload.
@@ -197,10 +200,15 @@ record still describes the new save truthfully; only that one field is frozen,
 and it corrects itself the next time Delta uploads the record, because Harmony
 recomputes and rewrites both halves together.
 
-Established on 2026-09-06 by a controlled test -- push with Delta closed on the
-device and no other activity for 35 minutes, conflict appeared anyway -- then by
-reading Harmony's source, then by the record history on this machine, where
-every push had changed that field and a conflict had followed every push.
+It also explains the timing. Harmony runs conflict detection *before* download,
+so the first sync after a push downloaded happily -- which is why the save always
+arrived -- and a later sync, with nothing happening on the device, compared the
+two hashes and flagged it. That delay is what made it look like a timing problem.
+
+Found by a controlled test -- push with Delta closed on the device and no other
+activity for 35 minutes, conflict appeared anyway -- then by reading Harmony's
+source, then by the record history on this machine, where every push had changed
+that field and a conflict had followed every push.
 
 `doctor` reports which of the two wrote a record last, and no longer treats a
 preserved hash as corruption. It cannot see Delta's conflict state at all, as
