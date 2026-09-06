@@ -131,10 +131,23 @@ SYSTEMS: dict[str, System] = {
     ),
 }
 
-#: Systems the sync pass is currently cleared to write. Widen this only once
-#: the corresponding conversion has been implemented and tested against a real
-#: save file -- silently syncing an unconverted N64 or DS save would corrupt it.
-ENABLED_SYSTEMS: frozenset[str] = frozenset({"gba"})
+#: Systems the sync pass is currently cleared to write. Widen this only once the
+#: corresponding conversion has been implemented and tested against a real save
+#: file -- silently syncing an unconverted N64 or DS save would corrupt it.
+#:
+#: snes added 2026-09-06 against a real Super Mario World save from Delta.
+#: There is no conversion to implement for it: Delta writes .srm and RetroArch
+#: reads .srm, so the "conversion" is a copy. What was actually checked is that
+#: the payload is raw SRAM -- 2048 bytes exactly, which is the cartridge's
+#: 16 Kbit SRAM, with no header, footer or wrapper of any kind. That last point
+#: is the one that matters, because it is precisely how DS differs: Delta
+#: declares .dsv there and the payload may carry a trailing DeSmuME marker.
+#:
+#: nes and gbc are modelled and raw_compatible too, and are still not enabled,
+#: because no real save for either has been seen yet. gbc additionally syncs a
+#: second file for the RTC clock (see extra_files), which is unverified against
+#: whatever RetroArch's Gambatte core expects.
+ENABLED_SYSTEMS: frozenset[str] = frozenset({"gba", "snes"})
 
 BY_DELTA_TYPE: dict[str, System] = {s.delta_type: s for s in SYSTEMS.values()}
 
