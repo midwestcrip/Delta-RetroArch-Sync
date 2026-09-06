@@ -229,6 +229,14 @@ def iter_records(folder: Path) -> Iterator[HarmonyRecord]:
 
 
 def attached_file(folder: Path, record: HarmonyRecord, file_id: str) -> Path | None:
-    """Return the on-disk path of one of a record's attached files, if present."""
+    """Return the on-disk path of one of a record's attached files, if present.
+
+    The capitalisation here is nominal. Delta re-uploads a record to
+    ``remoteRecord.identifier``, which Harmony took from Dropbox's ``pathLower``
+    -- so a record Delta has re-uploaded is named ``gamesave-<sha1>`` on disk,
+    not ``GameSave-<sha1>``. This resolves anyway because the tool is
+    Windows-only and NTFS is case-insensitive; on a case-sensitive filesystem it
+    would need a case-folded index of the folder.
+    """
     candidate = folder / f"{record.type}-{record.identifier}-{file_id}"
     return candidate if candidate.is_file() else None
