@@ -58,10 +58,10 @@ inside it.
 | 4. Cheat sync (`.cht` generation) | Working, Delta -> RetroArch only |
 | 5. Launcher window | Working |
 
-Currently cleared for sync: **GBA only**. NES, SNES and GBC are trivial
-extensions of the same path. N64 and DS need real format conversion first and
-are hard-blocked in `systems.py` until then — see
-[docs/research.md](docs/research.md).
+Currently cleared for sync: **GBA and SNES**, each verified against a real
+save. NES and GBC are the same plain-copy path and need only a real save to
+check against. N64 and DS need genuine format conversion and are hard-blocked
+in `systems.py` until then — see [docs/research.md](docs/research.md).
 
 ## Requirements
 
@@ -173,29 +173,38 @@ registration is bundled so this works out of the box, and **Use own app key…**
 swaps in your own. See [docs/dropbox-app.md](docs/dropbox-app.md) for what the
 permission covers, how to register your own app, and how to revoke access.
 
-### Delta asks you to resolve a conflict afterwards
+### Why Delta used to ask you to resolve a conflict
 
-Every push does this. The save itself arrives correctly — Delta shows the right
-content, and its own screen reports "On Device" and "Cloud" as *Normal* with the
-same timestamp — but Harmony marks the record conflicted and asks you to pick a
-version on the phone. Both versions are the same bytes, so either choice is
-safe, and resolving leaves the save untouched.
+It no longer should. Every push used to leave Delta asking you to pick a version
+on the phone, even though the save arrived correctly and Delta's own screen
+showed both sides as *Normal* with the same timestamp. The data always agreed;
+only Harmony's bookkeeping did not.
 
-Established by controlled test on 2026-09-06: a push with Delta closed on the
-device and no other activity for 35 minutes, every desktop check green, and a
-conflict appeared on the next sync regardless. An earlier theory that this came
-from the desktop and the phone writing at the same time was wrong, and the
-guard written against that theory has been removed.
+Harmony stores each record's hash twice: in the record JSON, and in a Dropbox
+**property group** attached to the same file, written together in one upload.
+Its conflict test is `localRecord.sha1Hash != remoteRecord.sha1Hash` while both
+sides are otherwise `.normal` -- and the local half is read from the JSON, the
+remote half from the property group. Property groups belong to the app that
+created the template, so this tool can neither read nor write Delta's half:
 
-The likely reason it cannot be avoided from here: Harmony's per-record version
-bookkeeping lives in Dropbox **property groups**, which only the app that
-created the template can write. A record whose bytes change without Harmony
-having originated the change therefore reads as modified elsewhere. This is
-under investigation; until it is settled, treat the resolve prompt as the cost
-of pushing rather than as a fault.
+> Templates and their associated properties can't be accessed by any app other
+> than the app that created them.
+> -- [Dropbox file_properties documentation](https://www.dropbox.com/developers/documentation/http/documentation#file_properties)
 
-`doctor` cannot see it. It checks everything on this side and Delta's conflict
-state is not on this side — see `docs/research.md`.
+Recomputing that hash therefore updated one half of a pair and guaranteed a
+mismatch. The fix is to **leave it exactly as it was**. Everything else in the
+record still describes the new save truthfully; only that one field is frozen,
+and it corrects itself the next time Delta uploads the record, because Harmony
+recomputes and rewrites both halves together.
+
+Established on 2026-09-06 by a controlled test -- push with Delta closed on the
+device and no other activity for 35 minutes, conflict appeared anyway -- then by
+reading Harmony's source, then by the record history on this machine, where
+every push had changed that field and a conflict had followed every push.
+
+`doctor` reports which of the two wrote a record last, and no longer treats a
+preserved hash as corruption. It cannot see Delta's conflict state at all, as
+`docs/research.md` explains, so a clean report is not proof on its own.
 
 ## Auto-push
 

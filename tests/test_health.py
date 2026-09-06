@@ -71,15 +71,31 @@ class HealthTests(unittest.TestCase):
         report = health.check_game(self.folder, GAME_SHA1)
         self.assertTrue(report.ok, [c.detail for c in report.problems])
 
-    def test_catches_a_record_whose_hash_no_longer_matches(self) -> None:
-        # Delta treats such a record as corrupt.
+    def test_a_hash_that_no_longer_matches_is_reported_not_failed(self) -> None:
+        """It used to fail here, and that was wrong.
+
+        A push deliberately preserves the record's top-level hash so it stays
+        equal to the Dropbox property group only Delta can write. The value
+        therefore stops describing the record's contents on purpose, and failing
+        on it would mark every successfully pushed save as corrupt.
+        """
         record = build_record(self.save_hash)
         record["sha1Hash"] = "deadbeef" * 5
         self._write(record)
 
         report = health.check_game(self.folder, GAME_SHA1)
-        self.assertFalse(report.ok)
-        self.assertFalse(self.named(report, "record hash matches contents").ok)
+        self.assertTrue(report.ok)
+
+        hash_check = next(c for c in report.checks if c.name == "record hash")
+        self.assertIn("preserved", hash_check.detail)
+
+    def test_a_delta_written_hash_is_reported_as_such(self) -> None:
+        self._write(build_record(self.save_hash))
+
+        report = health.check_game(self.folder, GAME_SHA1)
+
+        hash_check = next(c for c in report.checks if c.name == "record hash")
+        self.assertIn("as Delta last wrote it", hash_check.detail)
 
     def test_catches_a_record_pointing_at_different_content(self) -> None:
         # The state a half-applied push leaves behind: record and save disagree.

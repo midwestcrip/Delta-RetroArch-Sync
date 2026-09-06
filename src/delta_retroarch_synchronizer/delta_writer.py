@@ -9,15 +9,36 @@ Pushing a save means three coordinated changes, not one:
 2. Update the record's ``record.sha1`` and ``files[].sha1Hash``. Delta compares
    the hash in the record against its local file to decide whether to download;
    leaving it stale means the push is simply ignored.
-3. Recompute the record's own ``sha1Hash``. Harmony derives it from the record's
-   contents, so an out-of-date value marks the record as corrupt.
+3. **Leave the record's own top-level ``sha1Hash`` exactly as it was.** This is
+   the opposite of what it looks like it should do, and it is the whole reason
+   pushing used to leave Delta asking the user to resolve a conflict.
 
-The scheme for (3) is not guessed. ``LocalRecord.updateSHA1Hash`` re-encodes the
-record with ``JSONEncoder(.sortedKeys)`` and ``isEncodingForHashing = true``,
-which differs from the on-disk form in two ways: ``files`` becomes an
-``{identifier: sha1}`` map, and ``sha1Hash`` itself is omitted. Reproducing that
-and hashing it regenerates the stored value exactly for every real record --
-see ``tests/test_delta_writer.py``, which pins this against a real record.
+   Harmony stores that hash twice: in the record JSON, and in the Dropbox
+   **property group** on the same file, written together in one upload. Its
+   conflict test is ``localRecord.sha1Hash != remoteRecord.sha1Hash`` while both
+   sides are otherwise ``.normal`` -- and the local half comes from the JSON,
+   the remote half from the property group. Property groups belong to the app
+   that created the template ("Templates and their associated properties can't
+   be accessed by any app other than the app that created them" -- Dropbox
+   file_properties docs), so this tool can neither read nor write Delta's half.
+
+   Writing a freshly computed hash therefore updates one half of a pair and
+   guarantees a mismatch. Preserving the old value keeps the two halves equal,
+   and the stale value corrects itself the next time Delta uploads the record,
+   because ``UploadRecordOperation`` calls ``updateSHA1Hash()`` unconditionally
+   and rewrites both halves together.
+
+   Confirmed on 2026-09-06 by reading Harmony's source and by the record history
+   on this machine: every push changed this field, and a conflict followed every
+   push.
+
+``record_hash`` still reproduces Harmony's scheme exactly -- ``LocalRecord.
+updateSHA1Hash`` re-encodes with ``JSONEncoder(.sortedKeys)`` and
+``isEncodingForHashing = true``, ``files`` becoming an ``{identifier: sha1}``
+map with ``sha1Hash`` omitted -- and ``tests/test_delta_writer.py`` pins it
+against a real record. It is kept because reproducing a record's stored hash is
+how we tell that *Delta* wrote it last, which is worth reporting even though it
+is no longer written.
 
 4. Point the record at the save's real Dropbox revision, which has to be read
    back from the API after the desktop client uploads. See
@@ -173,13 +194,28 @@ def push_save(
 
     raw = json.loads(record_path.read_text(encoding="utf-8"))
 
-    # Preflight: if we cannot reproduce the record's current hash, our model of
-    # the format does not hold for this record and rewriting it would corrupt
-    # Delta's state. Refuse rather than write something we cannot predict.
-    if not verify_record_hash(raw):
+    # The record's top-level hash is preserved, never recomputed -- see the
+    # module docstring. Capturing it before anything is modified is the whole
+    # trick, so it is read out here rather than left to be picked up later.
+    preserved_hash = raw.get("sha1Hash")
+    if not isinstance(preserved_hash, str) or not preserved_hash:
         raise ValueError(
-            f"cannot reproduce the existing sha1Hash of {record_path.name}; "
-            "refusing to rewrite a record whose format we do not fully model"
+            f"{record_path.name} has no usable sha1Hash; refusing to write a "
+            "record whose Harmony metadata we cannot preserve"
+        )
+
+    # Preflight. This used to require that we could reproduce the stored hash,
+    # which stopped being a valid precondition once we began preserving it:
+    # after our own first push the stored value deliberately no longer describes
+    # the contents. What is still a real invariant, and covers the fields this
+    # function actually edits, is that the record agrees with the save beside it.
+    on_disk = sha1_of(save_path) if save_path.is_file() else None
+    stated = raw.get("record", {}).get("sha1") if isinstance(raw.get("record"), dict) else None
+    if on_disk is not None and stated != on_disk:
+        raise ValueError(
+            f"{record_path.name} says the save is {stated} but "
+            f"{save_path.name} is {on_disk}; refusing to push onto a record "
+            "that is already inconsistent -- run doctor first"
         )
 
     files = raw.get("files")
@@ -226,15 +262,30 @@ def push_save(
     record_fields["sha1"] = new_hash
     record_fields["modifiedDate"] = unix_to_apple(datetime.now(timezone.utc).timestamp())
 
-    raw["sha1Hash"] = record_hash(raw)
+    # Deliberately unchanged. Recomputing it here is what made Delta ask the
+    # user to resolve a conflict after every push.
+    raw["sha1Hash"] = preserved_hash
     write_in_place(record_path, _record_bytes(raw))
 
-    # Read the record back and re-derive its hash. A record whose stored hash
-    # does not match its contents is one Delta treats as corrupt, and a short
-    # write is the one failure the in-place approach cannot rule out by
-    # construction.
+    # Read the record back and check the fields we set. A short write is the one
+    # failure the in-place approach cannot rule out by construction, and the
+    # stored hash can no longer be used to detect it, so the values themselves
+    # are what gets verified.
     written = json.loads(record_path.read_text(encoding="utf-8"))
-    if not verify_record_hash(written):
+    written_entry = next(
+        (
+            entry
+            for entry in written.get("files", [])
+            if isinstance(entry, dict) and entry.get("identifier") == file_identifier
+        ),
+        None,
+    )
+    if (
+        written.get("sha1Hash") != preserved_hash
+        or written_entry is None
+        or written_entry.get("sha1Hash") != new_hash
+        or written.get("record", {}).get("sha1") != new_hash
+    ):
         raise OSError(
             f"{record_path.name} did not verify after writing; "
             "restore it and the save from the backups taken above"
@@ -242,5 +293,5 @@ def push_save(
 
     return (
         f"wrote {new_size:,} B to {save_path.name}, "
-        f"record hash now {raw['sha1Hash'][:12]}..."
+        f"record hash preserved as {preserved_hash[:12]}..."
     )

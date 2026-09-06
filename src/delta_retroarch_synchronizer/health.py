@@ -170,13 +170,24 @@ def check_game(
         checks.append(Check("record parses", False, str(error)))
         return Health(checks)
 
-    verified = verify_record_hash(raw)
+    # Not a pass/fail condition, and reporting it as one was wrong.
+    #
+    # The record's top-level hash is stored twice: in the JSON, and in the
+    # Dropbox property group that only Delta's own app can write. A push
+    # preserves the JSON copy precisely so the two stay equal, which means the
+    # value deliberately stops describing the record's contents. Failing on that
+    # would flag every successfully pushed save as corrupt.
+    #
+    # What it does still tell us is who wrote the record last, which is useful
+    # when reading the rest of this report.
+    written_by_delta = verify_record_hash(raw)
     checks.append(
         Check(
-            "record hash matches contents",
-            verified,
-            "consistent" if verified
-            else "Delta will treat this record as corrupt. Restore it from backups.",
+            "record hash",
+            True,
+            "as Delta last wrote it" if written_by_delta
+            else "preserved from Delta's last write, as a push leaves it "
+                 "(expected -- see README, Pushing back to Delta)",
         )
     )
 

@@ -38,24 +38,6 @@ PUSH_IS_EXPERIMENTAL = (
     "phone before relying on it"
 )
 
-#: Every push leaves Delta wanting a manual "Resolve Conflict" on the device.
-#:
-#: Not sometimes, and not from writing at the same time as the phone. Proven by
-#: controlled test on 2026-09-06: push with Delta closed on the device, no other
-#: activity for 35 minutes, every desktop check green -- record sha1, both save
-#: files and both manifest sides in agreement, revision matching Dropbox -- and
-#: a conflict appeared on the next sync anyway, with Delta reporting both sides
-#: "Normal" at the same timestamp. The data agrees; only Harmony's bookkeeping
-#: does not.
-#:
-#: A PUSH_HOLD_SECONDS guard used to sit here, written on the theory that
-#: conflicts came from concurrent writes. That test falsified it and the guard
-#: was removed rather than left in place asserting a cause that does not hold.
-PUSH_CONFLICTS_IN_DELTA = (
-    "Delta will ask you to resolve this on your phone. Both versions are the "
-    "same save, so either choice is safe."
-)
-
 BACKUP_DIRNAME = "backups"
 #: How many old versions of each save to keep.
 BACKUP_KEEP = 10
@@ -509,7 +491,7 @@ def run_sync(
                 Outcome(
                     entry.name,
                     Action.PUSH,
-                    f"{detail}; {note}. {PUSH_CONFLICTS_IN_DELTA}",
+                    f"{detail}; {note}",
                     applied=True,
                 )
             )
