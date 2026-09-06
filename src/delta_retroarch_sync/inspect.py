@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import config as config_module
-from . import discovery, harmony, systems
+from . import discovery, harmony, naming, systems
 
 
 @dataclass
@@ -123,7 +123,11 @@ def find_retroarch_save(save_dir: Path, entry: GameEntry) -> Path | None:
     """
     if not save_dir.is_dir() or entry.system is None:
         return None
-    wanted = f"{entry.name}.{entry.system.retroarch_save_ext}".lower()
+    # Match the sanitised name, since that is what the ROM on disk is called --
+    # Delta's raw display name may contain characters Windows forbids.
+    wanted = naming.save_filename(
+        entry.name, entry.system.retroarch_save_ext
+    ).lower()
     for path in save_dir.rglob(f"*.{entry.system.retroarch_save_ext}"):
         if path.name.lower() == wanted:
             return path

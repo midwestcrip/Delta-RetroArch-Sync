@@ -16,15 +16,36 @@ single flat folder -- no per-game subdirectories. Two kinds of entry live in it:
 records reuse that same identifier, which is what lets us match a Delta save to
 a local ROM without any filename guessing.
 
-Record JSON shape (Harmony's ``LocalRecord.encode``):
+Record JSON shape, as observed on disk:
 
     {
       "type": "Game",
       "identifier": "<sha1>",
-      "record": {"name": ..., "filename": ..., "type": ...},
-      "files": {"game": "<sha1 of file>", "artwork": "..."},
+      "sha1Hash": "<hash of the record itself, not the ROM>",
+      "record": {
+        "name": "Pokemon: Fire Red Version",
+        "filename": "<sha1>.gba",
+        "type": "<base64 NSKeyedArchiver plist>",
+        "isFavorite": false
+      },
+      "files": [
+        {"identifier": "game", "sha1Hash": "<sha1>", "size": 16777216,
+         "remoteIdentifier": "/delta emulator/game-<sha1>-game", ...}
+      ],
       "relationships": {"gameCollection": {"type": ..., "identifier": ...}}
     }
+
+Two shapes here differ from what Harmony's encoder suggests in isolation, and
+both were corrected against real data rather than assumed:
+
+- ``files`` is a *list* of file objects, not an ``{identifier: sha1}`` map.
+  The encoder has both branches; records with uploaded files use the list.
+- Core Data attributes that are not JSON-native -- ``type`` (a GameType) and
+  ``artworkURL`` (an NSURL) -- are NSKeyedArchiver plists in base64, not the
+  plain strings they appear to be. See ``_unwrap``.
+
+``remoteIdentifier`` is Dropbox's lowercased path, so it must not be used to
+build a local filename; the on-disk name preserves the record's original case.
 
 Note that Harmony also attaches ``gameID``/``gameName`` as Dropbox *property
 groups*. Those are cloud-side metadata and are NOT mirrored to disk by the
@@ -37,7 +58,10 @@ revisions, so writing here would desync Delta itself.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
+import plistlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,13 +104,85 @@ class HarmonyRecord:
         return None
 
 
+def _resolve_archived(plist: dict[str, Any]) -> str | None:
+    """Pull the meaningful string out of a decoded NSKeyedArchiver plist.
+
+    The archive is a flat ``$objects`` table addressed by UID, with ``$top.root``
+    naming the entry point. A GameType archives to a bare string; an artworkURL
+    archives to an NSURL whose ``NS.relative`` points at the string.
+    """
+    objects = plist.get("$objects")
+    if not isinstance(objects, list):
+        return None
+
+    def at(index: Any) -> Any:
+        # plistlib represents UIDs as plistlib.UID with a .data attribute.
+        idx = getattr(index, "data", index)
+        return objects[idx] if isinstance(idx, int) and 0 <= idx < len(objects) else None
+
+    top = plist.get("$top")
+    root = at(top.get("root")) if isinstance(top, dict) else None
+
+    if isinstance(root, str):
+        return root
+    if isinstance(root, dict):
+        for key in ("NS.relative", "NS.string"):
+            resolved = at(root.get(key))
+            if isinstance(resolved, str):
+                return resolved
+
+    # Fall back to the first real string in the table; "$null" is always [0].
+    for entry in objects:
+        if isinstance(entry, str) and entry != "$null":
+            return entry
+    return None
+
+
 def _unwrap(value: Any) -> Any:
-    """Harmony encodes attributes through AnyCodable; some land as 1-key dicts."""
+    """Normalise one attribute value out of a record's ``record`` dict.
+
+    Core Data attributes that are not JSON-native -- a GameType, an NSURL --
+    are archived with NSKeyedArchiver and stored as base64. Delta's `type`
+    field is one of these, so it arrives as a base64 blob rather than the
+    "com.rileytestut.delta.game.gba" string it looks like it should be.
+    """
+    if isinstance(value, str) and len(value) > 24:
+        try:
+            blob = base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError):
+            blob = b""
+        if blob.startswith(b"bplist"):
+            try:
+                decoded = _resolve_archived(plistlib.loads(blob))
+            except (plistlib.InvalidFileException, ValueError, TypeError, IndexError):
+                decoded = None
+            if decoded is not None:
+                return decoded
+
     if isinstance(value, dict) and len(value) == 1:
         (inner,) = value.values()
         if isinstance(inner, (str, int, float, bool)):
             return inner
     return value
+
+
+def _normalise_files(value: Any) -> dict[str, Any]:
+    """Normalise a record's ``files`` into ``{identifier: metadata}``.
+
+    Harmony's encoder has two branches: a metadata-only record writes a plain
+    ``{identifier: sha1}`` map, while a record with uploaded files writes a list
+    of file objects. Real records on disk use the list form, so accept both and
+    key everything by file identifier.
+    """
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        files: dict[str, Any] = {}
+        for entry in value:
+            if isinstance(entry, dict) and isinstance(entry.get("identifier"), str):
+                files[entry["identifier"]] = entry
+        return files
+    return {}
 
 
 def parse_record(path: Path) -> HarmonyRecord | None:
@@ -110,7 +206,7 @@ def parse_record(path: Path) -> HarmonyRecord | None:
         type=str(raw["type"]),
         identifier=str(raw["identifier"]),
         fields=fields,
-        files=raw.get("files") if isinstance(raw.get("files"), dict) else {},
+        files=_normalise_files(raw.get("files")),
         relationships=(
             raw.get("relationships")
             if isinstance(raw.get("relationships"), dict)

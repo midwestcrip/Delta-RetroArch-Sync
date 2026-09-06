@@ -49,17 +49,45 @@ more exact — no region-tag or `(USA)` vs `(U)` fuzzy matching.
 
 ### Record JSON shape
 
-From `Harmony/Model/Core Data/LocalRecord.swift` (`CodingKeys`):
+Confirmed against a real sync on 2026-09-05. Two details differ from what
+`LocalRecord.swift` suggests read in isolation, and both were wrong in the first
+implementation:
 
 ```json
 {
   "type": "Game",
-  "identifier": "<sha1>",
-  "record":        { "name": "...", "filename": "<sha1>.gba", "type": "com.rileytestut.delta.game.gba" },
-  "files":         { "game": "<sha1 of file>", "artwork": "..." },
-  "relationships": { "gameCollection": { "type": "...", "identifier": "..." } }
+  "identifier": "dd5945db9b930750cb39d00c84da8571feebf417",
+  "sha1Hash": "<hash of the record itself, not the ROM>",
+  "record": {
+    "name": "Pokémon: Fire Red Version",
+    "filename": "<sha1>.gba",
+    "type": "YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb24...",
+    "isFavorite": false
+  },
+  "files": [
+    { "identifier": "game", "sha1Hash": "<sha1>", "size": 16777216,
+      "remoteIdentifier": "/delta emulator/game-<sha1>-game",
+      "versionIdentifier": "65ac6a11de26ecb175c93" }
+  ],
+  "relationships": { "gameCollection": { "type": "GameCollection", "identifier": "com.rileytestut.delta.game.gba" } }
 }
 ```
+
+1. **`files` is a list of file objects**, not an `{identifier: sha1}` map. The
+   encoder has both branches; records with uploaded files use the list.
+2. **`type` and `artworkURL` are base64 NSKeyedArchiver plists**, not strings.
+   Core Data attributes that are not JSON-native get archived. Decoding
+   `type` yields a `$objects` table of `["$null", "com.rileytestut.delta.game.gba"]`.
+
+`files[0].sha1Hash` equals the record identifier, which independently confirms
+the identifier is the SHA-1 of the ROM.
+
+`remoteIdentifier` is Dropbox's lowercased path (`/delta emulator/game-...`), so
+it must never be used to build a local filename — the file on disk keeps its
+original case (`Game-...`).
+
+A `GameCollection-<system>` record also appears, one per system. It carries no
+files and is ignored.
 
 `Game.name` is the display name, which is what RetroArch needs the copied ROM
 and its `.cht` file to be called.
@@ -133,8 +161,16 @@ implemented and tested against real data.
 
 ## RetroArch side
 
+Confirmed live on 2026-09-05 against `C:\Media\Games\Emulators\RetroArch`:
+
 - `savefile_directory` in `retroarch.cfg`. A value of `default` or empty means
-  the folder beside the config; a leading `:` means the install directory.
+  the folder beside the config; a leading `:` means the install directory. This
+  install has `":\saves"`.
+- **`sort_savefiles_enable = "true"` on this machine**, so saves are written to
+  `saves/<Core Name>/`, not `saves/` directly. The sync must mirror that.
+- RetroArch's installer accepts any location, and this one is outside every
+  conventional path, so the install is located via the uninstall registry entry
+  (`DisplayIcon`, since `InstallLocation` is blank) rather than a path guess.
 - `sort_savefiles_enable` and `sort_savefiles_by_content_enable` add subfolders
   by core or by content, changing the path the sync must write to.
 - Cheats live at `cheats/<System>/<ROM Name>.cht`, plain text:

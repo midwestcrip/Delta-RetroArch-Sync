@@ -12,6 +12,22 @@ import sys
 from . import inspect as inspect_module
 
 
+def _force_utf8_output() -> None:
+    """Print UTF-8 regardless of the console code page.
+
+    Windows consoles default to cp1252 here, which cannot encode the game names
+    Delta stores -- "Pokemon" is spelled with an e-acute and would either be
+    mangled or raise UnicodeEncodeError mid-report.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="delta-retroarch-sync",
@@ -24,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    _force_utf8_output()
+
     if args.command == "inspect":
         return inspect_module.run()
 

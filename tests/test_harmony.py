@@ -1,14 +1,20 @@
 """Tests against a synthetic Delta folder.
 
-The real folder does not exist yet on any dev machine, so these fixtures encode
-the layout read out of Harmony's source (LocalRecord.encode, DropboxService).
-When real data is available, the first job is to diff it against these fixtures
-and fix whichever one is wrong.
+The fixtures below were corrected against a real Delta sync on 2026-09-05, which
+disagreed with Harmony's source in two ways that matter: `files` arrives as a
+list of file objects rather than an {identifier: sha1} map, and non-JSON-native
+Core Data attributes -- `type`, `artworkURL` -- are base64 NSKeyedArchiver
+plists rather than plain strings.
+
+Keep these shapes faithful to real data. They are the only place the wire format
+is pinned down, and a fixture that drifts from reality tests nothing.
 """
 
 from __future__ import annotations
 
+import base64
 import json
+import plistlib
 import sys
 import unittest
 from pathlib import Path
@@ -16,10 +22,39 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from delta_retroarch_sync import harmony, inspect, systems  # noqa: E402
+from delta_retroarch_sync import harmony, inspect, naming, systems  # noqa: E402
 
 FIRERED_SHA1 = "0" * 40
 UNSUPPORTED_SHA1 = "1" * 40
+
+
+def archived(value: str) -> str:
+    """Encode a string the way Delta stores GameType: NSKeyedArchiver + base64.
+
+    Matches the real payload byte-for-byte in structure: a $objects table whose
+    slot 0 is "$null", with $top.root pointing at the real value.
+    """
+    plist = {
+        "$version": 100000,
+        "$archiver": "NSKeyedArchiver",
+        "$top": {"root": plistlib.UID(1)},
+        "$objects": ["$null", value],
+    }
+    blob = plistlib.dumps(plist, fmt=plistlib.FMT_BINARY)
+    return base64.b64encode(blob).decode("ascii")
+
+
+def game_files(sha1: str) -> list[dict]:
+    """The list-of-objects `files` shape real records use."""
+    return [
+        {
+            "identifier": "game",
+            "sha1Hash": sha1,
+            "size": 16777216,
+            "remoteIdentifier": f"/delta emulator/game-{sha1}-game",
+            "versionIdentifier": "65ac6a11de26ecb175c93",
+        }
+    ]
 
 
 def build_delta_folder(root: Path) -> Path:
@@ -37,9 +72,9 @@ def build_delta_folder(root: Path) -> Path:
             "record": {
                 "name": "Pokemon FireRed",
                 "filename": f"{FIRERED_SHA1}.gba",
-                "type": "com.rileytestut.delta.game.gba",
+                "type": archived("com.rileytestut.delta.game.gba"),
             },
-            "files": {"game": "abc", "artwork": "def"},
+            "files": game_files(FIRERED_SHA1),
             "relationships": {},
         },
     )
@@ -49,7 +84,7 @@ def build_delta_folder(root: Path) -> Path:
             "type": "GameSave",
             "identifier": FIRERED_SHA1,
             "record": {"sha1": "abc"},
-            "files": {"gameSave": "abc"},
+            "files": [{"identifier": "gameSave", "sha1Hash": "abc", "size": 131072}],
             "relationships": {"game": {"type": "Game", "identifier": FIRERED_SHA1}},
         },
     )
@@ -75,9 +110,9 @@ def build_delta_folder(root: Path) -> Path:
             "record": {
                 "name": "Ocarina of Time",
                 "filename": f"{UNSUPPORTED_SHA1}.z64",
-                "type": "com.rileytestut.delta.game.n64",
+                "type": archived("com.rileytestut.delta.game.n64"),
             },
-            "files": {"game": "ghi"},
+            "files": game_files(UNSUPPORTED_SHA1),
             "relationships": {},
         },
     )
@@ -87,8 +122,11 @@ def build_delta_folder(root: Path) -> Path:
         {
             "type": "Game",
             "identifier": "com.rileytestut.MelonDSDeltaCore.BIOS",
-            "record": {"name": "Home Screen", "type": "com.rileytestut.delta.game.ds"},
-            "files": {"bios7": "x", "bios9": "y"},
+            "record": {
+                "name": "Home Screen",
+                "type": archived("com.rileytestut.delta.game.ds"),
+            },
+            "files": [{"identifier": "bios7", "sha1Hash": "x"}],
             "relationships": {},
         },
     )
@@ -160,6 +198,62 @@ class RetroArchConfigTests(unittest.TestCase):
                 settings, "savefile_directory", cfg, "saves"
             )
             self.assertEqual(resolved, cfg.parent / "saves")
+
+
+class ArchivedAttributeTests(unittest.TestCase):
+    def test_game_type_is_decoded_from_the_archived_blob(self) -> None:
+        with TemporaryDirectory() as tmp:
+            folder = build_delta_folder(Path(tmp))
+            entries = {e.name: e for e in inspect.collect_games(folder)}
+            self.assertEqual(
+                entries["Pokemon FireRed"].delta_type,
+                "com.rileytestut.delta.game.gba",
+            )
+
+    def test_plain_strings_pass_through_untouched(self) -> None:
+        self.assertEqual(harmony._unwrap("actionReplay"), "actionReplay")
+
+    def test_long_non_base64_strings_are_not_mangled(self) -> None:
+        name = "A Very Long Game Name That Is Not Base64 At All!!"
+        self.assertEqual(harmony._unwrap(name), name)
+
+
+class NamingTests(unittest.TestCase):
+    def test_colon_becomes_a_dash_rather_than_vanishing(self) -> None:
+        # The real first game synced: a colon is illegal in Windows paths.
+        self.assertEqual(
+            naming.safe_filename("Pokémon: Fire Red Version"),
+            "Pokémon - Fire Red Version",
+        )
+
+    def test_accents_are_preserved(self) -> None:
+        self.assertIn("é", naming.safe_filename("Pokémon"))
+
+    def test_every_illegal_character_is_removed(self) -> None:
+        illegal = r'<>"/\|?*'
+        cleaned = naming.safe_filename("a" + illegal + "b")
+        for bad in illegal:
+            self.assertNotIn(bad, cleaned)
+        # The surviving text is still there; only the illegal bytes went.
+        self.assertEqual(cleaned, "ab")
+
+    def test_control_characters_are_removed(self) -> None:
+        self.assertEqual(naming.safe_filename("a\x00b\x1fc\x7f"), "abc")
+
+    def test_trailing_dot_is_dropped_because_windows_drops_it(self) -> None:
+        self.assertEqual(naming.safe_filename("Game."), "Game")
+
+    def test_reserved_device_names_are_escaped(self) -> None:
+        self.assertEqual(naming.safe_filename("CON"), "CON_")
+
+    def test_empty_result_falls_back(self) -> None:
+        self.assertEqual(naming.safe_filename("///"), "untitled")
+
+    def test_rom_and_save_share_a_stem(self) -> None:
+        name = "Pokémon: Fire Red Version"
+        rom = naming.rom_filename(name, "gba")
+        save = naming.save_filename(name, "srm")
+        self.assertEqual(rom.rsplit(".", 1)[0], save.rsplit(".", 1)[0])
 
 
 if __name__ == "__main__":
