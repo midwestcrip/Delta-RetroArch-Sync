@@ -233,6 +233,27 @@ def push_save(
         )
     file_entry = matching[0]
 
+    new_size = source_save.stat().st_size
+
+    # A cartridge's SRAM is a fixed size, so a save that has changed size has
+    # changed *format*, not contents -- almost certainly an emulator appending
+    # something Delta does not expect. Game Boy Color is the live case: Delta
+    # keeps the clock in a separate 4-byte file, while some libretro cores
+    # append RTC state to the .srm, which would make RetroArch's file larger
+    # than the 32768 bytes Delta's record describes.
+    #
+    # Pushing that verbatim would hand Delta a save it cannot read, in the one
+    # direction that can damage the phone's copy. Refuse instead, and say what
+    # the difference is rather than making the user work it out.
+    expected_size = file_entry.get("size")
+    if isinstance(expected_size, int) and new_size != expected_size:
+        raise ValueError(
+            f"{source_save.name} is {new_size:,} B but Delta's record expects "
+            f"{expected_size:,} B. A save that changes size has changed format, "
+            "so this is not pushed. If the emulator appends clock or footer data "
+            "to the save, that has to be handled deliberately before pushing."
+        )
+
     # Everything below writes. Back up both pieces together first, so the record
     # and the save it describes can be restored as a matched pair.
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -242,7 +263,6 @@ def push_save(
         shutil.copy2(save_path, backup_dir / f"{save_path.name}.{stamp}.bak")
 
     new_hash = sha1_of(source_save)
-    new_size = source_save.stat().st_size
 
     # Save file first: if the record update fails, the record still points at
     # the old hash, so Delta ignores the file rather than acting on a mismatch.

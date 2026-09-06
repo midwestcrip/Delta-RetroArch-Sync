@@ -208,6 +208,25 @@ class PushTests(unittest.TestCase):
         self.assertEqual(self.save_path.read_bytes(), b"\xff" * 131072)
         self.assertFalse(self.backups.exists())
 
+    def test_refuses_a_save_that_changed_size(self) -> None:
+        """A cartridge's SRAM is fixed, so a size change is a format change.
+
+        The live case is Game Boy Color: Delta keeps the clock in a separate
+        4-byte file, while some libretro cores append RTC state to the .srm.
+        Pushing that verbatim would hand Delta a save it cannot read, in the one
+        direction that can damage the phone's copy.
+        """
+        self.source.write_bytes(bytes(131072) + b"RTC!")
+
+        with self.assertRaises(ValueError) as caught:
+            self.push()
+        self.assertIn("131,076", str(caught.exception))
+        self.assertIn("131,072", str(caught.exception))
+
+        # Refused before anything was touched, backups included.
+        self.assertEqual(self.save_path.read_bytes(), b"\xff" * 131072)
+        self.assertFalse(self.backups.exists())
+
     def test_refuses_a_record_with_no_hash_to_preserve(self) -> None:
         raw = json.loads(self.record_path.read_text(encoding="utf-8"))
         del raw["sha1Hash"]
