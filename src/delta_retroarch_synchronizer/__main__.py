@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 from . import config as config_module
@@ -142,6 +143,24 @@ def run_doctor_command() -> int:
     if dropbox is None:
         print("Dropbox not authorised: revision checks will be skipped.")
         print()
+
+    activity = health.delta_activity(delta_folder)
+    age = activity.age_seconds(time.time())
+    if age is None:
+        print("Delta has not dated anything in this folder.")
+    else:
+        print(f"Delta last wrote {health.describe_age(age)} ago.")
+    # Only worth suggesting when the number could plausibly be wrong. Saying
+    # "if that is older than you expect" under a figure of two minutes just
+    # trains people to skip the line.
+    if age is None or age > health.SUSPICIOUS_SILENCE_SECONDS:
+        print(
+            "  If that is older than you expect, Delta may be signed into a "
+            "different Dropbox\n"
+            "  account than this folder belongs to. Check Settings -> Delta "
+            "Sync on your phone."
+        )
+    print()
 
     entries = inspect_module.collect_games(delta_folder)
     failures = 0

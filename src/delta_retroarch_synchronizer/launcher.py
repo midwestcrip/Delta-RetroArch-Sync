@@ -22,6 +22,7 @@ from __future__ import annotations
 import queue
 import subprocess
 import threading
+import time
 import webbrowser
 import tkinter as tk
 from dataclasses import replace
@@ -516,6 +517,7 @@ class LauncherWindow:
         )
 
         self._say(f"--- {label} ---")
+        changed_anything = False
         for entry in entries:
             if entry.system is None:
                 continue
@@ -541,10 +543,20 @@ class LauncherWindow:
             for outcome in report.outcomes:
                 if outcome.action is sync_module.Action.NOTHING:
                     continue
+                changed_anything = True
                 self._say(f"  {outcome.game}: {outcome.action.value}")
                 self._say(f"      {outcome.detail}")
             if not any(o.action is not sync_module.Action.NOTHING for o in report.outcomes):
                 self._say(f"  {entry.name}: already up to date")
+
+        # "Already up to date" is the one message that looks identical whether
+        # the sync worked perfectly or Delta has been writing to a different
+        # Dropbox account for a week. Saying when Delta last wrote is what
+        # separates the two, and it is only worth saying when nothing moved.
+        if not changed_anything and config.delta_folder is not None:
+            activity = health.delta_activity(config.delta_folder)
+            self._say("")
+            self._say(f"  {health.idle_sync_note(activity, time.time())}")
 
     def _sync_work(self) -> None:
         self._sync_once("Sync")

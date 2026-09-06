@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import dropbox_api, harmony
+from .manifest import apple_timestamp_to_unix
 
 
 @dataclass
@@ -32,6 +33,95 @@ class Check:
     name: str
     ok: bool
     detail: str
+
+
+@dataclass
+class DeltaActivity:
+    """When Delta itself last wrote to the synced folder.
+
+    Delta signed into the wrong Dropbox account is undetectable from inside the
+    right one: account B leaves no trace in account A's folder, so there is
+    nothing to look for. It happened on 2026-09-06 and cost an hour, with every
+    desktop-side check passing because everything on the desktop genuinely was
+    fine.
+
+    What *is* observable is that Delta stops writing. That is weak on its own --
+    not having played is equally consistent with it -- but it becomes sharp at
+    one specific moment: a sync that finds nothing to do. "Already up to date"
+    and "your phone has been writing somewhere else for a week" look identical
+    to the user, and this is what tells them apart.
+
+    Read from Delta's own ``modifiedDate`` rather than file timestamps, which
+    are rewritten wholesale whenever Dropbox re-downloads the folder.
+    """
+
+    #: Unix timestamp of the newest Delta write, or None if nothing is dated.
+    last_write: float | None
+    #: Records seen, and how many carried a usable date. Game and
+    #: GameCollection records have no modifiedDate; saves and cheats do.
+    records: int
+    dated: int
+
+    def age_seconds(self, now: float) -> float | None:
+        return None if self.last_write is None else max(0.0, now - self.last_write)
+
+
+#: Past this, "Delta last wrote N ago" is worth questioning out loud. Half a day
+#: covers an ordinary night's gap without prompting; it is a noise threshold for
+#: the standalone report, not a judgement about whether anything is wrong. The
+#: launcher ignores it, because there the message only appears when a sync
+#: already found nothing to do, and then the age matters at any size.
+SUSPICIOUS_SILENCE_SECONDS = 12 * 3600
+
+
+def describe_age(seconds: float) -> str:
+    """A duration a person would say out loud, not a precise one."""
+    minutes = seconds / 60
+    if minutes < 90:
+        count, unit = round(minutes), "minute"
+    elif minutes < 60 * 36:
+        count, unit = round(minutes / 60), "hour"
+    else:
+        count, unit = round(minutes / 1440), "day"
+    return f"{count} {unit}{'' if count == 1 else 's'}"
+
+
+def delta_activity(delta_folder: Path) -> DeltaActivity:
+    """Find when Delta last wrote anything to its folder."""
+    newest: float | None = None
+    records = 0
+    dated = 0
+
+    for record in harmony.iter_records(delta_folder):
+        records += 1
+        raw = record.fields.get("modifiedDate")
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+            continue
+        dated += 1
+        when = apple_timestamp_to_unix(float(raw))
+        if newest is None or when > newest:
+            newest = when
+
+    return DeltaActivity(last_write=newest, records=records, dated=dated)
+
+
+def idle_sync_note(activity: DeltaActivity, now: float) -> str:
+    """What to say when a sync found nothing to do.
+
+    Phrased as a fact plus a question the user can answer and we cannot: only
+    they know whether they have played since then.
+    """
+    age = activity.age_seconds(now)
+    if age is None:
+        return (
+            "Delta has not dated anything in this folder, so there is no way to "
+            "tell when it last synced."
+        )
+    return (
+        f"Delta last wrote {describe_age(age)} ago. If you have played since "
+        "then, check Settings -> Delta Sync on your phone: Delta may be signed "
+        "into a different Dropbox account, or its sync may be off."
+    )
 
 
 @dataclass
