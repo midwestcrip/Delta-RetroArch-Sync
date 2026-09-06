@@ -229,23 +229,28 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
         )
 
     syncable = [entry for entry in entries if entry not in missing]
-    state_dir = paths.state_dir()
 
     dropbox = load_dropbox() if allow_push else None
+
+    # Deliberately not called `paths`: that name is the module imported at the
+    # top of this file, and assigning it here made every earlier reference to
+    # paths.state_dir() raise UnboundLocalError, because Python treats a name
+    # assigned anywhere in a function as local throughout it. The CLI sync
+    # command could not run at all.
+    sync_paths = sync_module.Paths(
+        delta_folder=delta_folder,
+        retroarch_config=retroarch_config,
+        save_dir=save_dir,
+        state_dir=paths.state_dir(),
+    )
 
     report = sync_module.SyncReport()
     for entry in syncable:
         if entry.system is None:
             continue
         core = _core_for(entry.system.retroarch_cores, installed) or ""
-        paths = sync_module.Paths(
-            delta_folder=delta_folder,
-            retroarch_config=retroarch_config,
-            save_dir=save_dir,
-            state_dir=state_dir,
-        )
         single = sync_module.run_sync(
-            paths,
+            sync_paths,
             [entry],
             core,
             sorted_by_core,
