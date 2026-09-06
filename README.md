@@ -72,7 +72,18 @@ are hard-blocked in `systems.py` until then — see
   Drive stores files in a hidden `appDataFolder` that nothing but Delta can read
 - RetroArch, launched at least once so it has written its config
 
-## Usage
+## Install
+
+**Download the executable.** No Python, nothing else to install. Put it wherever
+you like and run it — it keeps its settings, credentials and save backups in the
+same folder, so a portable location works fine. (In Program Files or anywhere
+else non-writable it falls back to `%LOCALAPPDATA%`.)
+
+The window finds Delta's Dropbox folder and your RetroArch install by itself.
+If it cannot, the paths are editable in the window.
+
+**Or run from source** — needs Python 3.11+ and nothing else; this tool has no
+third-party dependencies.
 
 Add it to the Start menu once, then search for "Delta":
 
@@ -169,6 +180,20 @@ git config core.hooksPath .githooks
 
 It never blocks a commit — if the push fails (offline, no remote, rejected) it
 prints a note and the commit stays safely in local history.
+
+## Building the downloads
+
+```
+python tools/build_release.py
+```
+
+Produces both the standalone executable and a source zip in `dist/`.
+PyInstaller is needed for the executable and is a build dependency only —
+nothing it produces is imported by the tool, and the zip build does not use it.
+
+The zip's contents are an explicit list rather than "everything not gitignored",
+so a release cannot accidentally carry a `config.toml`, a Dropbox token, a
+manifest or somebody's save backups.
 
 ## Tests
 

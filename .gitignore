@@ -38,8 +38,13 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+# Build output. dist-debug/build-debug are diagnostic builds; without
+# these globs they show up as ~130k untracked lines.
 dist/
 build/
+dist*/
+build*/
+*.spec
 .pytest_cache/
 .ruff_cache/
 
@@ -54,3 +59,5 @@ dropbox-token.json
 .dropbox-auth-pending.json
 launcher-preview.png
 icon-check.png
+dist/
+build/

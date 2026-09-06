@@ -29,7 +29,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from . import config as config_module
-from . import discovery, dropbox_api, health
+from . import discovery, dropbox_api, health, paths
 from . import inspect as inspect_module
 from . import sync as sync_module
 
@@ -37,7 +37,7 @@ WINDOW_TITLE = "Delta-RetroArch Synchronizer"
 
 
 def _state_dir() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return paths.state_dir()
 
 
 class LauncherWindow:
@@ -54,7 +54,7 @@ class LauncherWindow:
 
         # Gives the window its own taskbar and title-bar icon instead of the
         # generic Python feather.
-        icon = _state_dir() / "assets" / "synchronizer.ico"
+        icon = paths.resource_dir() / "assets" / "synchronizer.ico"
         if icon.is_file():
             try:
                 root.iconbitmap(default=str(icon))
@@ -83,13 +83,14 @@ class LauncherWindow:
         self.log.configure(state="disabled", relief="sunken", borderwidth=1)
         self.log.grid(row=0, column=0, sticky="ew", pady=(0, 8))
 
-        paths = ttk.LabelFrame(outer, text="Paths", padding=6)
-        paths.grid(row=1, column=0, sticky="ew", pady=(0, 6))
-        paths.columnconfigure(1, weight=1)
+        # Not named `paths`: that shadows the paths module this file imports.
+        path_frame = ttk.LabelFrame(outer, text="Paths", padding=6)
+        path_frame.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        path_frame.columnconfigure(1, weight=1)
 
-        self._path_row(paths, 0, "Delta folder (Dropbox)", self.delta_var, directory=True)
-        self._path_row(paths, 1, "RetroArch", self.exe_var, directory=False)
-        self._path_row(paths, 2, "ROM folder", self.rom_var, directory=True)
+        self._path_row(path_frame, 0, "Delta folder (Dropbox)", self.delta_var, directory=True)
+        self._path_row(path_frame, 1, "RetroArch", self.exe_var, directory=False)
+        self._path_row(path_frame, 2, "ROM folder", self.rom_var, directory=True)
 
         options = ttk.LabelFrame(outer, text="Sync options", padding=6)
         options.grid(row=2, column=0, sticky="ew", pady=(0, 6))

@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from . import config as config_module
-from . import discovery, dropbox_api, health
+from . import discovery, dropbox_api, health, paths
 from . import inspect as inspect_module
 from . import sync as sync_module
 
@@ -55,7 +55,7 @@ def _core_for(system_cores: tuple[str, ...], installed: dict[str, str]) -> str |
 
 
 def token_path() -> Path:
-    return Path(__file__).resolve().parents[2] / dropbox_api.TOKEN_FILENAME
+    return paths.state_dir() / dropbox_api.TOKEN_FILENAME
 
 
 def load_dropbox() -> "dropbox_api.DropboxClient | None":
@@ -64,7 +64,7 @@ def load_dropbox() -> "dropbox_api.DropboxClient | None":
 
 
 def pending_path() -> Path:
-    return Path(__file__).resolve().parents[2] / ".dropbox-auth-pending.json"
+    return paths.state_dir() / ".dropbox-auth-pending.json"
 
 
 def run_auth_command(app_key: str | None, code: str | None) -> int:
@@ -210,7 +210,7 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
         )
 
     syncable = [entry for entry in entries if entry not in missing]
-    state_dir = Path(__file__).resolve().parents[2]
+    state_dir = paths.state_dir()
 
     dropbox = load_dropbox() if allow_push else None
 

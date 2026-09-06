@@ -12,6 +12,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import paths as paths_module
+
 CONFIG_FILENAME = "config.toml"
 
 
@@ -50,7 +52,7 @@ def _path(raw: object) -> Path | None:
 
 def find_config_file(start: Path | None = None) -> Path | None:
     """Look for config.toml next to the project root."""
-    base = start or Path(__file__).resolve().parents[2]
+    base = start or paths_module.state_dir()
     candidate = base / CONFIG_FILENAME
     return candidate if candidate.is_file() else None
 
@@ -93,7 +95,7 @@ def save(config: Config, path: Path | None = None) -> Path:
     TOML but not write it, and one dependency for six lines of output is a poor
     trade for a tool that otherwise needs none.
     """
-    path = path or (Path(__file__).resolve().parents[2] / CONFIG_FILENAME)
+    path = path or (paths_module.state_dir() / CONFIG_FILENAME)
 
     def line(key: str, value: Path | None) -> str:
         if value is None:
