@@ -200,6 +200,9 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
     # the install and let config.toml override it.
     config = config_module.load()
     rom_dir = config.retroarch_rom_dir or (retroarch_config.parent / "roms")
+    playlist_dir = discovery.resolve_retroarch_dir(
+        settings, "playlist_directory", retroarch_config, "playlists"
+    )
     cheat_dir = discovery.resolve_retroarch_dir(
         settings, "cheat_database_path", retroarch_config, "cheats"
     )
@@ -257,6 +260,7 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
             dry_run=dry_run,
             allow_push=allow_push,
             rom_dir=rom_dir,
+            playlist_dir=playlist_dir,
             dropbox=dropbox,
             cheat_dir=cheat_dir,
             cheats_by_game=cheats_by_game,

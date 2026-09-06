@@ -638,7 +638,7 @@ class LauncherWindow:
     def _say(self, text: str) -> None:
         self.messages.put(("log", text))
 
-    def _prepare(self) -> tuple[sync_module.Paths, list, str, bool, Path] | None:
+    def _prepare(self) -> tuple[sync_module.Paths, list, str, bool, Path, Path] | None:
         config = self.config
         if config.delta_folder is None or not config.delta_folder.is_dir():
             self._say("Delta folder not set or missing.")
@@ -656,6 +656,9 @@ class LauncherWindow:
         cheat_dir = discovery.resolve_retroarch_dir(
             settings, "cheat_database_path", retroarch_config, "cheats"
         )
+        playlist_dir = discovery.resolve_retroarch_dir(
+            settings, "playlist_directory", retroarch_config, "playlists"
+        )
         sorted_by_core = discovery.truthy(settings, "sort_savefiles_enable")
         installed = discovery.installed_cores(retroarch_config, settings)
 
@@ -670,13 +673,13 @@ class LauncherWindow:
             save_dir=save_dir,
             state_dir=_state_dir(),
         )
-        return paths, entries, installed, sorted_by_core, cheat_dir
+        return paths, entries, installed, sorted_by_core, cheat_dir, playlist_dir
 
     def _status_work(self) -> None:
         prepared = self._prepare()
         if prepared is None:
             return
-        _, entries, installed, _, _ = prepared
+        _, entries, installed, _, _, _ = prepared
         self._say(f"{len(entries)} game(s) in Delta:")
         for entry in entries:
             mark = " " if entry.supported else "!"
@@ -706,7 +709,7 @@ class LauncherWindow:
         prepared = self._prepare()
         if prepared is None:
             return
-        paths, entries, installed, sorted_by_core, cheat_dir = prepared
+        paths, entries, installed, sorted_by_core, cheat_dir, playlist_dir = prepared
         config = self.config
 
         dropbox = None
@@ -743,6 +746,7 @@ class LauncherWindow:
                 sorted_by_core,
                 allow_push=config.push_enabled,
                 rom_dir=config.retroarch_rom_dir if config.sync_roms else None,
+                playlist_dir=playlist_dir if config.sync_roms else None,
                 dropbox=dropbox,
                 cheat_dir=cheat_dir if config.sync_cheats else None,
                 cheats_by_game=cheats_by_game,

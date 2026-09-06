@@ -25,7 +25,7 @@ from . import harmony
 from . import delta_writer, dropbox_api
 from . import inspect as inspect_module
 from . import manifest as manifest_module
-from . import naming
+from . import naming, playlist
 
 #: The RetroArch -> Delta direction writes into Delta's Dropbox folder, which
 #: Delta's own docs warn against. It is off by default and enabled per run.
@@ -34,6 +34,11 @@ from . import naming
 #: the existing record's hash before touching anything. The one part that cannot
 #: be derived locally is the save's Dropbox revision, which is read back from the
 #: API after the desktop client uploads -- see push_with_revision.
+PUSH_IS_EXPERIMENTAL = (
+    "push writes into Delta's Dropbox folder; verify the change reaches your "
+    "phone before relying on it"
+)
+
 #: How recently Delta must have written a save record for a push to be held back.
 #:
 #: Delta assumes it is the only thing writing to its Dropbox folder. A desktop
@@ -80,11 +85,6 @@ def delta_wrote_within(
     age = max(0.0, now - manifest_module.apple_timestamp_to_unix(float(raw)))
     return age if age < seconds else None
 
-
-PUSH_IS_EXPERIMENTAL = (
-    "push writes into Delta's Dropbox folder; verify the change reaches your "
-    "phone before relying on it"
-)
 
 BACKUP_DIRNAME = "backups"
 #: How many old versions of each save to keep.
@@ -294,6 +294,50 @@ def sync_rom(
     )
 
 
+def register_in_playlist(
+    entry: inspect_module.GameEntry,
+    rom_dir: Path,
+    playlist_dir: Path | None,
+    *,
+    dry_run: bool = False,
+) -> Outcome | None:
+    """Make a copied ROM visible on RetroArch's menu.
+
+    Copying a ROM into a folder does nothing for RetroArch, which lists content
+    from playlists. On a fresh install there are none, so the menu stays empty
+    and the game can only be reached through Load Content.
+    """
+    if playlist_dir is None or entry.system is None or not entry.rom_extension:
+        return None
+    if not entry.system.retroarch_db_name:
+        return None
+
+    destination = rom_dir / naming.rom_filename(entry.name, entry.rom_extension)
+    if not destination.is_file():
+        return None
+
+    target = playlist.playlist_path(playlist_dir, entry.system.retroarch_db_name)
+
+    if dry_run:
+        if playlist.contains(playlist.load(target), destination):
+            return None
+        return Outcome(
+            entry.name, Action.PULL, f"would add to playlist {target.name}"
+        )
+
+    written = playlist.register(
+        playlist_dir, entry.system.retroarch_db_name, destination, entry.name
+    )
+    if written is None:
+        return None
+    return Outcome(
+        entry.name,
+        Action.PULL,
+        f"added to RetroArch playlist {written.name}",
+        applied=True,
+    )
+
+
 def push_with_revision(
     paths: "Paths",
     entry: inspect_module.GameEntry,
@@ -408,6 +452,7 @@ def run_sync(
     dry_run: bool = False,
     allow_push: bool = False,
     rom_dir: Path | None = None,
+    playlist_dir: Path | None = None,
     dropbox: "dropbox_api.DropboxClient | None" = None,
     cheat_dir: Path | None = None,
     cheats_by_game: dict[str, list[dict[str, str]]] | None = None,
@@ -430,6 +475,16 @@ def run_sync(
             rom_outcome = sync_rom(entry, rom_dir, dry_run=dry_run)
             if rom_outcome is not None:
                 report.outcomes.append(rom_outcome)
+
+            # Registered whether or not the ROM was just copied: a game put
+            # there by an earlier version, or by hand, is equally invisible
+            # until it is in a playlist, and RetroArch shows content from
+            # playlists rather than from directories.
+            playlist_outcome = register_in_playlist(
+                entry, rom_dir, playlist_dir, dry_run=dry_run
+            )
+            if playlist_outcome is not None:
+                report.outcomes.append(playlist_outcome)
 
         if cheat_dir is not None and cheats_by_game is not None:
             cheat_outcome = sync_cheats(
