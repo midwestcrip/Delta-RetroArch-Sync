@@ -14,6 +14,7 @@ difference. Data loss is the failure mode being designed against, so:
 from __future__ import annotations
 
 import shutil
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -33,6 +34,53 @@ from . import naming
 #: the existing record's hash before touching anything. The one part that cannot
 #: be derived locally is the save's Dropbox revision, which is read back from the
 #: API after the desktop client uploads -- see push_with_revision.
+#: How recently Delta must have written a save record for a push to be held back.
+#:
+#: Delta assumes it is the only thing writing to its Dropbox folder. A desktop
+#: push landing while someone is mid-session on the phone gives Harmony two
+#: writers on one record, and it responds by marking the record conflicted and
+#: asking the user to pick a version by hand on the device. That happened on
+#: 2026-09-06: the desktop pushed at 12:27 and again at 12:32 while the same
+#: save was being played on an iPad.
+#:
+#: Nothing is corrupted when it happens -- Delta is right to refuse to guess --
+#: but it is a manual chore caused entirely by timing, and the timing is
+#: visible from here. This is a heuristic about people, not a guarantee: long
+#: enough to span the gap between saves in a session, short enough that
+#: finishing on the phone and walking to the desk is not blocked.
+PUSH_HOLD_SECONDS = 180.0
+
+
+def delta_wrote_within(
+    delta_folder: Path, identifier: str, seconds: float, now: float
+) -> float | None:
+    """Seconds since Delta last wrote this save's record, if that was recent.
+
+    None when there is no record, it carries no date, or it is old enough that a
+    push will not collide with anyone -- all cases where pushing is fine.
+
+    A clock on the phone running ahead of this one yields a negative age, which
+    is clamped to zero rather than read as "long ago": the safe direction for an
+    unreliable comparison is to hold the push, because the cost of holding is a
+    delay and the cost of not holding is a conflict.
+    """
+    try:
+        record_path = harmony.resolve_existing(delta_folder, f"GameSave-{identifier}")
+    except OSError:
+        return None
+
+    record = harmony.parse_record(record_path)
+    if record is None:
+        return None
+
+    raw = record.fields.get("modifiedDate")
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        return None
+
+    age = max(0.0, now - manifest_module.apple_timestamp_to_unix(float(raw)))
+    return age if age < seconds else None
+
+
 PUSH_IS_EXPERIMENTAL = (
     "push writes into Delta's Dropbox folder; verify the change reaches your "
     "phone before relying on it"
@@ -399,6 +447,22 @@ def run_sync(
         action, detail = decide(state.get(entry.identifier), entry.save_path, target)
 
         if action is Action.PUSH:
+            recent = delta_wrote_within(
+                paths.delta_folder, entry.identifier, PUSH_HOLD_SECONDS, time.time()
+            )
+            if allow_push and recent is not None:
+                report.outcomes.append(
+                    Outcome(
+                        entry.name,
+                        Action.SKIPPED,
+                        f"{detail}; held back because Delta wrote this save "
+                        f"{int(recent)}s ago. Pushing on top of a record Delta "
+                        "has just touched is what makes it ask you to resolve a "
+                        "conflict by hand. Sync again once you have stopped "
+                        "playing on the phone.",
+                    )
+                )
+                continue
             if not allow_push:
                 report.outcomes.append(
                     Outcome(
