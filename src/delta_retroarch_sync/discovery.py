@@ -98,9 +98,64 @@ def find_delta_folder() -> Discovery:
     )
 
 
+def _registry_retroarch_dirs() -> list[Path]:
+    """Ask Windows where RetroArch was installed.
+
+    RetroArch's installer lets you put it anywhere, so a candidate list of
+    "usual" paths misses real installs. The uninstall registry entry is
+    authoritative. InstallLocation is often blank for this installer, but
+    DisplayIcon points at retroarch.exe, so fall back to its parent directory.
+    """
+    try:
+        import winreg
+    except ImportError:  # Not on Windows.
+        return []
+
+    hives = [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ]
+
+    found: list[Path] = []
+    for hive, subkey in hives:
+        try:
+            root = winreg.OpenKey(hive, subkey)
+        except OSError:
+            continue
+        with root:
+            for index in range(winreg.QueryInfoKey(root)[0]):
+                try:
+                    name = winreg.EnumKey(root, index)
+                    with winreg.OpenKey(root, name) as entry:
+                        display = str(winreg.QueryValueEx(entry, "DisplayName")[0])
+                        if "retroarch" not in display.lower():
+                            continue
+                        for value, is_exe in (
+                            ("InstallLocation", False),
+                            ("DisplayIcon", True),
+                        ):
+                            try:
+                                raw = str(winreg.QueryValueEx(entry, value)[0]).strip()
+                            except OSError:
+                                continue
+                            if not raw:
+                                continue
+                            # DisplayIcon may carry an icon index: "path.exe,0".
+                            path = Path(raw.split(",")[0].strip('"'))
+                            directory = path.parent if is_exe else path
+                            if directory.is_dir():
+                                found.append(directory)
+                except OSError:
+                    continue
+    return found
+
+
 def find_retroarch_config() -> Discovery:
     """Find retroarch.cfg across the usual Windows install layouts."""
     candidates = [
+        directory / "retroarch.cfg" for directory in _registry_retroarch_dirs()
+    ] + [
         Path(os.environ.get("APPDATA", "")) / "RetroArch" / "retroarch.cfg",
         Path("C:/RetroArch-Win64/retroarch.cfg"),
         Path("C:/RetroArch/retroarch.cfg"),
