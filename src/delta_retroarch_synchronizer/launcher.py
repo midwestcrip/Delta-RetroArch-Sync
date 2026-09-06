@@ -19,8 +19,10 @@ Two things shape the design:
 
 from __future__ import annotations
 
+import os
 import queue
 import subprocess
+import sys
 import threading
 import time
 import webbrowser
@@ -28,6 +30,7 @@ import tkinter as tk
 from dataclasses import replace
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
+from typing import Any
 
 from . import config as config_module
 from . import discovery, dropbox_api, health, paths
@@ -89,6 +92,128 @@ def resolve_paths(
     return config, notes
 
 
+class Tooltip:
+    """A hover description for one widget.
+
+    A checkbox label has room for a setting's name and not its reason, and the
+    reasons here are not guessable: "Export cheats" does not tell you that they
+    travel one way only, and "Send desktop saves back" does not tell you it is
+    the one operation that can leave Delta needing manual repair. Both naive-user
+    tests said the app explains nothing, and this is the cheapest place to fix
+    that -- the text is there when wanted and invisible when not.
+    """
+
+    DELAY_MS = 450
+    WRAP_PIXELS = 340
+
+    def __init__(self, widget: tk.Widget, text: str) -> None:
+        self.widget = widget
+        self.text = text
+        self.tip: tk.Toplevel | None = None
+        self.after_id: str | None = None
+
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        # A click means they have decided; the explanation is only in the way.
+        widget.bind("<ButtonPress>", self._hide, add="+")
+        widget.bind("<Destroy>", self._hide, add="+")
+
+    def _schedule(self, _event: object = None) -> None:
+        self._cancel()
+        self.after_id = self.widget.after(self.DELAY_MS, self._show)
+
+    def _cancel(self) -> None:
+        if self.after_id is not None:
+            try:
+                self.widget.after_cancel(self.after_id)
+            except tk.TclError:
+                pass
+            self.after_id = None
+
+    def _show(self) -> None:
+        if self.tip is not None:
+            return
+        try:
+            x = self.widget.winfo_pointerx() + 14
+            y = self.widget.winfo_pointery() + 20
+        except tk.TclError:
+            return
+
+        tip = tk.Toplevel(self.widget)
+        tip.wm_overrideredirect(True)
+        tip.wm_geometry(f"+{x}+{y}")
+        tk.Label(
+            tip,
+            text=self.text,
+            justify="left",
+            wraplength=self.WRAP_PIXELS,
+            background="#ffffe0",
+            foreground="#1a1a1a",
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=6,
+        ).pack()
+        self.tip = tip
+
+    def _hide(self, _event: object = None) -> None:
+        self._cancel()
+        if self.tip is not None:
+            try:
+                self.tip.destroy()
+            except tk.TclError:
+                pass
+            self.tip = None
+
+
+#: Written to be read by someone who has never used this before. Each says what
+#: the setting does and, where it matters, why it is set the way it is.
+SETTING_HELP: dict[str, str] = {
+    "delta_folder": (
+        "The 'Delta Emulator' folder inside your Dropbox, which is where Delta "
+        "keeps its synced saves, games and cheats.\n\n"
+        "Found automatically once the Dropbox desktop app is installed and "
+        "signed in to the same account Delta syncs to."
+    ),
+    "retroarch_exe": (
+        "Path to retroarch.exe.\n\n"
+        "Used to launch RetroArch when you press Sync and Play, and to locate "
+        "its save and cheat folders by reading the retroarch.cfg beside it."
+    ),
+    "rom_dir": (
+        "Where games copied out of Delta are written, so RetroArch has "
+        "something to load.\n\n"
+        "Defaults to a 'roms' folder next to retroarch.cfg."
+    ),
+    "sync_on_open": (
+        "Pull from Delta the moment this window opens, so your phone's progress "
+        "is already on the desktop before you press anything.\n\n"
+        "Turn this off if you would rather sync only when you ask."
+    ),
+    "sync_roms": (
+        "Copy game files out of Delta's folder into your ROM folder, so a game "
+        "you added on your phone simply appears on the desktop ready to play.\n\n"
+        "Turn this off if you manage your own ROM library and would rather this "
+        "left it alone."
+    ),
+    "sync_cheats": (
+        "Write Delta's cheats out as RetroArch .cht files.\n\n"
+        "One direction only, permanently: a cheat made in RetroArch cannot "
+        "travel back, because Delta's records need metadata that only Delta's "
+        "own app is allowed to write. Make cheats on your phone."
+    ),
+    "push_enabled": (
+        "Let desktop progress reach your phone.\n\n"
+        "Off by default, and the only part of this tool that can leave Delta "
+        "needing manual repair: Delta assumes it is the only thing writing to "
+        "its Dropbox folder. Needs Dropbox authorisation first, because the "
+        "record has to name the exact file revision Dropbox holds.\n\n"
+        "Your saves are backed up before every write either way, and the last "
+        "ten versions are kept."
+    ),
+}
+
+
 class LauncherWindow:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -129,40 +254,88 @@ class LauncherWindow:
         outer = ttk.Frame(self.root, padding=8)
         outer.grid(sticky="nsew")
 
-        self.log = tk.Text(outer, height=11, width=78, wrap="word")
+        # Sync and Play stays outside the tabs. It is the reason the program
+        # exists, and burying the primary action behind a tab someone might be
+        # sitting on is how a tool acquires a reputation for being confusing.
+        notebook = ttk.Notebook(outer)
+        notebook.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
+
+        sync_tab = ttk.Frame(notebook, padding=8)
+        settings_tab = ttk.Frame(notebook, padding=8)
+        notebook.add(sync_tab, text="   Sync   ")
+        notebook.add(settings_tab, text="   Settings   ")
+
+        self._build_sync_tab(sync_tab)
+        self._build_settings_tab(settings_tab)
+
+        self.play_button = ttk.Button(
+            outer, text="Sync and Play", command=self.on_play, padding=8
+        )
+        self.play_button.grid(row=1, column=0, sticky="ew")
+
+    def _build_sync_tab(self, parent: ttk.Frame) -> None:
+        self.log = tk.Text(parent, height=13, width=78, wrap="word")
         self.log.configure(state="disabled", relief="sunken", borderwidth=1)
-        self.log.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.log.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
+
+        actions = ttk.Frame(parent)
+        actions.grid(row=1, column=0, sticky="ew")
+        actions.columnconfigure(0, weight=1)
+
+        ttk.Button(actions, text="Check status", command=self.on_status).grid(
+            row=0, column=1, padx=4
+        )
+        ttk.Button(actions, text="Sync now", command=self.on_sync).grid(
+            row=0, column=2, padx=4
+        )
+
+    def _build_settings_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            parent,
+            text="Hover any setting for what it does.",
+            foreground="#666666",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 6))
 
         # Not named `paths`: that shadows the paths module this file imports.
-        path_frame = ttk.LabelFrame(outer, text="Paths", padding=6)
+        path_frame = ttk.LabelFrame(parent, text="Paths", padding=6)
         path_frame.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         path_frame.columnconfigure(1, weight=1)
 
-        self._path_row(path_frame, 0, "Delta folder (Dropbox)", self.delta_var, directory=True)
-        self._path_row(path_frame, 1, "RetroArch", self.exe_var, directory=False)
-        self._path_row(path_frame, 2, "ROM folder", self.rom_var, directory=True)
+        self._path_row(
+            path_frame, 0, "Delta folder (Dropbox)", self.delta_var,
+            directory=True, help_key="delta_folder",
+        )
+        self._path_row(
+            path_frame, 1, "RetroArch", self.exe_var,
+            directory=False, help_key="retroarch_exe",
+        )
+        self._path_row(
+            path_frame, 2, "ROM folder", self.rom_var,
+            directory=True, help_key="rom_dir",
+        )
 
-        options = ttk.LabelFrame(outer, text="Sync options", padding=6)
+        options = ttk.LabelFrame(parent, text="Sync options", padding=6)
         options.grid(row=2, column=0, sticky="ew", pady=(0, 6))
 
-        ttk.Checkbutton(
-            options, text="Sync as soon as this window opens", variable=self.open_sync_var
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Checkbutton(
-            options, text="Copy ROMs from Delta", variable=self.roms_var
-        ).grid(row=1, column=0, sticky="w")
-        ttk.Checkbutton(
-            options, text="Export cheats as .cht files", variable=self.cheats_var
-        ).grid(row=2, column=0, sticky="w")
-        ttk.Checkbutton(
-            options,
-            text="Send desktop saves back to Delta (experimental)",
-            variable=self.push_var,
-            command=self._push_toggled,
-        ).grid(row=3, column=0, sticky="w")
+        self._option_row(
+            options, 0, "Sync as soon as this window opens",
+            self.open_sync_var, "sync_on_open",
+        )
+        self._option_row(
+            options, 1, "Copy ROMs from Delta", self.roms_var, "sync_roms",
+        )
+        self._option_row(
+            options, 2, "Export cheats as .cht files", self.cheats_var, "sync_cheats",
+        )
+        self._option_row(
+            options, 3, "Send desktop saves back to Delta (experimental)",
+            self.push_var, "push_enabled", command=self._push_toggled,
+        )
 
         dropbox_row = ttk.Frame(options)
-        dropbox_row.grid(row=4, column=0, sticky="w", pady=(4, 0))
+        dropbox_row.grid(row=4, column=0, sticky="w", pady=(6, 0))
         self.dropbox_label = ttk.Label(dropbox_row, text="", foreground="#666666")
         self.dropbox_label.grid(row=0, column=0, sticky="w")
         self.auth_button = ttk.Button(
@@ -173,33 +346,47 @@ class LauncherWindow:
             dropbox_row, text="Use own app key…", command=self.on_change_app_key
         ).grid(row=0, column=2, padx=(6, 0))
 
-        actions = ttk.Frame(outer)
-        actions.grid(row=3, column=0, sticky="ew", pady=(0, 6))
+        actions = ttk.Frame(parent)
+        actions.grid(row=3, column=0, sticky="ew")
         actions.columnconfigure(0, weight=1)
 
-        ttk.Button(actions, text="Check status", command=self.on_status).grid(
-            row=0, column=1, padx=4
+        open_button = ttk.Button(
+            actions, text="Open settings folder", command=self.on_open_settings_folder
         )
-        ttk.Button(actions, text="Sync now", command=self.on_sync).grid(
-            row=0, column=2, padx=4
+        open_button.grid(row=0, column=1, padx=4)
+        Tooltip(
+            open_button,
+            "Opens the folder holding config.toml, the Dropbox token, the "
+            "manifest and your save backups.\n\n"
+            "Everything this program remembers lives there, beside the "
+            "executable.",
         )
         ttk.Button(actions, text="Save settings", command=self.on_save).grid(
-            row=0, column=3, padx=4
+            row=0, column=2, padx=4
         )
 
-        self.play_button = ttk.Button(
-            outer, text="Sync and Play", command=self.on_play, padding=8
-        )
-        self.play_button.grid(row=4, column=0, sticky="ew")
+    def _option_row(
+        self, parent: ttk.LabelFrame, row: int, label: str,
+        var: tk.BooleanVar, help_key: str, *, command: object = None,
+    ) -> None:
+        kwargs: dict[str, Any] = {"text": label, "variable": var}
+        if command is not None:
+            kwargs["command"] = command
+        box = ttk.Checkbutton(parent, **kwargs)
+        box.grid(row=row, column=0, sticky="w", pady=1)
+        Tooltip(box, SETTING_HELP[help_key])
 
     def _path_row(
         self, parent: ttk.LabelFrame, row: int, label: str, var: tk.StringVar,
-        *, directory: bool
+        *, directory: bool, help_key: str = "",
     ) -> None:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 6))
-        ttk.Entry(parent, textvariable=var, width=52).grid(
-            row=row, column=1, sticky="ew"
-        )
+        name = ttk.Label(parent, text=label)
+        name.grid(row=row, column=0, sticky="w", padx=(0, 6))
+        entry = ttk.Entry(parent, textvariable=var, width=52)
+        entry.grid(row=row, column=1, sticky="ew")
+        if help_key:
+            Tooltip(name, SETTING_HELP[help_key])
+            Tooltip(entry, SETTING_HELP[help_key])
         ttk.Button(
             parent,
             text="Browse…",
@@ -380,6 +567,26 @@ class LauncherWindow:
         self.config = self._current_config()
         path = config_module.save(self.config)
         self.write(f"Settings saved to {path.name}.")
+
+    def on_open_settings_folder(self) -> None:
+        """Show the folder holding config.toml, the token, manifest and backups.
+
+        Asked for during the first naive-user test: the settings file is
+        editable by hand and documented as such, and there was no way to reach
+        it from the window that wrote it.
+        """
+        folder = _state_dir()
+        try:
+            if sys.platform == "win32":
+                os.startfile(folder)  # noqa: S606 -- a folder, not user input
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(folder)])
+            else:
+                subprocess.Popen(["xdg-open", str(folder)])
+        except OSError as error:
+            self.write(f"Could not open {folder}: {error}")
+            return
+        self.write(f"Opened {folder}")
 
     def on_status(self) -> None:
         self._run(self._status_work)
