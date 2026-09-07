@@ -229,9 +229,34 @@ the sync will never write it until the conversion is implemented and tested
 against real data. DS was excluded on the same grounds until 2026-09-07, when a
 real save showed there was no conversion to implement.
 
-A real Super Mario 64 save is **512 bytes** — 4 Kbit EEPROM, 56 bytes of it
-nonzero. That pins the EEPROM case only; SRAM and FlashRAM still need a save
-each before the offset mapping can be trusted in both directions.
+### Delta writes exactly one storage, and its size names the type
+
+`N64EmulatorBridge.saveGameSaveToURL:` branches on `g_dev.cart.use_flashram` and
+copies **one** storage, whole:
+
+| `use_flashram` | storage written |
+| --- | --- |
+| `-1` | `g_dev.cart.sram.storage` |
+| `0` | `g_dev.cart.eeprom.storage` |
+| `1` | `g_dev.cart.flashram.storage` |
+
+It writes `storage->size` bytes and nothing else — no header, no footer, no
+combining. So **the file size identifies the save type unambiguously**, which is
+what the conversion needs and is now read out of Delta's source rather than
+assumed:
+
+| Size | Type | Verified against |
+| --- | --- | --- |
+| 512 B | EEPROM 4 Kbit | Super Mario 64 |
+| 2,048 B | EEPROM 16 Kbit | Yoshi's Story, Donkey Kong 64 |
+| 32,768 B | SRAM | Ocarina of Time |
+| 131,072 B | FlashRAM | Majora's Mask, Paper Mario |
+
+All six were captured from real Delta syncs on 2026-09-07, so every cartridge
+save type N64 has now has at least one real file behind it. `loadGameSaveFromURL:`
+is the mirror image and `memset`s the storage to `0xFF` when no file exists,
+which is the correct empty state to write into the combined `.srm` for a region
+Delta has nothing for.
 
 ### Controller Pak data never leaves the phone
 
@@ -247,6 +272,31 @@ So **Delta syncs the cartridge save and nothing else.** Mario Kart 64 ghosts,
 and any other Controller Pak data, exist only on the device — not because this
 tool skips them, but because Delta never uploads them. That is not a gap this
 project can close from the desktop side.
+
+The data does exist, though. `MupenInitiateControllers` plugs a Mem Pak into all
+four ports:
+
+```objc
+ControlInfo.Controls[0].Present = 1;
+ControlInfo.Controls[0].Plugin  = PLUGIN_MEMPAK;   // and 1, 2, 3
+```
+
+and `SaveSRAMPath` points mupen64plus at the core's own `Saves` folder, so it
+writes real `.mpk` files there. They are simply outside `syncableFiles`.
+
+**Those files are reachable by hand.** The chain, all from source:
+
+- `Delta.coresDirectoryURL` = `FileManager.urls(for: .documentDirectory)[0]` +
+  `Cores/` (`DeltaCore/Delta.swift`)
+- `DeltaCoreProtocol.directoryURL` appends the core's `name`, which for N64 is
+  `"Mupen64Plus"` (`N64.swift`)
+- `gameSaveDirectoryURL` appends `Saves/` (`N64EmulatorBridge.m`)
+- Delta's `Info.plist` sets `UIFileSharingEnabled` and `UISupportsDocumentBrowser`
+  to `true`, so the Documents directory is browsable
+
+which lands at **`On My iPhone → Delta → Cores → Mupen64Plus → Saves`** in the
+iOS Files app. Copying a `.mpk` out is a manual, per-file operation with no
+automatic path — this tool reads Dropbox, and these never reach Dropbox.
 
 The practical consequence for the eventual N64 conversion: of the four regions
 mupen64plus-next packs into its `.srm`, **only one is ever ours to write.** The
