@@ -58,10 +58,14 @@ revision to resolve. Saves are bidirectional for exactly this reason: Delta
 created the record the first time you saved, and we only ever change what is
 inside it.
 
-A `.cht` entry is matched back to its Delta cheat **by name**, since the code is
-the thing that changes and the cheat type is not recoverable from a `.cht` at
-all. So renaming a cheat in RetroArch unlinks it, and it is then reported as one
-that only exists on the RetroArch side. Rename on the phone instead.
+**Renaming works from either side too.** A `.cht` carries no identifier, so the
+name is the only link back to Delta's record — which used to mean a rename broke
+it and the cheat reappeared as an uncreatable RetroArch-only one. The tool now
+remembers each cheat's last agreed name and re-pairs them through progressively
+weaker signals: the exact name, then the name they last agreed on, then the code,
+then elimination where exactly one cheat is unpaired on each side. So editing a
+cheat's name and code at once works. Renaming two at once in a way that leaves
+the pairing genuinely ambiguous does not, and is reported rather than guessed.
 
 | Phase | State |
 | --- | --- |
@@ -83,6 +87,11 @@ conversion**: RetroArch's mupen64plus-next keeps a single 296,960-byte `.srm`
 holding EEPROM, SRAM, FlashRAM and four Controller Paks at fixed offsets, while
 Delta writes a bare dump of whichever storage the cartridge has. The mapping is
 in `n64.py`, written against six real saves covering all four storage types.
+
+That layout is **Mupen64Plus-Next's**, so use that core. ParaLLEl N64 plays fine,
+but nothing has checked whether it stores saves the same way — it gets no sync
+and a message saying which core to switch to, rather than a save written in a
+layout it may not read.
 
 **Controller Pak data is deliberately never touched.** Delta does not sync it, so
 those four 32 KB regions belong entirely to this PC and are carried through
