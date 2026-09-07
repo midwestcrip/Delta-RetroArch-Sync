@@ -17,8 +17,9 @@ hardcore mode rules them out anyway), controller skins, and app configs. See
 
 Bidirectional save sync works, confirmed on a real device in both directions:
 progress made on the phone appears in RetroArch, and progress made in RetroArch
-appears in Delta. ROM export and cheat export work. The launcher wrapper is
-still to do.
+appears in Delta. ROM export and cheat export work, and the launcher window is
+what you actually use day to day — it syncs, launches RetroArch, and syncs again
+once it closes.
 
 ### Cheats only travel one way
 
@@ -58,10 +59,13 @@ inside it.
 | 4. Cheat sync (`.cht` generation) | Working, Delta -> RetroArch only |
 | 5. Launcher window | Working |
 
-Currently cleared for sync: **GBA and SNES**, each verified against a real
-save. NES and GBC are the same plain-copy path and need only a real save to
-check against. N64 and DS need genuine format conversion and are hard-blocked
-in `systems.py` until then — see [docs/research.md](docs/research.md).
+Currently cleared for sync: **GBA, SNES, GBC and NES**, each verified against a
+real save — Fire Red, Super Mario World, Pokémon Crystal and Kirby's Adventure
+respectively. Being the same plain-copy path was never the bar; each was enabled
+only once a real save had been checked for a header, footer or wrapper. Game Boy
+Color also syncs its real-time clock, on the Gambatte core only. N64 and DS need
+genuine format conversion and are hard-blocked in `systems.py` until then — see
+[docs/research.md](docs/research.md).
 
 ## Requirements
 
@@ -236,11 +240,26 @@ Produces both the packaged application and a source zip in `dist/`.
 PyInstaller is needed for the executable and is a build dependency only —
 nothing it produces is imported by the tool, and the zip build does not use it.
 
-The default is a **one-directory** build, deliberately. A one-file build unpacks
-itself to a temp folder on every launch, which is what a packer or dropper does,
-and Defender's ML heuristic flags it as `Trojan:Win32/Wacatac.B!ml` — on a
-machine where Defender is on by default. `--onefile` is still available if you
-want the convenience and can live with that.
+**Run `python tools/build_bootloader.py` first.** Every PyInstaller wheel ships
+the same prebuilt bootloader, those exact bytes sit inside a lot of real malware,
+and Microsoft's models have learned them. A release built without this step is
+quarantined on a stranger's machine as `Trojan:Win32/Wacatac.C!ml` and the
+executable is deleted — measured on 2026-09-06, on a clean Windows account, with
+the file downloaded from GitHub. Compiling the bootloader locally produces bytes
+nobody has seen before, and an A/B a minute apart on one machine put the stock
+build at "found 1 threats" and the locally compiled one at "found no threats".
+`build_release.py` reports which bootloader it baked in and warns when it is the
+stock one.
+
+The default is a **one-directory** build. A one-file build unpacks itself to a
+temp folder on every launch, which is what a packer or dropper does, so
+one-directory is still the better shape — but it is not a fix for the false
+positive. This README used to claim it avoided the heuristic; the naive-user test
+falsified that, quarantining a one-directory build. The bootloader is the thing
+that matters. `--onefile` remains available.
+
+None of this is code signing, which is the only thing that also removes the
+SmartScreen prompt.
 
 The zip's contents are an explicit list rather than "everything not gitignored",
 so a release cannot accidentally carry a `config.toml`, a Dropbox token, a

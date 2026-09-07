@@ -164,17 +164,21 @@ SYSTEMS: dict[str, System] = {
 #: gbc added 2026-09-06 against a real Pokemon Crystal save: 32768 bytes exactly,
 #: the cartridge's 32KB SRAM, raw with no header or footer.
 #:
-#: Its clock is deliberately not synced. Delta carries a second file on the same
-#: record, `gameTimeSave` -- four bytes, a big-endian Unix timestamp of when the
-#: game was last played, used to advance Crystal's real-time clock. Nothing in
-#: this tool writes it: `extra_files` is read by the inspector for reporting and
-#: by nothing else, so only the battery save moves. What RetroArch's Gambatte and
-#: mGBA cores expect for RTC state has not been checked against a real file, and
-#: guessing would be the exact mistake this gate exists to prevent.
+#: Its clock syncs too, as of 2026-09-07, but only on Gambatte. Delta carries a
+#: second file on the same record, `gameTimeSave` -- four bytes, a big-endian
+#: Unix timestamp of when the game was last played, used to advance Crystal's
+#: real-time clock. Gambatte-libretro stores the same quantity as eight
+#: little-endian bytes in a `.rtc` beside the save, so the two are a lossless
+#: width-and-byte-order swap. Both were confirmed against real files rather than
+#: read out of source, which is why Gambatte is the only entry in `clock_cores`.
 #:
-#: The consequence is bounded and not corruption: a save carries across intact,
-#: and the in-game clock may be out by however long the two sides were apart,
-#: which for Crystal affects day/night and daily events.
+#: `clock_cores` is deliberately narrower than `retroarch_cores`. mGBA-libretro
+#: writes a 48-byte struct under the same filename and SameBoy and TGB Dual are
+#: unchecked, so those play normally and get no clock sync -- writing the wrong
+#: shape over one would be the exact mistake this gate exists to prevent. The
+#: cost of skipping it is bounded and is not corruption: the save carries across
+#: intact and the in-game clock may be out by however long the two sides were
+#: apart, which for Crystal affects day/night and daily events.
 #:
 #: nes added 2026-09-06 against a real Kirby's Adventure save: 8192 bytes
 #: exactly, which is the MMC3 mapper's battery-backed 8KB PRG-RAM, raw with no
