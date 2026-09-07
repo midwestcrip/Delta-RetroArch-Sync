@@ -75,6 +75,31 @@ class FileState:
 
 
 @dataclass
+class CheatState:
+    """What a cheat looked like when both sides last agreed.
+
+    The name is remembered as well as the code because it is the only thing
+    linking a `.cht` entry back to a Delta cheat -- a `.cht` carries no UUID. So
+    a rename has to be detectable, or the cheat silently unlinks and reappears
+    as an uncreatable RetroArch-only one.
+    """
+
+    code: str
+    name: str = ""
+
+    @classmethod
+    def from_json(cls, raw: Any) -> "CheatState":
+        # Manifests written before renaming was supported stored a bare code
+        # string. Read as a code with no remembered name, which is exactly what
+        # it is -- the first sync after upgrading then fills the name in.
+        if isinstance(raw, str):
+            return cls(code=raw)
+        if isinstance(raw, dict):
+            return cls(code=str(raw.get("code", "")), name=str(raw.get("name", "")))
+        return cls(code="")
+
+
+@dataclass
 class Entry:
     """The agreed state of one game's save on both sides."""
 
@@ -107,18 +132,18 @@ class Manifest:
         self,
         path: Path,
         entries: dict[str, Entry] | None = None,
-        cheats: dict[str, str] | None = None,
+        cheats: dict[str, CheatState] | None = None,
         notices: set[str] | None = None,
     ) -> None:
         self.path = path
         self.entries: dict[str, Entry] = entries or {}
         #: One-time notices already shown, so they are not repeated every sync.
         self.notices: set[str] = notices or set()
-        #: Last agreed cheat code per cheat UUID, canonicalised to bare hex
-        #: digits. Cheats are not files on Delta's side -- the code lives inside
-        #: the record JSON -- so they cannot use ``FileState`` and get their own
-        #: section rather than a strained fit into the games one.
-        self.cheats: dict[str, str] = cheats or {}
+        #: Last agreed code and name per cheat UUID. Cheats are not files on
+        #: Delta's side -- the code lives inside the record JSON -- so they
+        #: cannot use ``FileState`` and get their own section rather than a
+        #: strained fit into the games one.
+        self.cheats: dict[str, CheatState] = cheats or {}
 
     @classmethod
     def load(cls, path: Path) -> "Manifest":
@@ -140,7 +165,7 @@ class Manifest:
         # safely, because two sides that already agree need no history to say so.
         stored_cheats = raw.get("cheats") if isinstance(raw, dict) else None
         cheats = (
-            {str(k): str(v) for k, v in stored_cheats.items()}
+            {str(k): CheatState.from_json(v) for k, v in stored_cheats.items()}
             if isinstance(stored_cheats, dict)
             else {}
         )
@@ -160,7 +185,7 @@ class Manifest:
         payload = {
             "version": 1,
             "games": {key: entry.to_json() for key, entry in self.entries.items()},
-            "cheats": dict(self.cheats),
+            "cheats": {key: asdict(state) for key, state in self.cheats.items()},
             "notices": sorted(self.notices),
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -186,11 +211,24 @@ class Manifest:
 
     def cheat_code(self, identifier: str) -> str | None:
         """The last agreed code for one cheat, or None if there is no history."""
-        return self.cheats.get(identifier)
+        state = self.cheats.get(identifier)
+        return state.code if state is not None else None
 
-    def record_cheat(self, identifier: str, canonical: str) -> None:
+    def cheat_name(self, identifier: str) -> str | None:
+        """The last agreed name, or None if this cheat predates name tracking.
+
+        None and "" mean different things here. None is "we never knew", which
+        is the case for a manifest written before renaming was supported, and
+        means a name difference cannot be attributed to either side.
+        """
+        state = self.cheats.get(identifier)
+        if state is None or not state.name:
+            return None
+        return state.name
+
+    def record_cheat(self, identifier: str, canonical: str, name: str = "") -> None:
         """Record a cheat as agreed on both sides."""
-        self.cheats[identifier] = canonical
+        self.cheats[identifier] = CheatState(code=canonical, name=name)
 
     def already_said(self, key: str) -> bool:
         """Whether a one-time notice has been shown before.

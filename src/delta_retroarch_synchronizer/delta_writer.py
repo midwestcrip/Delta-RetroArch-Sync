@@ -349,6 +349,8 @@ def push_cheat(
     identifier: str,
     new_code: str,
     backup_dir: Path,
+    *,
+    new_name: str | None = None,
 ) -> str:
     """Rewrite an existing cheat's code in Delta's folder.
 
@@ -396,8 +398,9 @@ def push_cheat(
     ):
         raise ValueError(f"{record_path.name} has no readable cheat code")
 
-    previous = record_fields["code"]
-    if previous == new_code:
+    previous_name = record_fields.get("name")
+    renaming = new_name is not None and new_name != previous_name
+    if record_fields["code"] == new_code and not renaming:
         return f"{record_path.name} already holds this code"
 
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -405,23 +408,29 @@ def push_cheat(
     shutil.copy2(record_path, backup_dir / f"{record_path.name}.{stamp}.bak")
 
     record_fields["code"] = new_code
+    if renaming:
+        assert new_name is not None
+        record_fields["name"] = new_name
     record_fields["modifiedDate"] = unix_to_apple(
         datetime.now(timezone.utc).timestamp()
     )
-    # `type` is an NSKeyedArchiver plist in base64 and `name` is the key this
-    # cheat is matched by, so both are left exactly as Delta wrote them. Only
-    # the code changes.
+    # `type` is an NSKeyedArchiver plist in base64 and is never rewritten -- we
+    # decode it to read, and re-encoding it is not something to attempt for a
+    # field that never changes.
     raw["sha1Hash"] = preserved_hash
     write_in_place(record_path, _record_bytes(raw))
 
     written = json.loads(record_path.read_text(encoding="utf-8"))
+    written_fields = written.get("record", {})
     if (
         written.get("sha1Hash") != preserved_hash
-        or written.get("record", {}).get("code") != new_code
+        or written_fields.get("code") != new_code
+        or (renaming and written_fields.get("name") != new_name)
     ):
         raise OSError(
             f"{record_path.name} did not verify after writing; "
             "restore it from the backup taken above"
         )
 
-    return f"rewrote {record_path.name}, record hash preserved"
+    what = "code and name" if renaming else "code"
+    return f"rewrote {record_path.name} ({what}), record hash preserved"

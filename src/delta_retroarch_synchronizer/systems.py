@@ -46,6 +46,16 @@ class System:
     #: and gain a second way to be satisfied rather than quietly losing the
     #: first. N64 is the only system in this state.
     converted: bool = False
+    #: Cores whose on-disk save layout the conversion was actually written
+    #: against. Exactly the same idea as ``clock_cores``, and for exactly the
+    #: same reason: a core can be perfectly good to play with while storing its
+    #: save in a layout nobody has checked, and writing the wrong shape over it
+    #: would corrupt a save rather than fail. A core absent from here plays
+    #: normally and simply gets no sync.
+    #:
+    #: Only meaningful when ``converted`` is set -- a plain copy is a copy
+    #: whatever core reads it, because RetroArch's frontend owns writing SRAM.
+    converted_cores: tuple[str, ...] = ()
     #: Set for systems we knowingly do not convert yet. Long on purpose -- the
     #: inspector prints it, and someone asking "why is my N64 game skipped?"
     #: deserves the real answer.
@@ -141,6 +151,13 @@ SYSTEMS: dict[str, System] = {
         # cartridge has. The mapping lives in `n64.py`.
         raw_compatible=False,
         converted=True,
+        # Mupen64Plus-Next only. The 296,960-byte layout in `n64.py` is that
+        # core's, taken from ra_mp64_srm_convert, and verified against six real
+        # saves. ParaLLEl N64 plays fine and is listed so it can be found and
+        # named, but nothing has checked whether it lays its .srm out the same
+        # way -- and if it does not, writing this layout into its file would
+        # corrupt a save silently.
+        converted_cores=("Mupen64Plus-Next",),
         rom_exts=("n64", "z64", "v64"),
         retroarch_db_name="Nintendo - Nintendo 64",
         retroarch_cores=("Mupen64Plus-Next", "ParaLLEl N64"),

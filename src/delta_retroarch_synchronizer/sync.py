@@ -243,6 +243,29 @@ def controller_pak_notice(
     )
 
 
+def unverified_save_core(entry: inspect_module.GameEntry, core_name: str) -> str | None:
+    """Why a game is not being synced, when its core's layout is unchecked.
+
+    The same gate ``clock_cores`` applies to the Game Boy clock, applied to the
+    save itself. It only bites on a converted system: for a plain copy the
+    frontend owns the file and the core does not change its shape.
+
+    Worth saying out loud rather than skipping silently -- a game that quietly
+    never syncs looks exactly like a bug.
+    """
+    system = entry.system
+    if system is None or not system.converted:
+        return None
+    if not system.converted_cores or core_name in system.converted_cores:
+        return None
+    return (
+        f"not synced: {core_name} may not lay out its save the same way as "
+        f"{system.converted_cores[0]}, and this conversion was only checked "
+        f"against that one. Nothing was written. Use {system.converted_cores[0]} "
+        f"for {system.name} and it will sync."
+    )
+
+
 def write_to_retroarch(
     entry: inspect_module.GameEntry, source: Path, target: Path
 ) -> str:
@@ -624,6 +647,102 @@ def push_clock(
     )
 
 
+def match_cheats(
+    delta_cheats: list[cheats_module.Cheat],
+    sources: list[dict[str, str]],
+    existing: list[cheats_module.Cheat],
+    state: manifest_module.Manifest | None,
+) -> tuple[list[cheats_module.Cheat | None], list[cheats_module.Cheat]]:
+    """Pair each Delta cheat with its `.cht` entry, tolerating one rename.
+
+    A `.cht` carries no UUID, so the name is the only link between the two
+    sides -- which means a rename breaks it, and the cheat silently reappears as
+    an uncreatable RetroArch-only one. Three passes, strongest signal first:
+
+    1. **Exact name.** Nothing was renamed; the overwhelmingly common case.
+    2. **The last agreed name.** Delta was renamed, so the `.cht` still holds
+       the old name.
+    3. **The code.** RetroArch was renamed, so the name is gone but the code is
+       still the one both sides last agreed on.
+    4. **Elimination**, and only when exactly one is left unpaired on each side.
+       Both fields were edited at once -- an ordinary thing to do in RetroArch's
+       cheat editor -- so nothing is left to match on, but with one candidate
+       apiece the pairing is forced rather than chosen. With two or more
+       remaining it is a genuine choice, so they stay unpaired and are reported.
+
+    Returns a counterpart for each Delta cheat (``None`` where unmatched) and
+    whatever `.cht` entries were left over.
+    """
+    remaining = list(existing)
+    matched: list[cheats_module.Cheat | None] = [None] * len(delta_cheats)
+
+    def take(predicate) -> cheats_module.Cheat | None:
+        for candidate in remaining:
+            if predicate(candidate):
+                remaining.remove(candidate)
+                return candidate
+        return None
+
+    for index, cheat in enumerate(delta_cheats):
+        matched[index] = take(lambda c: c.name == cheat.name)
+
+    for index, (cheat, source) in enumerate(zip(delta_cheats, sources)):
+        if matched[index] is not None or state is None:
+            continue
+        agreed_name = state.cheat_name(source.get("identifier", ""))
+        if agreed_name:
+            matched[index] = take(lambda c: c.name == agreed_name)
+
+    for index, (cheat, source) in enumerate(zip(delta_cheats, sources)):
+        if matched[index] is not None:
+            continue
+        wanted = {cheats_module.canonical_code(cheat.code)}
+        if state is not None:
+            agreed_code = state.cheat_code(source.get("identifier", ""))
+            if agreed_code:
+                wanted.add(agreed_code)
+        matched[index] = take(
+            lambda c: cheats_module.canonical_code(c.code) in wanted
+        )
+
+    unpaired = [i for i, found in enumerate(matched) if found is None]
+    if len(unpaired) == 1 and len(remaining) == 1:
+        matched[unpaired[0]] = remaining.pop()
+
+    return matched, remaining
+
+
+def merge_cheat_actions(
+    code: tuple[Action, str], name: tuple[Action, str]
+) -> tuple[Action, str]:
+    """Combine the code decision and the name decision for one cheat.
+
+    A cheat can have been edited and renamed at once. If both point the same way
+    that is simply a push or a pull carrying both changes; if they point
+    different ways -- the code changed on the phone while the name changed on
+    the desktop -- there is no answer that does not discard somebody's edit, so
+    it is reported.
+    """
+    code_action, code_detail = code
+    name_action, name_detail = name
+
+    if code_action is name_action:
+        if code_action is Action.NOTHING:
+            return Action.NOTHING, "unchanged on both sides"
+        if code_detail == name_detail:
+            return code_action, code_detail
+        return code_action, f"{code_detail} (code and name)"
+    if code_action is Action.NOTHING:
+        return name_action, f"renamed: {name_detail}"
+    if name_action is Action.NOTHING:
+        return code_action, code_detail
+    return (
+        Action.CONFLICT,
+        f"the code and the name moved in different directions "
+        f"(code {code_detail}; name {name_detail})",
+    )
+
+
 def decide_cheat(
     agreed: str | None, delta_code: str, retroarch_code: str
 ) -> tuple[Action, str]:
@@ -703,17 +822,14 @@ def sync_cheats(
             )
         except (OSError, UnicodeDecodeError):
             existing = []
-    # Matched by name, which is the only field an edit leaves alone: the code is
-    # what changes, and the type is not recoverable from a `.cht` at all.
-    by_name = {cheat.name: cheat for cheat in existing}
+    matched, orphans = match_cheats(delta_cheats, game_cheats, existing, state)
 
     outcomes: list[Outcome] = []
     conflicted = False
-    pushed: list[tuple[str, str]] = []
+    pushed: list[tuple[str, str, str]] = []
 
-    for cheat, source in zip(delta_cheats, game_cheats):
+    for cheat, source, counterpart in zip(delta_cheats, game_cheats, matched):
         identifier = source.get("identifier", "")
-        counterpart = by_name.get(cheat.name)
         if counterpart is None:
             # Nothing on the RetroArch side to compare against yet; the file
             # write below brings it into being.
@@ -722,13 +838,18 @@ def sync_cheats(
         delta_code = cheats_module.canonical_code(cheat.code)
         retro_code = cheats_module.canonical_code(counterpart.code)
         agreed = state.cheat_code(identifier) if state is not None else None
-        action, detail = decide_cheat(agreed, delta_code, retro_code)
+        agreed_name = state.cheat_name(identifier) if state is not None else None
+
+        action, detail = merge_cheat_actions(
+            decide_cheat(agreed, delta_code, retro_code),
+            decide_cheat(agreed_name, cheat.name, counterpart.name),
+        )
 
         label = f"{entry.name}: cheat \"{cheat.name}\""
 
         if action is Action.NOTHING:
-            if state is not None and agreed != delta_code and not dry_run:
-                state.record_cheat(identifier, delta_code)
+            if state is not None and not dry_run:
+                state.record_cheat(identifier, delta_code, cheat.name)
             continue
         if action is Action.CONFLICT:
             conflicted = True
@@ -760,9 +881,12 @@ def sync_cheats(
             continue
 
         new_code = cheats_module.to_delta_code(counterpart.code, cheat.type)
+        # Only sent when it actually differs, so an unchanged name is never
+        # rewritten and `push_cheat` can report what it really did.
+        new_name = counterpart.name if counterpart.name != cheat.name else None
         try:
             note = delta_writer.push_cheat(
-                delta_folder, identifier, new_code, backup_dir
+                delta_folder, identifier, new_code, backup_dir, new_name=new_name
             )
         except (OSError, ValueError) as error:
             outcomes.append(
@@ -771,23 +895,25 @@ def sync_cheats(
             conflicted = True
             continue
 
-        pushed.append((identifier, retro_code))
+        pushed.append((identifier, retro_code, counterpart.name))
         outcomes.append(
             Outcome(label, Action.PUSH, f"{detail}; {note}", applied=True)
         )
 
-    # A `.cht` entry with no Delta cheat of that name is a cheat made in
-    # RetroArch. Worth saying once per game rather than per entry, and worth
-    # saying at all: silently ignoring it is what makes people think it synced.
-    delta_names = {cheat.name for cheat in delta_cheats}
-    orphans = [cheat.name for cheat in existing if cheat.name not in delta_names]
+    # A `.cht` entry that matched nothing is a cheat made in RetroArch. Worth
+    # saying once per game rather than per entry, and worth saying at all:
+    # silently ignoring it is what makes people think it synced.
+    #
+    # Taken from what the matcher could not pair rather than from a name
+    # comparison, so a renamed cheat is no longer mistaken for a new one.
     if orphans:
+        names = ", ".join(cheat.name for cheat in orphans)
         outcomes.append(
             Outcome(
                 entry.name,
                 Action.SKIPPED,
                 f"{len(orphans)} cheat(s) exist only in RetroArch and cannot be "
-                f"created in Delta ({', '.join(orphans)}). Make them on the phone "
+                f"created in Delta ({names}). Make them on the phone "
                 "and they will come the other way.",
             )
         )
@@ -805,15 +931,11 @@ def sync_cheats(
     # Render from Delta's cheats, with anything just pushed folded in -- the
     # record on disk now holds the RetroArch code, so re-reading would be the
     # only alternative and this avoids a second pass over the folder.
-    pushed_codes = dict(pushed)
+    pushed_by_id = {identifier: (code, name) for identifier, code, name in pushed}
     rendered = [
         cheats_module.Cheat(
-            name=cheat.name,
-            code=(
-                pushed_codes[source["identifier"]]
-                if source.get("identifier") in pushed_codes
-                else cheat.code
-            ),
+            name=pushed_by_id.get(source.get("identifier", ""), (None, cheat.name))[1],
+            code=pushed_by_id.get(source.get("identifier", ""), (cheat.code, None))[0],
             type=cheat.type,
         )
         for cheat, source in zip(delta_cheats, game_cheats)
@@ -857,7 +979,9 @@ def sync_cheats(
         for cheat, source in zip(rendered, game_cheats):
             identifier = source.get("identifier", "")
             if identifier:
-                state.record_cheat(identifier, cheats_module.canonical_code(cheat.code))
+                state.record_cheat(
+                    identifier, cheats_module.canonical_code(cheat.code), cheat.name
+                )
 
     return outcomes
 
@@ -928,6 +1052,15 @@ def run_sync(
         target = retroarch_save_path(
             paths.save_dir, entry, core_name, sorted_by_core
         )
+
+        # Checked before anything is decided: a core whose layout is unverified
+        # must not have its save read *or* written, so this cannot sit inside
+        # either branch.
+        unverified = unverified_save_core(entry, core_name)
+        if unverified is not None:
+            report.outcomes.append(Outcome(entry.name, Action.SKIPPED, unverified))
+            continue
+
         action, detail = decide(state.get(entry.identifier), entry.save_path, target)
 
         # Checked before the action rather than after it, so it is said whatever
