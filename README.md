@@ -108,19 +108,35 @@ per game rather than leaving it to be discovered.
   Drive stores files in a hidden `appDataFolder` that nothing but Delta can read
 - RetroArch, launched at least once so it has written its config
 
+> **Getting RetroArch.** Its download page carries advertisements dressed up as
+> download buttons, including one that opens when you click the real *Download
+> stable build* link. The genuine downloads are the small platform links under
+> the version heading, and an ad blocker makes the page much easier to read.
+
 ## Install
+
+### Windows will warn you the first time
+
+You will see **"Windows protected your PC"**. Click **More info**, then
+**Run anyway**.
+
+This is SmartScreen, and it appears for every program that is not code-signed
+and that Windows has not seen many people run yet. A signing certificate is the
+only thing that removes it. Nothing is wrong with the download — verify the
+SHA-256 on the release page against your copy if you would rather check than
+take that on trust.
+
+### Then
 
 **Download the zip**, extract it, run the .exe inside. No Python, nothing else
 to install. It keeps its settings, credentials and save backups in that folder,
 so a portable location works fine. (In Program Files or anywhere else
 non-writable it falls back to `%LOCALAPPDATA%`.)
 
-Windows will show *"Windows protected your PC"* the first time — **More info →
-Run anyway**. The program is not code-signed, and Windows shows that for every
-unsigned program it has not seen before.
-
 The window finds Delta's Dropbox folder and your RetroArch install by itself.
-If it cannot, the paths are editable in the window.
+If it cannot, the paths are editable in the window. Press **Instructions**,
+bottom left, for the whole setup procedure with each step marked according to
+what this PC already has.
 
 **The first run offers to add it to your Start menu**, so you can find it again
 by searching for "Delta" instead of going back to the folder you unzipped. It is
@@ -142,7 +158,12 @@ The launcher window finds Delta's Dropbox folder and your RetroArch install by
 itself, shows what it found, and gives you one button: **Sync and Play**. That
 syncs, launches RetroArch, waits for you to finish, and syncs again once it
 closes — the save is copied after the process exits, because mGBA only flushes
-it to disk on a clean quit.
+it to disk on a clean quit. The window minimises while you play and comes back
+when RetroArch closes.
+
+If RetroArch is **already open**, it does not start a second copy: it syncs,
+waits for that window to close, and syncs again. So it works around a RetroArch
+you launched yourself, not only one it started.
 
 Paths, and whether to sync ROMs and cheats, are editable in the window and
 saved to `config.toml`.
