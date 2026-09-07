@@ -106,6 +106,38 @@ def describe(timestamp: int) -> str:
     return moment.strftime("%Y-%m-%d %H:%M")
 
 
+#: Gambatte's day counter is nine bits, so it wraps here and sets a carry flag
+#: (``Rtc::doLatch``'s ``while (tmp > 0x1FF * 86400)`` loop). Worth reporting
+#: rather than printing an implausible number of days as if it were normal.
+DAY_OVERFLOW = 0x1FF
+
+
+def cartridge_clock(base: int, now: float) -> tuple[int, int, int, int]:
+    """What the cartridge's clock reads, as days/hours/minutes/seconds.
+
+    This is the whole of Gambatte's model: ``std::time(0) - baseTime_``. The
+    clock is never stored as a value anywhere -- it is derived, every time, from
+    how long ago the base was. That is what keeps it running while nothing is
+    running, and what makes it agree across two machines that share a base.
+    """
+    elapsed = max(0, int(now) - base)
+    return (
+        elapsed // 86400,
+        elapsed % 86400 // 3600,
+        elapsed % 3600 // 60,
+        elapsed % 60,
+    )
+
+
+def describe_cartridge_clock(base: int, now: float) -> str:
+    """The cartridge clock as a line someone can sanity-check."""
+    days, hours, minutes, _ = cartridge_clock(base, now)
+    reading = f"{days}d {hours:02d}:{minutes:02d}"
+    if days > DAY_OVERFLOW:
+        return f"{reading} (past the {DAY_OVERFLOW}-day counter, so it has wrapped)"
+    return reading
+
+
 def retroarch_clock_path(save_path: Path, extension: str) -> Path:
     """Where the core keeps the clock for a given save.
 

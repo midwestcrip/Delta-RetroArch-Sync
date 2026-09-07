@@ -138,7 +138,7 @@ def run_doctor_command() -> int:
     resolved = _resolve()
     if resolved is None:
         return 1
-    delta_folder, _ = resolved
+    delta_folder, retroarch_config = resolved
 
     dropbox = load_dropbox()
     if dropbox is None:
@@ -163,13 +163,49 @@ def run_doctor_command() -> int:
         )
     print()
 
+    # The clock check needs the RetroArch side, which doctor did not previously
+    # look at. Resolved once, here, rather than per game.
+    settings = discovery.parse_retroarch_config(retroarch_config)
+    save_dir = discovery.resolve_retroarch_dir(
+        settings, "savefile_directory", retroarch_config, "saves"
+    )
+    sorted_by_core = discovery.truthy(settings, "sort_savefiles_enable")
+    installed = discovery.installed_cores(retroarch_config, settings)
+
     entries = inspect_module.collect_games(delta_folder)
     failures = 0
     for entry in entries:
         if entry.save_path is None:
             continue
         print(f"{entry.name}")
-        report = health.check_game(delta_folder, entry.identifier, dropbox)
+
+        retroarch_clock: Path | None = None
+        clock_note = ""
+        system = entry.system
+        if system is not None and system.delta_clock_id:
+            core = _core_for(system.retroarch_cores, installed) or ""
+            if not core:
+                clock_note = "no core installed, so nothing to compare against"
+            elif core not in system.clock_cores:
+                clock_note = (
+                    f"not synced on {core}: its format has not been verified. "
+                    f"Use {system.clock_cores[0]} for the clock to travel too."
+                )
+            else:
+                target = sync_module.retroarch_save_path(
+                    save_dir, entry, core, sorted_by_core
+                )
+                retroarch_clock = sync_module.clock.retroarch_clock_path(
+                    target, system.retroarch_clock_ext
+                )
+
+        report = health.check_game(
+            delta_folder,
+            entry.identifier,
+            dropbox,
+            retroarch_clock=retroarch_clock,
+            clock_core_note=clock_note,
+        )
         for check in report.checks:
             mark = "ok  " if check.ok else "FAIL"
             print(f"  [{mark}] {check.name}: {check.detail}")

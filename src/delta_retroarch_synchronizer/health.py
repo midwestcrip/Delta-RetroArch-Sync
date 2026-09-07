@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -137,10 +138,76 @@ class Health:
         return [check for check in self.checks if not check.ok]
 
 
+def clock_check(
+    delta_clock: Path | None,
+    retroarch_clock: Path | None,
+    *,
+    now: float,
+    core_note: str = "",
+) -> "Check | None":
+    """Whether both sides count the cartridge clock from the same instant.
+
+    This is the one thing about the clock that can actually be wrong and stay
+    invisible. The clock is never stored as a value -- Gambatte derives it as
+    ``now - baseTime`` -- so two machines agree if and only if they hold the
+    same base. If they drift apart, the in-game date differs between phone and
+    desktop and nothing else would say so.
+
+    Returns None for a game with no clock at all, which is every system but
+    Game Boy Color.
+    """
+    from . import clock as clock_module
+
+    if delta_clock is None or not delta_clock.is_file():
+        return None
+    if core_note:
+        # A core whose format has not been verified gets no clock written, so
+        # the two sides are *expected* to differ. Not a fault.
+        return Check("clock", True, core_note)
+
+    try:
+        delta_base = clock_module.delta_timestamp(delta_clock.read_bytes())
+    except (OSError, ValueError) as error:
+        return Check("clock", False, f"Delta's clock is unreadable: {error}")
+
+    reading = clock_module.describe_cartridge_clock(delta_base, now)
+    since = clock_module.describe(delta_base)
+
+    if retroarch_clock is None or not retroarch_clock.is_file():
+        return Check(
+            "clock",
+            True,
+            f"reads {reading}, counting from {since}; RetroArch has no clock "
+            "yet (it is written with the save)",
+        )
+
+    try:
+        retro_base = clock_module.retroarch_timestamp(retroarch_clock.read_bytes())
+    except (OSError, ValueError) as error:
+        return Check("clock", False, f"RetroArch's clock is unreadable: {error}")
+
+    if delta_base == retro_base:
+        return Check("clock", True, f"agrees on both sides: reads {reading}")
+
+    drift = abs(delta_base - retro_base)
+    return Check(
+        "clock",
+        False,
+        f"the two sides count from different instants — Delta from {since}, "
+        f"RetroArch from {clock_module.describe(retro_base)} "
+        f"({describe_age(drift)} apart). The in-game date will differ between "
+        "them; syncing the save will bring the clock with it.",
+    )
+
+
 def check_game(
     delta_folder: Path,
     identifier: str,
     dropbox: "dropbox_api.DropboxClient | None" = None,
+    *,
+    retroarch_clock: Path | None = None,
+    clock_core_note: str = "",
+    now: float | None = None,
 ) -> Health:
     """Inspect one game's record and save for the failures seen in practice."""
     from .delta_writer import verify_record_hash
@@ -264,5 +331,17 @@ def check_game(
                     "Delta would download the wrong version",
                 )
             )
+
+    delta_clock = harmony.resolve_existing(
+        delta_folder, f"GameSave-{identifier}-gameTimeSave"
+    )
+    clock_result = clock_check(
+        delta_clock if delta_clock.is_file() else None,
+        retroarch_clock,
+        now=time.time() if now is None else now,
+        core_note=clock_core_note,
+    )
+    if clock_result is not None:
+        checks.append(clock_result)
 
     return Health(checks)

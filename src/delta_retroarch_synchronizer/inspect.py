@@ -13,6 +13,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import time
+
+from . import clock
 from . import config as config_module
 from . import discovery, harmony, naming, systems
 
@@ -230,6 +233,21 @@ def run() -> int:
         print(f"      save in Dropbox: {_size(entry.save_path)}")
         for file_id, path in entry.extra_paths.items():
             print(f"      {file_id}: {_size(path)}")
+            # The clock is the one file whose size tells you nothing. What
+            # matters is what it makes the cartridge clock read, which is
+            # derived rather than stored -- so it has to be computed to be seen.
+            system = entry.system
+            if system and file_id == system.delta_clock_id:
+                try:
+                    base = clock.delta_timestamp(path.read_bytes())
+                except (OSError, ValueError) as error:
+                    print(f"        unreadable: {error}")
+                else:
+                    print(
+                        f"        in-game clock: "
+                        f"{clock.describe_cartridge_clock(base, time.time())}, "
+                        f"counting from {clock.describe(base)}"
+                    )
         if save_dir is not None:
             found_save = entry.retroarch_save
             label = found_save.name if found_save else "none found"
