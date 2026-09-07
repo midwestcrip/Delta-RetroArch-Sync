@@ -230,8 +230,29 @@ against real data. DS was excluded on the same grounds until 2026-09-07, when a
 real save showed there was no conversion to implement.
 
 A real Super Mario 64 save is **512 bytes** — 4 Kbit EEPROM, 56 bytes of it
-nonzero. That pins the EEPROM case only; SRAM, FlashRAM and the mempaks still
-need a save each before the offset mapping can be trusted in both directions.
+nonzero. That pins the EEPROM case only; SRAM and FlashRAM still need a save
+each before the offset mapping can be trusted in both directions.
+
+### Controller Pak data never leaves the phone
+
+`GameSave.syncableFiles` in Delta's own model declares exactly two file
+identifiers — `gameSave`, and `gameTimeSave` behind an explicit
+`if game.type == .gbc`. There is no Controller Pak or mempak entry, for N64 or
+anything else.
+
+The real Super Mario 64 record agrees: one file, `gameSave`, 512 bytes, where a
+Game Boy Color record carries two.
+
+So **Delta syncs the cartridge save and nothing else.** Mario Kart 64 ghosts,
+and any other Controller Pak data, exist only on the device — not because this
+tool skips them, but because Delta never uploads them. That is not a gap this
+project can close from the desktop side.
+
+The practical consequence for the eventual N64 conversion: of the four regions
+mupen64plus-next packs into its `.srm`, **only one is ever ours to write.** The
+four mempak regions must be left exactly as RetroArch has them — Delta has
+nothing to put there, and zeroing them would wipe Controller Pak data the player
+created on the desktop.
 
 One consequence to plan for: the **size guard** in `delta_writer.push_save`
 refuses a push whose byte count differs from the record's, which is correct for
