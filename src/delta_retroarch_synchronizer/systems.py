@@ -14,6 +14,7 @@ frontend owns writing SRAM to disk. Cores cannot override it.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 
@@ -269,7 +270,34 @@ def for_delta_type(delta_type: str) -> System | None:
     return BY_DELTA_TYPE.get(delta_type)
 
 
-def missing_core_advice(system: System) -> str:
+def core_recommendation(system: System) -> tuple[str, tuple[str, ...]]:
+    """The core to install, and the alternates that would also sync.
+
+    Not the same list as ``retroarch_cores``, which exists to *recognise* a
+    core that is already installed. Recommending one is a stronger claim: it
+    has to be a core whose saves this program will actually carry.
+
+    For a system that is a plain copy that is every core in the list, because
+    RetroArch's frontend owns writing the .srm and cores cannot override it.
+    For a converted system it is only the cores the conversion was written
+    against -- so N64 gets Mupen64Plus-Next and nothing else, because ParaLLEl
+    N64 plays fine while laying its .srm out in a way nobody has checked, and
+    the sync skips it.
+
+    The third naive-user test raised exactly this: the message "suggests other
+    emulators outside of the ones we've used, which I don't think it should
+    given we haven't tested those".
+    """
+    if system.converted:
+        cores = system.converted_cores
+    else:
+        cores = system.retroarch_cores
+    if not cores:
+        return "", ()
+    return cores[0], tuple(cores[1:])
+
+
+def missing_core_advice(system: System, games: Sequence[str] = ()) -> str:
     """What to actually do about a system with no core installed.
 
     Deliberately a set of directions rather than an offer to fetch the core.
@@ -283,18 +311,41 @@ def missing_core_advice(system: System) -> str:
     is what turns a dead end into a task. Both naive-user tests found the old
     message -- "no core installed for Super Nintendo" -- unusable by someone who
     does not already know what a core is.
-    """
-    preferred = system.retroarch_cores[0] if system.retroarch_cores else ""
-    if not preferred:
-        return f"no core installed for {system.name}."
 
-    others = ", ".join(system.retroarch_cores[1:])
+    ``games`` is what the third test added. That message was printed once per
+    game, so six N64 games produced the same four lines six times over and the
+    log became, in the tester's words, "very unclear if multiple games are
+    found". The advice is about the system, not the game, so it is said once and
+    names the games it covers.
+    """
+    preferred, others = core_recommendation(system)
+    count = len(games)
+    if count > 1:
+        headline = f"No core installed for {system.name} -- {count} games skipped."
+    elif count == 1:
+        headline = f"No core installed for {system.name} -- {games[0]} skipped."
+    else:
+        headline = f"No core installed for {system.name}."
+
+    if not preferred:
+        return headline
+
     lines = [
-        f"no core installed for {system.name}.",
+        headline,
         f"    In RetroArch: Load Core -> Download a Core -> {preferred}.",
         "    Take the plainly named one; suffixed variants are different cores "
         "and will not be matched.",
     ]
     if others:
-        lines.append(f"    These also work: {others}.")
+        lines.append(f"    These also work: {', '.join(others)}.")
+    elif system.converted:
+        # Said out loud, because the alternative is someone installing the
+        # other core they have heard of and finding nothing syncs.
+        lines.append(
+            f"    Other {system.name} cores play fine but are skipped: this "
+            "save has to be converted, and only the layout above has been "
+            "checked against real saves."
+        )
+    if count > 1:
+        lines.append(f"    Skipped: {', '.join(games)}.")
     return "\n".join(lines)

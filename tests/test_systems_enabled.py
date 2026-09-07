@@ -146,4 +146,51 @@ def test_missing_core_advice_survives_a_system_with_no_known_cores():
         delta_save_ext="sav", retroarch_save_ext="srm",
     )
 
-    assert systems.missing_core_advice(bare) == "no core installed for Nothing."
+    assert systems.missing_core_advice(bare) == "No core installed for Nothing."
+
+
+def test_the_advice_is_given_once_and_names_every_game_it_covers():
+    """Six N64 games used to produce the same four lines six times over, which
+    the third naive-user test called "very unclear if multiple games are found".
+    The advice is about the system, not the game."""
+    games = ["Super Mario 64", "Ocarina of Time", "Paper Mario"]
+
+    advice = systems.missing_core_advice(systems.SYSTEMS["n64"], games)
+
+    assert advice.count("Download a Core") == 1
+    assert "3 games skipped" in advice
+    for game in games:
+        assert game in advice
+
+
+def test_one_game_is_named_rather_than_counted():
+    advice = systems.missing_core_advice(systems.SYSTEMS["nes"], ["Kirby's Adventure"])
+
+    assert "Kirby's Adventure skipped" in advice
+    assert "1 games" not in advice
+
+
+def test_a_converted_system_recommends_only_a_core_that_would_actually_sync():
+    """ParaLLEl N64 is listed so an existing install can be recognised, never
+    so it can be recommended: the conversion was written against
+    Mupen64Plus-Next's layout and the sync skips anything else. Suggesting it
+    would send someone to install a core and find nothing syncs."""
+    preferred, others = systems.core_recommendation(systems.SYSTEMS["n64"])
+
+    assert preferred == "Mupen64Plus-Next"
+    assert others == ()
+
+    advice = systems.missing_core_advice(systems.SYSTEMS["n64"], ["Super Mario 64"])
+
+    assert "ParaLLEl" not in advice
+    assert "play fine but are skipped" in advice
+
+
+def test_a_plain_copy_system_may_recommend_its_alternates():
+    """Not the same judgement: RetroArch's frontend owns writing the .srm and
+    cores cannot override it, so for a system that is a straight copy every
+    core in the list really does work."""
+    preferred, others = systems.core_recommendation(systems.SYSTEMS["gba"])
+
+    assert preferred == "mGBA"
+    assert "VBA-M" in others

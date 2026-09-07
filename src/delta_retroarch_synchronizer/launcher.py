@@ -33,7 +33,8 @@ from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 from typing import Any
 
 from . import config as config_module
-from . import delta_writer, discovery, dropbox_api, guide, health, paths, restore
+from . import delta_writer, discovery, dropbox_api, guide, health, paths
+from . import processes, restore
 from . import shortcut as shortcut_module
 from . import theme
 from . import inspect as inspect_module
@@ -1371,6 +1372,15 @@ class LauncherWindow:
                 break
             if kind == "log":
                 self.write(text, level)
+            elif kind == "window":
+                # Driven through the queue like everything else: this is asked
+                # for from the worker thread, and Tk is not safe to touch from
+                # anywhere but the thread that made it.
+                if text == "iconify":
+                    self.root.iconify()
+                else:
+                    self.root.deiconify()
+                    self.root.lift()
             elif kind == "done":
                 self.busy = False
                 self.play_button.configure(state="normal")
@@ -1383,6 +1393,19 @@ class LauncherWindow:
 
     def _say(self, text: str, level: str = "") -> None:
         self.messages.put(("log", text, level))
+
+    def _get_out_of_the_way(self) -> None:
+        """Minimise while RetroArch has the screen.
+
+        The third naive-user test asked for the system tray. Tk has no tray of
+        its own and reaching one means a dependency this project does not have,
+        so it minimises to the taskbar instead -- the same gesture, nothing
+        added.
+        """
+        self.messages.put(("window", "iconify", ""))
+
+    def _come_back(self) -> None:
+        self.messages.put(("window", "deiconify", ""))
 
     @staticmethod
     def _level_for(outcome: "sync_module.Outcome") -> str:
@@ -1500,6 +1523,11 @@ class LauncherWindow:
         self._say(f"--- {label} ---", "heading")
         changed_anything = False
         applied: list[sync_module.Outcome] = []
+        # Gathered rather than reported in the loop. The advice is about the
+        # system, not the game, and printing it per game turned six N64 games
+        # into the same four lines six times over -- "very unclear if multiple
+        # games are found", in the third naive-user test's words.
+        without_core: dict[str, list[str]] = {}
         for entry in entries:
             if entry.system is None:
                 continue
@@ -1508,11 +1536,7 @@ class LauncherWindow:
                 None,
             )
             if entry.supported and core is None:
-                self._say(
-                    f"  {entry.name}: "
-                    f"{systems.missing_core_advice(entry.system)}",
-                    "warn",
-                )
+                without_core.setdefault(entry.system.key, []).append(entry.name)
                 continue
 
             report = sync_module.run_sync(
@@ -1559,6 +1583,16 @@ class LauncherWindow:
             self._say("")
             self._say(f"  {health.idle_sync_note(activity, time.time())}", "muted")
 
+        # Last, because it is the one thing in the log that needs the user to go
+        # and do something, and the log auto-scrolls to the bottom.
+        for key, names in without_core.items():
+            system = systems.SYSTEMS.get(key)
+            if system is None:  # pragma: no cover -- keys come from SYSTEMS
+                continue
+            self._say("")
+            for line in systems.missing_core_advice(system, names).splitlines():
+                self._say(f"  {line}", "warn")
+
     def _sync_work(self) -> None:
         self._sync_once("Sync")
 
@@ -1568,20 +1602,43 @@ class LauncherWindow:
             self._say("RetroArch executable not found. Set the path above.", "error")
             return
 
+        # Looked for before the sync so the answer is not buried under the
+        # sync's own output.
+        already_open = processes.find_running(exe)
+
         self._sync_once("Sync before playing")
 
-        self._say("Launching RetroArch…", "muted")
-        try:
-            process = subprocess.Popen([str(exe)], cwd=str(exe.parent))
-        except OSError as error:
-            self._say(f"Could not launch RetroArch: {error}", "error")
-            return
+        if already_open is not None:
+            # Pressing this with RetroArch already open used to start a second
+            # copy. Attaching is better than refusing: the point of the button
+            # is the sync that happens after the game closes, and that works
+            # just as well on a window this program did not open. It also
+            # answers the question the third test asked next -- what happens to
+            # saves when RetroArch is started some other way.
+            self._say(
+                "RetroArch is already open, so a second copy will not be "
+                "started. Waiting for that window to close.",
+                "muted",
+            )
+            self._get_out_of_the_way()
+            processes.wait_for_exit(already_open)
+            self._come_back()
+            self._say("RetroArch closed.", "muted")
+        else:
+            self._say("Launching RetroArch…", "muted")
+            try:
+                process = subprocess.Popen([str(exe)], cwd=str(exe.parent))
+            except OSError as error:
+                self._say(f"Could not launch RetroArch: {error}", "error")
+                return
 
-        process.wait()
-        self._say(
-            f"RetroArch closed (exit code {process.returncode}).",
-            "muted" if process.returncode == 0 else "warn",
-        )
+            self._get_out_of_the_way()
+            process.wait()
+            self._come_back()
+            self._say(
+                f"RetroArch closed (exit code {process.returncode}).",
+                "muted" if process.returncode == 0 else "warn",
+            )
 
         # Sync after the process exits, not on a timer: mGBA flushes its save on
         # clean exit, so syncing earlier would copy a stale file.
