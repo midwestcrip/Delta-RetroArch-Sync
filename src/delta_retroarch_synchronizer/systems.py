@@ -158,11 +158,16 @@ SYSTEMS: dict[str, System] = {
 #: and the in-game clock may be out by however long the two sides were apart,
 #: which for Crystal affects day/night and daily events.
 #:
-#: nes is modelled and raw_compatible and still not enabled: no real save has
-#: been seen. Note that Super Mario Bros. cannot supply one -- the cartridge has
-#: no SRAM at all. Verifying NES needs a game with a battery, such as Zelda,
-#: Metroid or Final Fantasy.
-ENABLED_SYSTEMS: frozenset[str] = frozenset({"gba", "snes", "gbc"})
+#: nes added 2026-09-06 against a real Kirby's Adventure save: 8192 bytes
+#: exactly, which is the MMC3 mapper's battery-backed 8KB PRG-RAM, raw with no
+#: header or footer. Delta runs nestopia and RetroArch's Nestopia core writes
+#: the same 8KB region, so this is a copy like SNES was.
+#:
+#: The game matters here. Super Mario Bros. could never have verified NES --
+#: that cartridge has no SRAM at all, which is why Delta stores no save file for
+#: it and why it sat in this folder for a day proving nothing. A battery-backed
+#: game was required: Zelda, Metroid, Kirby's Adventure, Final Fantasy.
+ENABLED_SYSTEMS: frozenset[str] = frozenset({"gba", "snes", "gbc", "nes"})
 
 BY_DELTA_TYPE: dict[str, System] = {s.delta_type: s for s in SYSTEMS.values()}
 

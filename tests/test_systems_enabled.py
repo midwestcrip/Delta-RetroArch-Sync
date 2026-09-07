@@ -32,15 +32,18 @@ def test_systems_needing_conversion_stay_blocked(key):
     assert systems.SYSTEMS[key].conversion_note
 
 
-def test_nes_stays_blocked_until_a_real_save_exists():
-    """Modelled and copyable, but no real NES save has been inspected.
+def test_nes_is_a_plain_copy_of_battery_ram():
+    """Enabled 2026-09-06 against a real Kirby's Adventure save.
 
-    Being raw_compatible is not on its own a reason to enable something: the
-    rule is a real save file, checked. Note that Super Mario Bros. cannot
-    supply one -- that cartridge has no SRAM -- so verifying NES needs a game
-    with a battery.
+    8192 bytes exactly -- the MMC3 mapper's battery-backed PRG-RAM -- raw, no
+    header or footer. Super Mario Bros. could never have verified this: that
+    cartridge has no SRAM, so Delta stores no save file for it at all.
     """
-    assert "nes" not in systems.ENABLED_SYSTEMS
+    nes = systems.SYSTEMS["nes"]
+
+    assert "nes" in systems.ENABLED_SYSTEMS
+    assert nes.raw_compatible
+    assert nes.extra_files == ()
 
 
 def test_every_enabled_system_can_actually_be_played():
@@ -54,7 +57,7 @@ def test_every_enabled_system_can_actually_be_played():
 
 def test_the_enabled_set_is_exactly_what_was_verified():
     """Deliberately exact: widening this set is a decision, not a side effect."""
-    assert systems.ENABLED_SYSTEMS == frozenset({"gba", "snes", "gbc"})
+    assert systems.ENABLED_SYSTEMS == frozenset({"gba", "snes", "gbc", "nes"})
 
 
 def test_gbc_carries_a_clock_file_that_is_not_synced():
