@@ -268,8 +268,13 @@ manifest or somebody's save backups.
 ## Tests
 
 ```
-python -m unittest discover -s tests
+python -m pytest tests -q
 ```
+
+203 tests. `python -m unittest discover -s tests` also runs the whole suite and
+needs nothing installed, but it reports 116 — that is the number of test
+*methods*, and it does not tally the subtests inside them. Same coverage, and
+pytest is the only third-party package this repository asks for anywhere.
 
 The suite runs against a synthetic Delta folder built from the layout documented
 in `docs/research.md`. When real data is available, the first job is to diff it
