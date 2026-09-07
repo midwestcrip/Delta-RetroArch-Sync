@@ -85,8 +85,26 @@ class FakeRoot:
         self.calls.append(args)
 
 
-def test_adopt_takes_the_factor_from_what_tk_believes():
-    root = FakeRoot(144.0)
+def test_adopt_asks_windows_before_it_asks_tk(monkeypatch):
+    """The bug that only the built .exe found.
+
+    The first version trusted Tk's ``winfo_fpixels``. From source that reads
+    144 on a 150% display and everything looked right; the packaged executable
+    reported 96 and rendered a third too small, with awareness granted and
+    ``GetDpiForWindow`` answering 144 the whole time. Windows is asked first
+    now, and this pins that order.
+    """
+    monkeypatch.setattr(display, "window_dpi", lambda _root: 144.0)
+    root = FakeRoot(96.0)  # Tk, disagreeing, as it did in the .exe
+
+    assert display.adopt(root) == 1.5
+    assert display.px(10) == 15
+
+
+def test_adopt_falls_back_to_tk_where_windows_cannot_answer():
+    """Windows 8.1 has neither API, and nothing here is Windows-only by
+    requirement -- only by relevance."""
+    root = FakeRoot(144.0)  # window_dpi returns None: FakeRoot has no winfo_id
 
     factor = display.adopt(root)
 

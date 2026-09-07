@@ -115,21 +115,62 @@ def _detect_awareness() -> str:
     return "unavailable"
 
 
+def window_dpi(root) -> float | None:
+    """Ask Windows what this window's display resolution really is.
+
+    ``GetDpiForWindow`` is the per-monitor-correct question and the one to ask
+    of a per-monitor-aware process: there is no single system DPI for such a
+    process, because the answer changes when the window is dragged to another
+    screen.
+
+    This is not what the first version did. It asked Tk instead, via
+    ``winfo_fpixels("1i")``, on the reasoning that what mattered was the number
+    Tk believed. Running from source that reads 144 on a 150% display and
+    everything looked right. **The built executable reported 96 and rendered a
+    third too small** -- awareness granted, ``GetDpiForWindow`` answering 144,
+    and Tk's screen measurement still saying 96. Only running the real .exe
+    found it; every check against a source run had passed.
+
+    ``GetDpiForSystem`` is the fallback for Windows 8.1, where neither
+    per-window DPI nor ``GetDpiForWindow`` exists.
+    """
+    if not on_windows():
+        return None
+    try:
+        user32 = ctypes.windll.user32
+        handle = root.winfo_id()
+        window = user32.GetParent(handle) or handle
+    except Exception:  # pragma: no cover -- no window to ask about
+        return None
+
+    for name, arguments in (("GetDpiForWindow", (window,)), ("GetDpiForSystem", ())):
+        function = getattr(user32, name, None)
+        if function is None:
+            continue
+        try:
+            value = function(*arguments)
+        except Exception:  # pragma: no cover
+            continue
+        if value:
+            return float(value)
+    return None
+
+
 def adopt(root) -> float:
     """Rescale a freshly created window to the display it is on.
 
-    ``winfo_fpixels("1i")`` is asked rather than the DPI being read from
-    Windows, because what matters is the number *Tk* believes, and the two only
-    agree once awareness has been granted. Asking Tk means this is
-    self-correcting: if awareness failed, Tk still says 96 and everything below
-    resolves to no change at all.
+    Windows is asked first and Tk second. Either way this stays
+    self-correcting: with awareness refused both report 96, and every dimension
+    below resolves to no change at all.
     """
     global _scale
-    try:
-        per_inch = float(root.winfo_fpixels("1i"))
-    except Exception:  # pragma: no cover -- a display that cannot be measured
-        _scale = 1.0
-        return _scale
+    per_inch = window_dpi(root)
+    if per_inch is None:
+        try:
+            per_inch = float(root.winfo_fpixels("1i"))
+        except Exception:  # pragma: no cover -- a display that cannot be measured
+            _scale = 1.0
+            return _scale
     if per_inch <= 0:  # pragma: no cover
         _scale = 1.0
         return _scale
