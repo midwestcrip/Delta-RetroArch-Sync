@@ -164,9 +164,53 @@ Data loss is the failure mode this is designed against.
   state is compared against *both* sides. Only one side changed, that side wins;
   both changed, it is flagged, not guessed. This is what closes the gap when
   RetroArch crashes before the post-close sync runs.
-- **Rolling backups** are kept before any save is overwritten.
+- **Rolling backups** are kept before any save is overwritten, and can be put
+  back — see below.
 - **Unverified conversions never run.** N64 and DS are reported by the inspector
   and refused by the sync until their formats are confirmed against real files.
+
+## Going back to an earlier save
+
+Every write copies the previous version aside first — saves on both sides, clock
+files, Delta's records, cheats. To see them:
+
+```bash
+python -m delta_retroarch_synchronizer backups
+```
+
+```
+  [  1] Pokémon: Crystal Version  ·  Delta save  ·  2026-09-07 01:05:36 UTC  ·  32,768 B
+  [  2] Super Mario World  ·  Delta save  ·  2026-09-06 21:08:45 UTC  ·  2,048 B
+  [  3] Pokémon - Fire Red Version  ·  RetroArch save  ·  2026-09-06 17:31:26 UTC  ·  131,072 B
+```
+
+```bash
+python -m delta_retroarch_synchronizer restore 3
+```
+
+Without `--yes` that writes nothing and prints exactly which file it would
+overwrite. Add `--yes` to do it. There is no interactive prompt, deliberately —
+every command here works without a terminal, and this is the one you might want
+to script after a bad sync.
+
+Three things worth knowing:
+
+- **A restore is undoable.** Whatever it replaces is backed up first, so it
+  becomes a new entry in the list.
+- **A restore is a change like any other.** The manifest is deliberately left
+  alone, so the next sync carries the restored save to the other side — or
+  reports a conflict if that side moved too. Recording it as already-agreed
+  would leave the two sides holding different saves while the tool believed they
+  matched, and nothing would ever reconcile them.
+- **Restoring into Delta is not a file copy.** It goes through the same push
+  path a normal sync uses, because the record has to name the restored save's
+  new Dropbox revision. Without that, Delta downloads the newer save straight
+  back over it. So it needs Dropbox authorisation, the same as any push —
+  except for cheats, which have no attached file and so need none.
+
+`GameSave-<sha1>` record files are backed up too but are not listed as restore
+points. The record is rewritten from the save it accompanies, so restoring the
+save is the operation; those copies are there for manual recovery.
 
 ## Pushing back to Delta
 

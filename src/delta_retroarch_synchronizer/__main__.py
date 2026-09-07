@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from . import config as config_module
-from . import discovery, dropbox_api, health, paths
+from . import delta_writer, discovery, dropbox_api, health, paths, restore
 from . import inspect as inspect_module
 from . import sync as sync_module
 from . import systems
@@ -184,6 +184,139 @@ def run_doctor_command() -> int:
     return 0
 
 
+def _restore_context() -> tuple[Path, Path, Path, list, dict[str, str]] | None:
+    """Everything both backup commands need: folders, saves and game names."""
+    resolved = _resolve()
+    if resolved is None:
+        return None
+    delta_folder, retroarch_config = resolved
+
+    settings = discovery.parse_retroarch_config(retroarch_config)
+    save_dir = discovery.resolve_retroarch_dir(
+        settings, "savefile_directory", retroarch_config, "saves"
+    )
+    entries = inspect_module.collect_games(delta_folder)
+    names = {entry.identifier: entry.name for entry in entries}
+    return delta_folder, retroarch_config, save_dir, entries, names
+
+
+def run_backups_command() -> int:
+    """List what can be put back, newest first."""
+    context = _restore_context()
+    if context is None:
+        return 1
+    _, _, _, _, names = context
+
+    backup_dir = sync_module.Paths(
+        delta_folder=Path(), retroarch_config=Path(), save_dir=Path(),
+        state_dir=paths.state_dir(),
+    ).backup_dir
+
+    found = restore.scan(backup_dir)
+    points = restore.restore_points(found, names)
+    if not points:
+        print(f"No backups yet in {backup_dir}.")
+        print("One is taken automatically before anything is overwritten.")
+        return 0
+
+    print(f"\nBackups in {backup_dir}\n")
+    for index, point in enumerate(points, start=1):
+        print(f"  [{index:>3}] {point.describe()}")
+
+    skipped = len(found) - len(points)
+    if skipped:
+        print(
+            f"\n  ({skipped} record file(s) also backed up. They are restored "
+            "with the save they belong to, not on their own.)"
+        )
+    print("\nPut one back with:  restore <number> --yes")
+    return 0
+
+
+def run_restore_command(number: int, confirmed: bool) -> int:
+    """Put one backup back. Prints what it would do unless --yes is given.
+
+    Deliberately not an interactive prompt. Every other command here works
+    without a terminal, and a restore is exactly the operation someone might
+    script after a bad sync -- so consent is a flag, and without it this is a
+    dry run that says precisely what would change.
+    """
+    context = _restore_context()
+    if context is None:
+        return 1
+    delta_folder, retroarch_config, save_dir, entries, names = context
+
+    sync_paths = sync_module.Paths(
+        delta_folder=delta_folder,
+        retroarch_config=retroarch_config,
+        save_dir=save_dir,
+        state_dir=paths.state_dir(),
+    )
+    points = restore.restore_points(restore.scan(sync_paths.backup_dir), names)
+    if not 1 <= number <= len(points):
+        print(f"No backup number {number}. Run `backups` to see the list.")
+        return 1
+
+    point = points[number - 1]
+    print(f"\n  {point.describe()}")
+
+    if point.backup.side == restore.RETROARCH:
+        target = restore.find_retroarch_target(
+            save_dir, point.backup.original_name
+        )
+        destination = str(target) if target else "(not found -- restore will fail)"
+        print(f"  would overwrite: {destination}")
+    else:
+        print(f"  would write into Delta's folder: {point.backup.original_name}")
+
+    if not confirmed:
+        print(f"\n  Nothing written. Re-run with --yes to do it.")
+        print(f"  Afterwards, {restore.RESTORE_IS_A_CHANGE}.")
+        return 0
+
+    try:
+        if point.backup.side == restore.RETROARCH:
+            note = restore.restore_retroarch(
+                point, save_dir, sync_paths.backup_dir
+            )
+        elif point.backup.kind == "cheat":
+            note = restore.restore_delta_cheat(
+                point, delta_folder, sync_paths.backup_dir
+            )
+        else:
+            entry = next(
+                (e for e in entries if e.identifier == point.backup.identifier),
+                None,
+            )
+            if entry is None:
+                print(
+                    "\n  Delta no longer has this game, so there is no record to "
+                    "write the restored save into."
+                )
+                return 1
+            dropbox = load_dropbox()
+            if dropbox is None:
+                print(f"\n  Not restored: {delta_writer.REVISION_MUST_BE_REAL}")
+                return 1
+            system = entry.system
+            file_identifier = (
+                system.delta_clock_id
+                if point.backup.kind == "clock" and system and system.delta_clock_id
+                else delta_writer.PRIMARY_FILE
+            )
+            note = restore.restore_delta_save(
+                point, sync_paths, entry, dropbox, file_identifier=file_identifier
+            )
+    except (OSError, ValueError, dropbox_api.DropboxError) as error:
+        print(f"\n  FAILED: {error}")
+        return 1
+
+    print(f"\n  {note}")
+    print(f"  The previous version was backed up first, so this is undoable.")
+    print(f"  Now sync: {restore.RESTORE_IS_A_CHANGE}.")
+    return 0
+
+
 def run_sync_command(dry_run: bool, allow_push: bool) -> int:
     resolved = _resolve()
     if resolved is None:
@@ -307,6 +440,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Show what would happen without writing anything.",
     )
+    subparsers.add_parser(
+        "backups", help="List the saves and cheats that can be put back."
+    )
+    restore_parser = subparsers.add_parser(
+        "restore", help="Put one backup back. Shows what it would do without --yes."
+    )
+    restore_parser.add_argument(
+        "number", type=int, help="Which backup, from the `backups` list."
+    )
+    restore_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Actually do it. Without this, nothing is written.",
+    )
     auth_parser = subparsers.add_parser(
         "auth", help="Authorise Dropbox once, so pushing can read file revisions."
     )
@@ -335,6 +482,10 @@ def main(argv: list[str] | None = None) -> int:
         return inspect_module.run()
     if args.command == "sync":
         return run_sync_command(dry_run=args.dry_run, allow_push=args.push)
+    if args.command == "backups":
+        return run_backups_command()
+    if args.command == "restore":
+        return run_restore_command(args.number, args.yes)
     if args.command == "auth":
         return run_auth_command(args.app_key, args.code)
 
