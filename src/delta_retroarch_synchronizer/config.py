@@ -44,11 +44,11 @@ class Config:
     #: Overrides the bundled Dropbox app key. Only needed by someone who
     #: would rather use their own app registration.
     dropbox_app_key: str = ""
-    #: Whether the one-time "add this to your Start menu?" offer has been made.
-    #: Recorded rather than inferred from the shortcut existing, so that
-    #: declining it once, or deleting the shortcut later, is not treated as an
-    #: invitation to ask again.
-    start_menu_offered: bool = False
+    #: Whether the one-time "add shortcuts?" offer has been made. Recorded
+    #: rather than inferred from a shortcut existing, so that declining it
+    #: once, or deleting a shortcut later, is not treated as an invitation to
+    #: ask again.
+    shortcuts_offered: bool = False
 
 
 def _path(raw: object) -> Path | None:
@@ -90,7 +90,12 @@ def load(path: Path | None = None) -> Config:
         sync_cheats=flag("sync_cheats", True),
         sync_on_open=flag("sync_on_open", True),
         dropbox_app_key=str(options.get("dropbox_app_key", "") or ""),
-        start_menu_offered=flag("start_menu_offered", False),
+        # start_menu_offered was this key's name while the offer covered only
+        # the Start menu. Read as a fallback so nobody who already answered is
+        # asked a second time.
+        shortcuts_offered=flag(
+            "shortcuts_offered", flag("start_menu_offered", False)
+        ),
     )
 
 
@@ -125,7 +130,7 @@ def save(config: Config, path: Path | None = None) -> Path:
         f"sync_cheats = {str(config.sync_cheats).lower()}",
         f"sync_on_open = {str(config.sync_on_open).lower()}",
         f'dropbox_app_key = "{config.dropbox_app_key}"',
-        f"start_menu_offered = {str(config.start_menu_offered).lower()}",
+        f"shortcuts_offered = {str(config.shortcuts_offered).lower()}",
         "",
     ]
     path.write_text("\n".join(body) + "\n", encoding="utf-8")

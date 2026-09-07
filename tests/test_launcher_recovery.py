@@ -30,7 +30,7 @@ from delta_retroarch_synchronizer import discovery, launcher  # noqa: E402
 def window(monkeypatch, tmp_path):
     """A launcher on a machine where nothing is installed yet."""
     monkeypatch.setattr(config_module, "load", lambda path=None: config_module.Config(
-        sync_on_open=False, start_menu_offered=True
+        sync_on_open=False, shortcuts_offered=True
     ))
     monkeypatch.setattr(config_module, "save", lambda cfg, path=None: tmp_path / "c.toml")
     monkeypatch.setattr(

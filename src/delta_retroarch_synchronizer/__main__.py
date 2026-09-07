@@ -451,8 +451,8 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
     return 0
 
 
-def run_start_menu_command(*, remove: bool) -> int:
-    """Add or remove the Start menu entry from the command line.
+def run_shortcuts_command(*, remove: bool) -> int:
+    """Add or remove the shortcuts from the command line.
 
     The window offers this too. It is here because the window is not always the
     way in -- someone scripting a deployment, or running headless over SSH, has
@@ -461,23 +461,27 @@ def run_start_menu_command(*, remove: bool) -> int:
     from . import shortcut
 
     if not shortcut.supported():
-        print("The Start menu is a Windows feature.")
+        print("Shortcuts like these are a Windows feature.")
         return 1
 
     try:
-        if remove:
-            if not shortcut.remove():
-                print("Nothing to remove; it was not in the Start menu.")
-                return 0
-            print("Removed from the Start menu.")
-            return 0
-        link = shortcut.create()
+        changed = shortcut.remove() if remove else shortcut.create()
     except shortcut.ShortcutError as error:
         print(f"Failed: {error}")
         return 1
 
-    print(f"Added: {link}")
-    print("Search the Start menu for \u201cDelta\u201d to find it.")
+    if not changed:
+        print("Nothing to remove; there were no shortcuts.")
+        return 0
+
+    print("Removed:" if remove else "Added:")
+    for place, link in changed.items():
+        print(f"  {place}: {link}")
+    if not remove:
+        print(
+            "\nSearch the Start menu for \u201cDelta\u201d, "
+            "or look on your desktop."
+        )
     return 0
 
 
@@ -520,14 +524,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Actually do it. Without this, nothing is written.",
     )
-    start_menu_parser = subparsers.add_parser(
-        "start-menu",
-        help="Add this program to your Start menu, so you can search for it.",
+    shortcuts_parser = subparsers.add_parser(
+        "shortcuts",
+        help="Put this program in your Start menu and on your desktop.",
     )
-    start_menu_parser.add_argument(
+    shortcuts_parser.add_argument(
         "--remove",
         action="store_true",
-        help="Take the Start menu entry back out again.",
+        help="Take the shortcuts back out again.",
     )
     auth_parser = subparsers.add_parser(
         "auth", help="Authorise Dropbox once, so pushing can read file revisions."
@@ -561,8 +565,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_backups_command()
     if args.command == "restore":
         return run_restore_command(args.number, args.yes)
-    if args.command == "start-menu":
-        return run_start_menu_command(remove=args.remove)
+    if args.command == "shortcuts":
+        return run_shortcuts_command(remove=args.remove)
     if args.command == "auth":
         return run_auth_command(args.app_key, args.code)
 

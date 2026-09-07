@@ -627,18 +627,18 @@ class LauncherWindow:
             # in place -- "Saved!", "Added!" -- and a button that resizes as it
             # answers you drags the whole row sideways.
             self.start_menu_button = ttk.Button(
-                actions, width=22, command=self.on_start_menu
+                actions, width=19, command=self.on_start_menu
             )
             self.start_menu_button.grid(row=0, column=0, sticky="w")
             self.start_menu_confirm = Confirmation(self.start_menu_button)
             Tooltip(
                 self.start_menu_button,
-                "Adds this program to your Start menu, so you can find it by "
-                "searching for \u201cDelta\u201d instead of going back to the "
-                "folder you unzipped.\n\n"
+                "Puts this program in your Start menu and on your desktop, so "
+                "you can find it again without going back to the folder you "
+                "unzipped it into.\n\n"
                 "Installs for you only and needs no administrator rights. "
                 "Nothing else on your computer is changed, and the same button "
-                "removes it again.",
+                "removes them again.",
             )
             self._refresh_start_menu_button()
 
@@ -1079,38 +1079,35 @@ class LauncherWindow:
 
     def _refresh_start_menu_button(self) -> None:
         label = (
-            "Remove from Start menu"
-            if shortcut_module.installed()
-            else "Add to Start menu"
+            "Remove shortcuts" if shortcut_module.installed() else "Add shortcuts"
         )
         self.start_menu_confirm.settle(label)
 
     def on_start_menu(self) -> None:
-        """Add or remove the Start menu entry, whichever the button offers."""
+        """Add or remove the shortcuts, whichever the button offers."""
         removing = shortcut_module.installed()
         try:
-            if removing:
-                shortcut_module.remove()
-            else:
-                shortcut_module.create()
+            changed = (
+                shortcut_module.remove() if removing else shortcut_module.create()
+            )
         except shortcut_module.ShortcutError as error:
             verb = "remove" if removing else "add"
-            self.write(f"Could not {verb} the Start menu entry: {error}", "error")
+            self.write(f"Could not {verb} the shortcuts: {error}", "error")
             messagebox.showerror(WINDOW_TITLE, str(error), parent=self.root)
             return
 
-        if removing:
-            self.write("Removed from the Start menu.")
-        else:
-            self.write(
-                "Added to the Start menu. Search for “Delta” to find it.",
-                "ok",
-            )
+        # Named individually, because "added to your Start menu and desktop"
+        # is a claim the user can check and should be able to.
+        verb = "Removed from" if removing else "Added to"
+        places = " and ".join(changed) or "nowhere"
+        self.write(f"{verb} your {places}.", "" if removing else "ok")
+        for place, link in changed.items():
+            self.write(f"    {place}: {link}", "muted")
         self._refresh_start_menu_button()
         self.start_menu_confirm.show("Removed!" if removing else "Added!")
 
     def _offer_start_menu(self) -> None:
-        """Ask once, on first run, whether to add a Start menu entry.
+        """Ask once, on first run, whether to add shortcuts.
 
         Three separate checkpoints of the third naive-user test came back with
         the same sentence -- it never appears in the Start menu or in search --
@@ -1121,7 +1118,7 @@ class LauncherWindow:
         somewhere the user did not choose is the behaviour people unzip a
         portable build to avoid.
         """
-        if self.config.start_menu_offered or not shortcut_module.supported():
+        if self.config.shortcuts_offered or not shortcut_module.supported():
             return
 
         # Written before the dialog opens, so force-quitting inside it cannot
@@ -1129,38 +1126,37 @@ class LauncherWindow:
         # Built from what is on disk rather than from self.config, which by now
         # holds discovered paths -- recording those would freeze a guess that is
         # meant to be made fresh each run.
-        config_module.save(replace(config_module.load(), start_menu_offered=True))
-        self.config = replace(self.config, start_menu_offered=True)
+        config_module.save(replace(config_module.load(), shortcuts_offered=True))
+        self.config = replace(self.config, shortcuts_offered=True)
 
         if shortcut_module.installed():
             return
 
         wants = messagebox.askyesno(
             WINDOW_TITLE,
-            "Add this to your Start menu?\n\n"
-            "You would then find it by searching for “Delta”, instead "
-            "of going back to the folder you unzipped it into.\n\n"
-            "It installs for you only, needs no administrator rights, and the "
-            "Settings tab takes it back out. This is the only time you will be "
-            "asked.",
+            "Add shortcuts to your Start menu and desktop?\n\n"
+            "You would then find this again by searching for “Delta” "
+            "or from your desktop, instead of going back to the folder you "
+            "unzipped it into.\n\n"
+            "They install for you only, need no administrator rights, and the "
+            "Settings tab takes them back out. This is the only time you will "
+            "be asked.",
             parent=self.root,
         )
         if not wants:
             self.write(
-                "Not added to the Start menu. "
-                "The Settings tab can add it whenever you like.",
+                "No shortcuts added. The Settings tab can add them "
+                "whenever you like.",
                 "muted",
             )
             return
 
         try:
-            shortcut_module.create()
+            created = shortcut_module.create()
         except shortcut_module.ShortcutError as error:
-            self.write(f"Could not add the Start menu entry: {error}", "error")
+            self.write(f"Could not add the shortcuts: {error}", "error")
             return
-        self.write(
-            "Added to the Start menu. Search for “Delta” to find it.", "ok"
-        )
+        self.write(f"Added to your {' and '.join(created)}.", "ok")
         self._refresh_start_menu_button()
 
     def on_open_settings_folder(self) -> None:

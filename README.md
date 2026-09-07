@@ -138,21 +138,25 @@ If it cannot, the paths are editable in the window. Press **Instructions**,
 bottom left, for the whole setup procedure with each step marked according to
 what this PC already has.
 
-**The first run offers to add it to your Start menu**, so you can find it again
-by searching for "Delta" instead of going back to the folder you unzipped. It is
+**The first run offers to add shortcuts** to your Start menu and your desktop,
+so you can find it again without going back to the folder you unzipped. It is
 asked once, never assumed, installs for you alone, and needs no administrator
 rights. The Settings tab has the same button, either way round, whenever you
 change your mind.
 
+Both locations are read from Windows rather than guessed, so a desktop
+redirected into OneDrive — which is the default on a machine signed into a
+Microsoft account — gets the shortcut where you can actually see it.
+
 **Or run from source** — needs Python 3.11+ and nothing else; this tool has no
 third-party dependencies. Double-click **`Delta-RetroArch Synchronizer.bat`** in
-this folder, or add the Start menu entry from the command line:
+this folder, or add the shortcuts from the command line:
 
 ```
-python -m delta_retroarch_synchronizer start-menu
+python -m delta_retroarch_synchronizer shortcuts
 ```
 
-`--remove` takes it back out.
+`--remove` takes them back out.
 
 The launcher window finds Delta's Dropbox folder and your RetroArch install by
 itself, shows what it found, and gives you one button: **Sync and Play**. That

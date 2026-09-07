@@ -25,6 +25,7 @@ or reshape -- the command.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import subprocess
 import sys
@@ -34,6 +35,17 @@ from . import paths
 
 #: Both the file name in the Start menu and what the user searches for.
 LINK_NAME = f"{paths.APP_NAME}.lnk"
+
+#: FOLDERID_Programs and FOLDERID_Desktop, for SHGetKnownFolderPath.
+#:
+#: Asked of Windows rather than built from %APPDATA% and the home directory,
+#: because either can be redirected and the home-directory guess is the one that
+#: fails silently. On the machine this was written for, OneDrive owns the
+#: desktop: the real one is ``C:/Users/colso/OneDrive/Desktop`` and
+#: ``~/Desktop`` **does not exist**, so writing a shortcut there would have
+#: created a folder nobody ever looks at and reported success.
+_FOLDERID_PROGRAMS = "{A77F5D77-2E2B-44C3-A6A2-ABA601054A51}"
+_FOLDERID_DESKTOP = "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}"
 
 DESCRIPTION = "Sync Delta and RetroArch saves, then play"
 
@@ -59,6 +71,41 @@ def supported() -> bool:
     return sys.platform == "win32"
 
 
+def _known_folder(folder_id: str) -> Path | None:
+    """Where Windows currently keeps one of its named folders.
+
+    ``SHGetKnownFolderPath`` is the only correct way to ask. It follows
+    redirection -- OneDrive, a roaming profile, a policy -- which the obvious
+    constructions from %APPDATA% and the home directory do not.
+    """
+    if not supported():
+        return None
+
+    class GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", ctypes.c_ulong),
+            ("Data2", ctypes.c_ushort),
+            ("Data3", ctypes.c_ushort),
+            ("Data4", ctypes.c_byte * 8),
+        ]
+
+    guid = GUID()
+    ole32 = ctypes.windll.ole32
+    if ole32.CLSIDFromString(folder_id, ctypes.byref(guid)) != 0:
+        return None  # pragma: no cover -- the ids above are constants
+
+    buffer = ctypes.c_wchar_p()
+    result = ctypes.windll.shell32.SHGetKnownFolderPath(
+        ctypes.byref(guid), 0, None, ctypes.byref(buffer)
+    )
+    if result != 0 or not buffer.value:
+        return None
+    try:
+        return Path(buffer.value)
+    finally:
+        ole32.CoTaskMemFree(buffer)
+
+
 def start_menu_dir() -> Path | None:
     """The per-user Programs folder -- writable without administrator rights.
 
@@ -66,12 +113,21 @@ def start_menu_dir() -> Path | None:
     thing that already stopped it dead was RetroArch's installer demanding an
     administrator PIN. A shortcut is not worth a second elevation prompt.
     """
-    if not supported():
-        return None
-    appdata = os.environ.get("APPDATA")
+    folder = _known_folder(_FOLDERID_PROGRAMS)
+    if folder is not None:
+        return folder
+    # Only if the shell would not answer. Correct on an ordinary profile and
+    # wrong on a redirected one, which is why it is the fallback and not the
+    # first choice.
+    appdata = os.environ.get("APPDATA") if supported() else None
     if not appdata:
         return None
     return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+
+
+def desktop_dir() -> Path | None:
+    """The desktop, wherever the user's actually is."""
+    return _known_folder(_FOLDERID_DESKTOP)
 
 
 def link_path() -> Path | None:
@@ -79,9 +135,27 @@ def link_path() -> Path | None:
     return folder / LINK_NAME if folder else None
 
 
+def desktop_link_path() -> Path | None:
+    folder = desktop_dir()
+    return folder / LINK_NAME if folder else None
+
+
+def links() -> dict[str, Path]:
+    """Every place a shortcut goes, by the name the user would call it."""
+    found: dict[str, Path] = {}
+    start_menu = link_path()
+    if start_menu is not None:
+        found["Start menu"] = start_menu
+    desktop = desktop_link_path()
+    if desktop is not None:
+        found["desktop"] = desktop
+    return found
+
+
 def installed() -> bool:
-    link = link_path()
-    return bool(link and link.is_file())
+    """True if a shortcut exists anywhere. Either one counts, so removing one
+    by hand does not leave the button offering to add what is already there."""
+    return any(path.is_file() for path in links().values())
 
 
 def target() -> tuple[Path, str, Path]:
@@ -160,15 +234,8 @@ def _run_powershell(script: str, variables: dict[str, str]) -> None:
         raise ShortcutError(detail.splitlines()[0] if detail else "PowerShell failed")
 
 
-def create() -> Path:
-    """Add the launcher to this user's Start menu. Returns the shortcut path."""
-    if not supported():
-        raise ShortcutError("The Start menu is a Windows feature.")
-
-    link = link_path()
-    if link is None:
-        raise ShortcutError("Could not locate the Start menu folder (no %APPDATA%).")
-
+def write_link(link: Path) -> Path:
+    """Write one shortcut at exactly this path."""
     program, arguments, working_dir = target()
     try:
         link.parent.mkdir(parents=True, exist_ok=True)
@@ -194,13 +261,43 @@ def create() -> Path:
     return link
 
 
-def remove() -> bool:
-    """Take it back out. False means there was nothing there to remove."""
-    link = link_path()
-    if link is None or not link.is_file():
-        return False
-    try:
-        link.unlink()
-    except OSError as error:
-        raise ShortcutError(str(error)) from error
-    return True
+def create() -> dict[str, Path]:
+    """Put the launcher in the Start menu and on the desktop.
+
+    Both, because they answer different habits: one is for people who search,
+    the other for people who look. Returns what was written, keyed by place.
+    """
+    if not supported():
+        raise ShortcutError("Shortcuts like these are a Windows feature.")
+
+    places = links()
+    if not places:
+        raise ShortcutError("Could not locate the Start menu or the desktop.")
+
+    written: dict[str, Path] = {}
+    errors: list[str] = []
+    for name, link in places.items():
+        try:
+            written[name] = write_link(link)
+        except ShortcutError as error:
+            errors.append(f"{name}: {error}")
+
+    # One failing is not both failing. A desktop that cannot be written to is
+    # no reason to withhold the Start menu entry.
+    if not written:
+        raise ShortcutError("; ".join(errors))
+    return written
+
+
+def remove() -> dict[str, Path]:
+    """Take them back out. An empty result means there was nothing there."""
+    removed: dict[str, Path] = {}
+    for name, link in links().items():
+        if not link.is_file():
+            continue
+        try:
+            link.unlink()
+        except OSError as error:
+            raise ShortcutError(str(error)) from error
+        removed[name] = link
+    return removed

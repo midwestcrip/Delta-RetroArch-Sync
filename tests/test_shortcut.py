@@ -1,4 +1,4 @@
-"""Getting the launcher into the Start menu, and saying so where it was asked.
+"""Getting the launcher into the Start menu and onto the desktop.
 
 Three separate checkpoints of the third naive-user test came back with the same
 sentence: the program never appears in the Start menu or in search, even after
@@ -7,6 +7,9 @@ in the report. A portable zip has no installer to make a shortcut, and the
 script that could was written for a source checkout, so the one person who
 needed it -- whoever downloaded the zip -- could not run it.
 
+The desktop was added afterwards, when the user's own desktop shortcut turned
+out to be broken and there was no way to make a new one from inside the program.
+
 The same test found the other half of this file: pressing "Save settings" on the
 Settings tab wrote its confirmation to the log, which lives on the Sync tab, so
 from where the user was standing the button did nothing.
@@ -14,6 +17,8 @@ from where the user was standing the button did nothing.
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -24,36 +29,84 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from delta_retroarch_synchronizer import launcher, shortcut  # noqa: E402
 
 WINDOWS_ONLY = pytest.mark.skipif(
-    sys.platform != "win32", reason="the Start menu is a Windows feature"
+    sys.platform != "win32", reason="shortcuts like these are a Windows feature"
 )
+
+
+@pytest.fixture
+def somewhere_safe(monkeypatch, tmp_path):
+    """Point both shortcut locations at a temporary directory.
+
+    Not optional politeness: ``create`` writes to the real Start menu and the
+    real desktop, so a test that did not redirect them would litter the machine
+    running it.
+    """
+    places = {
+        "Start menu": tmp_path / "Start Menu" / shortcut.LINK_NAME,
+        "desktop": tmp_path / "Desktop" / shortcut.LINK_NAME,
+    }
+    monkeypatch.setattr(shortcut, "links", lambda: dict(places))
+    return places
 
 
 # --------------------------------------------------------------- where it goes
 
 
-def test_it_installs_per_user_not_for_the_whole_machine(monkeypatch, tmp_path):
+@WINDOWS_ONLY
+def test_it_asks_windows_where_the_desktop_is(monkeypatch, tmp_path):
+    """The obvious construction is wrong on a redirected profile, and wrong in
+    the silent way.
+
+    On the machine this was written for, OneDrive owns the desktop: the real
+    one is ``C:/Users/<user>/OneDrive/Desktop`` and ``~/Desktop`` does not
+    exist at all. Building the path from the home directory would have created
+    a folder nobody ever looks at and reported success.
+    """
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    desktop = shortcut.desktop_dir()
+
+    assert desktop is not None
+    assert desktop.is_dir()
+    assert tmp_path not in desktop.parents  # not derived from the env we set
+
+
+@WINDOWS_ONLY
+def test_it_installs_per_user_not_for_the_whole_machine():
     """Per-user needs no elevation.
 
     The one thing that actually stopped the Standard test account was
     RetroArch's installer demanding an administrator PIN. A shortcut is not
     worth a second one.
     """
+    folder = shortcut.start_menu_dir()
+
+    assert folder is not None
+    assert folder.name == "Programs"
+    # Under this user's own profile, not a machine-wide location.
+    assert str(folder).lower().startswith(str(Path.home()).lower())
+
+
+def test_the_start_menu_falls_back_to_appdata(monkeypatch, tmp_path):
+    """Only for a shell that will not answer. Correct on an ordinary profile,
+    wrong on a redirected one, which is why it is the fallback."""
     monkeypatch.setattr(shortcut.sys, "platform", "win32")
+    monkeypatch.setattr(shortcut, "_known_folder", lambda _id: None)
     monkeypatch.setenv("APPDATA", str(tmp_path))
 
     folder = shortcut.start_menu_dir()
 
     assert folder is not None
     assert tmp_path in folder.parents
-    assert folder.name == "Programs"
 
 
-def test_no_appdata_means_no_guess(monkeypatch):
-    """Better to report that it cannot be done than to write somewhere random."""
+def test_nowhere_to_put_it_is_reported_rather_than_guessed(monkeypatch):
     monkeypatch.setattr(shortcut.sys, "platform", "win32")
+    monkeypatch.setattr(shortcut, "_known_folder", lambda _id: None)
     monkeypatch.delenv("APPDATA", raising=False)
 
     assert shortcut.start_menu_dir() is None
+    assert shortcut.links() == {}
     with pytest.raises(shortcut.ShortcutError):
         shortcut.create()
 
@@ -63,6 +116,7 @@ def test_it_is_not_offered_off_windows(monkeypatch):
 
     assert not shortcut.supported()
     assert shortcut.start_menu_dir() is None
+    assert shortcut.desktop_dir() is None
     assert not shortcut.installed()
 
 
@@ -115,28 +169,65 @@ def test_from_source_it_points_at_the_icon_that_will_still_be_there(monkeypatch)
 # ------------------------------------------------------------ making and removing
 
 
-def test_removing_nothing_is_not_an_error(monkeypatch, tmp_path):
-    monkeypatch.setattr(shortcut.sys, "platform", "win32")
-    monkeypatch.setenv("APPDATA", str(tmp_path))
-
-    assert shortcut.remove() is False
-
-
-def test_it_removes_what_it_made(monkeypatch, tmp_path):
-    monkeypatch.setattr(shortcut.sys, "platform", "win32")
-    monkeypatch.setenv("APPDATA", str(tmp_path))
-    link = shortcut.link_path()
-    assert link is not None
-    link.parent.mkdir(parents=True)
-    link.write_bytes(b"")
-
-    assert shortcut.installed()
-    assert shortcut.remove() is True
-    assert not shortcut.installed()
+def test_removing_nothing_is_not_an_error(somewhere_safe):
+    assert shortcut.remove() == {}
 
 
 @WINDOWS_ONLY
-def test_it_really_writes_a_shortcut_windows_can_read(monkeypatch, tmp_path):
+def test_it_writes_to_both_places(somewhere_safe, monkeypatch):
+    """Both, because they answer different habits: one is for people who
+    search, the other for people who look."""
+    monkeypatch.setattr(shortcut.paths, "is_frozen", lambda: False)
+
+    written = shortcut.create()
+
+    assert set(written) == {"Start menu", "desktop"}
+    for link in written.values():
+        assert link.is_file()
+    assert shortcut.installed()
+
+
+@WINDOWS_ONLY
+def test_one_place_failing_does_not_withhold_the_other(monkeypatch, tmp_path):
+    """A desktop that cannot be written to is no reason to skip the Start
+    menu."""
+    monkeypatch.setattr(shortcut.paths, "is_frozen", lambda: False)
+    good = tmp_path / "Start Menu" / shortcut.LINK_NAME
+    monkeypatch.setattr(shortcut, "links", lambda: {
+        "Start menu": good,
+        "desktop": Path("Z:/no-such-drive") / shortcut.LINK_NAME,
+    })
+
+    written = shortcut.create()
+
+    assert set(written) == {"Start menu"}
+    assert good.is_file()
+
+
+def test_it_removes_what_it_made(somewhere_safe):
+    for link in somewhere_safe.values():
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.write_bytes(b"")
+
+    assert shortcut.installed()
+    removed = shortcut.remove()
+
+    assert set(removed) == {"Start menu", "desktop"}
+    assert not shortcut.installed()
+
+
+def test_either_one_counts_as_installed(somewhere_safe):
+    """So deleting one by hand does not leave the button offering to add what
+    is already there."""
+    desktop = somewhere_safe["desktop"]
+    desktop.parent.mkdir(parents=True)
+    desktop.write_bytes(b"")
+
+    assert shortcut.installed()
+
+
+@WINDOWS_ONLY
+def test_it_really_writes_a_shortcut_windows_can_read(somewhere_safe, monkeypatch):
     """The one test that proves the feature rather than the plumbing.
 
     A .lnk is a binary shell-link structure the standard library cannot write,
@@ -146,16 +237,12 @@ def test_it_really_writes_a_shortcut_windows_can_read(monkeypatch, tmp_path):
     covers the quoting: this project's own path contains a hyphen and its parent
     could contain a space.
     """
-    monkeypatch.setenv("APPDATA", str(tmp_path))
     monkeypatch.setattr(shortcut.paths, "is_frozen", lambda: False)
 
-    link = shortcut.create()
+    link = shortcut.create()["Start menu"]
 
     assert link.is_file()
     assert link.stat().st_size > 0
-    assert shortcut.installed()
-
-    import subprocess
 
     read_back = subprocess.run(
         [
@@ -163,7 +250,7 @@ def test_it_really_writes_a_shortcut_windows_can_read(monkeypatch, tmp_path):
             "$s = (New-Object -ComObject WScript.Shell)"
             ".CreateShortcut($env:LINK); $s.TargetPath; $s.Arguments",
         ],
-        env={**__import__("os").environ, "LINK": str(link)},
+        env={**os.environ, "LINK": str(link)},
         stdin=subprocess.DEVNULL,  # pytest's stdin cannot be inherited
         capture_output=True,
         text=True,
@@ -237,26 +324,26 @@ def test_a_second_press_does_not_get_cut_short_by_the_first():
 
 
 def test_a_button_that_renames_itself_goes_back_to_the_new_name():
-    """The Start menu button alternates between adding and removing, so its
+    """The shortcuts button alternates between adding and removing, so its
     resting label is not fixed the way "Save settings" is."""
-    button = FakeButton("Add to Start menu")
+    button = FakeButton("Add shortcuts")
     confirmation = launcher.Confirmation(button)
 
     confirmation.show("Added!")
-    confirmation.settle("Remove from Start menu")
+    confirmation.settle("Remove shortcuts")
 
     # Still flashing: renaming must not cut the confirmation short.
     assert button.cget("text") == "Added!"
 
     button.fire()
 
-    assert button.cget("text") == "Remove from Start menu"
+    assert button.cget("text") == "Remove shortcuts"
 
 
 def test_renaming_while_at_rest_takes_effect_immediately():
-    button = FakeButton("Add to Start menu")
+    button = FakeButton("Add shortcuts")
     confirmation = launcher.Confirmation(button)
 
-    confirmation.settle("Remove from Start menu")
+    confirmation.settle("Remove shortcuts")
 
-    assert button.cget("text") == "Remove from Start menu"
+    assert button.cget("text") == "Remove shortcuts"
