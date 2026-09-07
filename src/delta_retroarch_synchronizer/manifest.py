@@ -108,9 +108,12 @@ class Manifest:
         path: Path,
         entries: dict[str, Entry] | None = None,
         cheats: dict[str, str] | None = None,
+        notices: set[str] | None = None,
     ) -> None:
         self.path = path
         self.entries: dict[str, Entry] = entries or {}
+        #: One-time notices already shown, so they are not repeated every sync.
+        self.notices: set[str] = notices or set()
         #: Last agreed cheat code per cheat UUID, canonicalised to bare hex
         #: digits. Cheats are not files on Delta's side -- the code lives inside
         #: the record JSON -- so they cannot use ``FileState`` and get their own
@@ -141,8 +144,15 @@ class Manifest:
             if isinstance(stored_cheats, dict)
             else {}
         )
+        stored_notices = raw.get("notices") if isinstance(raw, dict) else None
+        notices = (
+            {str(v) for v in stored_notices} if isinstance(stored_notices, list) else set()
+        )
         return cls(
-            path, {str(k): Entry.from_json(v) for k, v in games.items()}, cheats
+            path,
+            {str(k): Entry.from_json(v) for k, v in games.items()},
+            cheats,
+            notices,
         )
 
     def save(self) -> None:
@@ -151,6 +161,7 @@ class Manifest:
             "version": 1,
             "games": {key: entry.to_json() for key, entry in self.entries.items()},
             "cheats": dict(self.cheats),
+            "notices": sorted(self.notices),
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(".json.tmp")
@@ -180,3 +191,17 @@ class Manifest:
     def record_cheat(self, identifier: str, canonical: str) -> None:
         """Record a cheat as agreed on both sides."""
         self.cheats[identifier] = canonical
+
+    def already_said(self, key: str) -> bool:
+        """Whether a one-time notice has been shown before.
+
+        Some things are worth saying once and insufferable every time -- that a
+        game's Controller Pak data does not sync, for instance, which is true
+        permanently and changes nothing about the sync. A message repeated on
+        every run is one people learn to scroll past, and the log has already
+        lost a real confirmation that way once.
+        """
+        return key in self.notices
+
+    def record_said(self, key: str) -> None:
+        self.notices.add(key)

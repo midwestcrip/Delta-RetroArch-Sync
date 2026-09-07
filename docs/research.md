@@ -155,7 +155,7 @@ Three cases, and only the third is impossible:
 | Operation | Possible? | Why |
 | --- | --- | --- |
 | Read Delta's cheats | Yes | Plain JSON in the local mirror |
-| Rewrite an existing cheat | Yes (not built) | Its record already has property groups; cheats have no files, so no revision to fix |
+| Rewrite an existing cheat | Yes, built 2026-09-07 | Its record already has property groups; cheats have no files, so no revision to fix |
 | Create a new cheat | **No** | A new file has no property groups, and only Delta's app can write them |
 
 `RemoteRecord+Dropbox.swift` returns `nil` without property-group metadata, and
@@ -179,7 +179,7 @@ from each core's `*Types.m` / `*.swift`.
 | GBA | VBA-M | `.sav` | `.srm` | Rename only |
 | GBC | Gambatte | `.sav` + `.rtc` | `.srm` + `.rtc` | Rename, both files |
 | DS | melonDS | `.dsv` | `.srm` | Rename only |
-| N64 | Mupen64Plus | `.sav` | `.srm` | **Needs conversion** |
+| N64 | Mupen64Plus | `.sav` | `.srm` | **Converted** — see `n64.py` |
 
 RetroArch's extension is the frontend's convention, not the core's: the frontend
 owns writing SRAM to disk, so cores cannot override it.
@@ -224,10 +224,9 @@ whichever type the cartridge uses. Converting means detecting the type by size
 offset. [`ra_mp64_srm_convert`](https://github.com/drehren/ra_mp64_srm_convert)
 is a working reference for the offset layout.
 
-N64 is excluded from `ENABLED_SYSTEMS` in `systems.py`. The inspector reports it;
-the sync will never write it until the conversion is implemented and tested
-against real data. DS was excluded on the same grounds until 2026-09-07, when a
-real save showed there was no conversion to implement.
+Both N64 and DS were excluded from `ENABLED_SYSTEMS` in `systems.py` until
+2026-09-07. DS turned out to need no conversion at all; N64's was written that
+day against the offsets below and six real saves, and lives in `n64.py`.
 
 ### Delta writes exactly one storage, and its size names the type
 

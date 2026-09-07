@@ -163,11 +163,15 @@ class HarmonyFolderTests(unittest.TestCase):
         self.assertEqual(firered.system, systems.SYSTEMS["gba"])
         self.assertTrue(firered.supported)
 
-    def test_n64_is_reported_but_not_enabled(self) -> None:
+    def test_n64_is_recognised_and_now_syncable(self) -> None:
+        """N64 was reported-but-blocked until 2026-09-07, when its conversion
+        was written. It is the only enabled system that is not a plain copy."""
         entries = {e.name: e for e in inspect.collect_games(self.folder)}
         oot = entries["Ocarina of Time"]
         self.assertEqual(oot.system, systems.SYSTEMS["n64"])
-        self.assertFalse(oot.supported)
+        self.assertTrue(oot.supported)
+        self.assertFalse(oot.system.raw_compatible)
+        self.assertTrue(oot.system.converted)
 
     def test_cheats_group_by_game_identifier(self) -> None:
         cheats = inspect.collect_cheats(self.folder)

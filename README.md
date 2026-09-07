@@ -73,14 +73,22 @@ that only exists on the RetroArch side. Rename on the phone instead.
 | 4. Cheat sync (`.cht` generation) | Working, Delta -> RetroArch only |
 | 5. Launcher window | Working |
 
-Currently cleared for sync: **GBA, SNES, GBC, NES and DS**, each verified against
-a real save — Fire Red, Super Mario World, Pokémon Crystal, Kirby's Adventure and
-Pokémon Platinum respectively. Being the same plain-copy path was never the bar;
-each was enabled only once a real save had been checked for a header, footer or
-wrapper. Game Boy Color also syncs its real-time clock, on the Gambatte core only.
+**Every system Delta supports now syncs: GBA, SNES, GBC, NES, DS and N64.** Each
+was enabled only once a real save had been inspected for a header, footer or
+wrapper — being the same plain-copy path was never the bar. Game Boy Color also
+syncs its real-time clock, on the Gambatte core only.
 
-**N64 is still hard-blocked** in `systems.py` and needs genuine format
-conversion — see [docs/research.md](docs/research.md).
+Five of the six are a copy with a different extension. **N64 is the one real
+conversion**: RetroArch's mupen64plus-next keeps a single 296,960-byte `.srm`
+holding EEPROM, SRAM, FlashRAM and four Controller Paks at fixed offsets, while
+Delta writes a bare dump of whichever storage the cartridge has. The mapping is
+in `n64.py`, written against six real saves covering all four storage types.
+
+**Controller Pak data is deliberately never touched.** Delta does not sync it, so
+those four 32 KB regions belong entirely to this PC and are carried through
+untouched — a save arriving from your phone can never wipe your Mario Kart 64
+ghosts. The flip side is that pak data does not travel, and the sync says so once
+per game rather than leaving it to be discovered.
 
 ## Requirements
 
@@ -167,8 +175,13 @@ Data loss is the failure mode this is designed against.
   RetroArch crashes before the post-close sync runs.
 - **Rolling backups** are kept before any save is overwritten, and can be put
   back — see below.
-- **Unverified conversions never run.** N64 and DS are reported by the inspector
-  and refused by the sync until their formats are confirmed against real files.
+- **Unverified conversions never run.** A system stays out of `ENABLED_SYSTEMS`
+  until its format has been checked against a real save, and a save whose size
+  the N64 conversion does not recognise is refused rather than placed at a
+  guessed offset.
+- **Data that is not ours is never written.** The N64 conversion edits one
+  region of the combined save and copies every other byte through, so Controller
+  Pak contents survive a sync untouched.
 
 ## Going back to an earlier save
 

@@ -24,7 +24,7 @@ from . import clock, harmony
 from . import delta_writer, dropbox_api
 from . import inspect as inspect_module
 from . import manifest as manifest_module
-from . import naming, playlist
+from . import n64, naming, playlist
 
 #: The RetroArch -> Delta direction writes into Delta's Dropbox folder, which
 #: Delta's own docs warn against. It is off by default and enabled per run.
@@ -187,6 +187,123 @@ def copy_atomically(source: Path, destination: Path) -> None:
                 temporary.unlink()
             except OSError:
                 pass
+
+
+#: Said once per game, never repeated. Deliberately explains the consequence
+#: rather than the mechanism: "syncableFiles has no entry for it" is true and
+#: useless to someone who just wants to know whether their ghosts will travel.
+CONTROLLER_PAK_NOTICE = (
+    "this game keeps data on a Controller Pak, and Delta does not sync those. "
+    "The cartridge save travels normally; anything on the pak stays on the "
+    "machine that made it. Said once."
+)
+
+#: The same fact, for an N64 game whose progress can only be on a pak.
+CONTROLLER_PAK_ONLY_NOTICE = (
+    "this game has no cartridge save in Delta but has Controller Pak data on "
+    "this PC, so its progress lives entirely on the pak -- which Delta does not "
+    "sync. Nothing will travel for this game. Said once."
+)
+
+
+def controller_pak_notice(
+    entry: inspect_module.GameEntry,
+    target: Path,
+    state: manifest_module.Manifest,
+) -> Outcome | None:
+    """Say once when a game is keeping data somewhere that will not sync.
+
+    Detected from the save itself rather than from a list of titles. A hardcoded
+    list of "games that use the Controller Pak" would be a guess dressed as a
+    fact, and this project has been wrong four times that way; a pack with data
+    in it is evidence. The cost is that the notice arrives after the player has
+    used the pack rather than before, which is also when it starts to matter.
+    """
+    system = entry.system
+    if system is None or system.key != "n64" or not target.is_file():
+        return None
+
+    key = f"{entry.identifier}:controller-pak"
+    if state.already_said(key):
+        return None
+
+    try:
+        srm = target.read_bytes()
+    except OSError:
+        return None
+    if len(srm) != n64.SRM_SIZE or not n64.has_controller_pak_data(srm):
+        return None
+
+    state.record_said(key)
+    has_cartridge_save = entry.save_path is not None and entry.save_path.is_file()
+    return Outcome(
+        entry.name,
+        Action.SKIPPED,
+        CONTROLLER_PAK_NOTICE if has_cartridge_save else CONTROLLER_PAK_ONLY_NOTICE,
+    )
+
+
+def write_to_retroarch(
+    entry: inspect_module.GameEntry, source: Path, target: Path
+) -> str:
+    """Put Delta's save where RetroArch will find it, converting if needed.
+
+    Everything but N64 is a copy. N64 is a merge into the combined `.srm`, which
+    is why this cannot be `copy_atomically` for every system: overwriting that
+    file wholesale would take the Controller Paks with it.
+    """
+    system = entry.system
+    if system is None or not system.converted:
+        copy_atomically(source, target)
+        return f"copied to {target}"
+
+    existing = target.read_bytes() if target.is_file() else None
+    merged = n64.to_retroarch(source.read_bytes(), existing)
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + ".partial")
+    try:
+        temporary.write_bytes(merged)
+        temporary.replace(target)
+    finally:
+        if temporary.exists():
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+
+    region = n64.region_for(len(source.read_bytes()))
+    kept = "Controller Paks kept" if existing is not None else "Controller Paks formatted"
+    return f"merged {region.name} into {target} ({kept})"
+
+
+def stage_for_delta(
+    entry: inspect_module.GameEntry, target: Path, state_dir: Path
+) -> tuple[Path, bool]:
+    """The file to push, and whether it is a temporary one to clean up.
+
+    For a converted system the save has to come *out* of RetroArch's combined
+    file first. The byte count is taken from Delta's own copy rather than
+    guessed, so what goes home is the shape Delta expects -- which is also why
+    the push size guard needs no exemption here.
+    """
+    system = entry.system
+    if system is None or not system.converted:
+        return target, False
+
+    if entry.save_path is None or not entry.save_path.is_file():
+        raise ValueError(
+            f"{entry.name}: Delta has no save to tell us how much of "
+            "RetroArch's combined file belongs to this cartridge"
+        )
+
+    size = entry.save_path.stat().st_size
+    extracted = n64.to_delta(target.read_bytes(), size)
+
+    state_dir.mkdir(parents=True, exist_ok=True)
+    staged = state_dir / f"{entry.identifier}.extracted"
+    staged.write_bytes(extracted)
+    return staged, True
 
 
 @dataclass
@@ -813,6 +930,14 @@ def run_sync(
         )
         action, detail = decide(state.get(entry.identifier), entry.save_path, target)
 
+        # Checked before the action rather than after it, so it is said whatever
+        # happens -- including when there is nothing to sync, which is exactly
+        # the case for a game whose progress lives only on a pak.
+        if not dry_run:
+            pak_notice = controller_pak_notice(entry, target, state)
+            if pak_notice is not None:
+                report.outcomes.append(pak_notice)
+
         if action is Action.PUSH:
             if not allow_push:
                 report.outcomes.append(
@@ -837,9 +962,12 @@ def run_sync(
                     )
                 )
                 continue
+            staged: Path | None = None
             try:
+                source, temporary = stage_for_delta(entry, target, paths.state_dir)
+                staged = source if temporary else None
                 note = push_with_revision(
-                    paths, entry, target, dropbox
+                    paths, entry, source, dropbox
                 )
             except (OSError, ValueError, dropbox_api.DropboxError) as error:
                 report.outcomes.append(
@@ -851,6 +979,12 @@ def run_sync(
                     )
                 )
                 continue
+            finally:
+                if staged is not None:
+                    try:
+                        staged.unlink(missing_ok=True)
+                    except OSError:
+                        pass
             state.record(entry.identifier, entry.save_path, target)
             report.outcomes.append(
                 Outcome(
@@ -884,13 +1018,23 @@ def run_sync(
 
         assert entry.save_path is not None
         saved = backup(target, paths.backup_dir)
-        copy_atomically(entry.save_path, target)
+        try:
+            written = write_to_retroarch(entry, entry.save_path, target)
+        except (OSError, ValueError) as error:
+            report.outcomes.append(
+                Outcome(entry.name, Action.PULL, f"FAILED: {error}", failed=True)
+            )
+            continue
         state.record(entry.identifier, entry.save_path, target)
 
-        note = f"{detail} -> {target}"
+        note = f"{detail}; {written}"
         if saved is not None:
             note += f" (previous version backed up)"
         report.outcomes.append(Outcome(entry.name, Action.PULL, note, applied=True))
+
+        pak_notice = controller_pak_notice(entry, target, state)
+        if pak_notice is not None:
+            report.outcomes.append(pak_notice)
 
         clock_outcome = pull_clock(
             entry, target, core_name, paths.backup_dir, dry_run=dry_run

@@ -40,6 +40,12 @@ class System:
     clock_cores: tuple[str, ...] = ()
     #: True when a byte-for-byte copy (with a new extension) is sufficient.
     raw_compatible: bool = True
+    #: True when this system is *not* a plain copy but its conversion is built
+    #: and tested. Separate from ``raw_compatible`` on purpose: the gate that
+    #: guards ``ENABLED_SYSTEMS`` should keep saying "this needs conversion",
+    #: and gain a second way to be satisfied rather than quietly losing the
+    #: first. N64 is the only system in this state.
+    converted: bool = False
     #: Set for systems we knowingly do not convert yet. Long on purpose -- the
     #: inspector prints it, and someone asking "why is my N64 game skipped?"
     #: deserves the real answer.
@@ -129,17 +135,12 @@ SYSTEMS: dict[str, System] = {
         delta_core="mupen64plus",
         delta_save_ext="sav",
         retroarch_save_ext="srm",
+        # Not a copy: RetroArch's mupen64plus-next packs EEPROM, SRAM, FlashRAM
+        # and four Controller Paks into one 296,960-byte .srm at fixed offsets,
+        # while Delta writes a single bare dump of whichever storage the
+        # cartridge has. The mapping lives in `n64.py`.
         raw_compatible=False,
-        conversion_note=(
-            "RetroArch's mupen64plus-next packs EEPROM/SRAM/FlashRAM/mempaks "
-            "into one 290KB .srm at fixed offsets; Delta writes a single "
-            "bare save of whichever type the cart uses. Needs an offset-mapping "
-            "conversion step (see ra_mp64_srm_convert) before it is safe to sync."
-        ),
-        conversion_summary=(
-            "Nintendo 64 saves need a format conversion that is not built yet, "
-            "so this game is reported but never written. Run `inspect` for why."
-        ),
+        converted=True,
         rom_exts=("n64", "z64", "v64"),
         retroarch_db_name="Nintendo - Nintendo 64",
         retroarch_cores=("Mupen64Plus-Next", "ParaLLEl N64"),
@@ -225,7 +226,23 @@ SYSTEMS: dict[str, System] = {
 #: format. DS is a rename, exactly like SNES. The marker was searched for
 #: directly rather than inferred from the size, because a footer on a save that
 #: happened to be short would have left the size looking right.
-ENABLED_SYSTEMS: frozenset[str] = frozenset({"gba", "snes", "gbc", "nes", "ds"})
+#:
+#: n64 added 2026-09-07, and it is the only entry here that is not a copy. Its
+#: conversion is `n64.py`, written against the offsets in ra_mp64_srm_convert
+#: and against six real Delta saves covering all four cartridge storage types:
+#: 512 B and 2,048 B EEPROM, 32,768 B SRAM, 131,072 B FlashRAM. Delta copies one
+#: storage whole, so the file size names the type -- that is what makes the
+#: mapping exact rather than inferred.
+#:
+#: What is deliberately *not* converted is Controller Pak data. Delta never
+#: syncs it (`GameSave.syncableFiles` has no entry), so those four 32 KB regions
+#: belong entirely to the desktop and are carried through untouched. A game that
+#: keeps progress there -- Mario Kart 64 ghosts, say -- has that progress stay
+#: on whichever machine made it, and the sync says so once per game rather than
+#: leaving it to be discovered.
+ENABLED_SYSTEMS: frozenset[str] = frozenset(
+    {"gba", "snes", "gbc", "nes", "ds", "n64"}
+)
 
 BY_DELTA_TYPE: dict[str, System] = {s.delta_type: s for s in SYSTEMS.values()}
 

@@ -12,30 +12,33 @@ import pytest
 from delta_retroarch_synchronizer import systems
 
 
-def test_enabled_systems_are_all_raw_compatible():
-    """Nothing needing conversion may be enabled until the conversion exists."""
+def test_enabled_systems_are_copyable_or_converted():
+    """Nothing needing conversion may be enabled until the conversion exists.
+
+    Two ways to satisfy this, and they are kept separate on purpose. Marking N64
+    ``raw_compatible`` to get it through the gate would have been the easy move
+    and a lie -- it is emphatically not a plain copy, and the next person to read
+    that flag would have believed it.
+    """
     for key in systems.ENABLED_SYSTEMS:
-        assert systems.SYSTEMS[key].raw_compatible, f"{key} needs conversion first"
+        system = systems.SYSTEMS[key]
+        assert system.raw_compatible or system.converted, f"{key} needs conversion first"
+
+
+def test_only_n64_needs_a_conversion():
+    """Every other enabled system is a straight copy with a new extension."""
+    converted = {k for k in systems.SYSTEMS if systems.SYSTEMS[k].converted}
+    assert converted == {"n64"}
+    assert not systems.SYSTEMS["n64"].raw_compatible
 
 
 def test_enabled_systems_carry_no_conversion_note():
-    """A conversion note is the marker for 'we know this is not a plain copy'."""
+    """A conversion note is the marker for 'we know this is not a plain copy
+    and cannot do it yet'. Once the conversion exists, the note has to go, or it
+    goes on being printed as a reason the game was skipped."""
     for key in systems.ENABLED_SYSTEMS:
         assert not systems.SYSTEMS[key].conversion_note, key
-
-
-@pytest.mark.parametrize("key", ["n64"])
-def test_systems_needing_conversion_stay_blocked(key):
-    """N64 packs EEPROM, SRAM, FlashRAM and four mempaks into one ~290KB .srm
-    at fixed offsets, while Delta writes a single bare save of whichever type
-    the cartridge uses. That is a real conversion, not a copy.
-
-    DS used to be in this list. It left on 2026-09-07 by measurement, not by
-    decision -- see test_ds_is_raw_despite_its_extension.
-    """
-    assert key not in systems.ENABLED_SYSTEMS
-    assert not systems.SYSTEMS[key].raw_compatible
-    assert systems.SYSTEMS[key].conversion_note
+        assert not systems.SYSTEMS[key].conversion_summary, key
 
 
 def test_ds_is_raw_despite_its_extension():
@@ -89,7 +92,9 @@ def test_every_enabled_system_can_actually_be_played():
 
 def test_the_enabled_set_is_exactly_what_was_verified():
     """Deliberately exact: widening this set is a decision, not a side effect."""
-    assert systems.ENABLED_SYSTEMS == frozenset({"gba", "snes", "gbc", "nes", "ds"})
+    assert systems.ENABLED_SYSTEMS == frozenset(
+        {"gba", "snes", "gbc", "nes", "ds", "n64"}
+    )
 
 
 def test_gbc_carries_a_clock_file_that_is_not_synced():

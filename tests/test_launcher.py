@@ -234,17 +234,21 @@ def test_the_summary_says_which_way_each_change_went():
 def test_a_blocked_system_gets_one_line_not_a_paragraph():
     """The regression that hid a cheat push on 2026-09-07.
 
-    N64's full conversion note is four wrapped lines, reprinted every sync for a
-    system that never changes, and it shoved the confirmation off the top of a
+    N64's full conversion note was four wrapped lines, reprinted every sync for
+    a system that never changed, and it shoved the confirmation off the top of a
     fourteen-line auto-scrolling log within two games.
+
+    N64 is no longer blocked, so this checks the rule rather than that one
+    instance: any system carrying a conversion note must also carry a short form
+    for the log. The long note is what `inspect` prints, where it is asked for
+    once instead of repeated at someone who has already read it.
     """
     from delta_retroarch_synchronizer import systems
 
-    n64 = systems.SYSTEMS["n64"]
-
-    assert n64.conversion_summary
-    # Two wrapped lines at most in an 82-column log, against the note's four.
-    assert len(n64.conversion_summary) < 165
-    assert len(n64.conversion_summary) < len(n64.conversion_note)
-    # The full note stays: `inspect` prints it, where it is asked for once.
-    assert n64.conversion_note
+    for system in systems.SYSTEMS.values():
+        if not system.conversion_note:
+            continue
+        assert system.conversion_summary, system.key
+        # Two wrapped lines at most in an 82-column log.
+        assert len(system.conversion_summary) < 165, system.key
+        assert len(system.conversion_summary) < len(system.conversion_note), system.key
