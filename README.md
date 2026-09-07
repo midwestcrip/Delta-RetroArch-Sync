@@ -122,17 +122,21 @@ unsigned program it has not seen before.
 The window finds Delta's Dropbox folder and your RetroArch install by itself.
 If it cannot, the paths are editable in the window.
 
+**The first run offers to add it to your Start menu**, so you can find it again
+by searching for "Delta" instead of going back to the folder you unzipped. It is
+asked once, never assumed, installs for you alone, and needs no administrator
+rights. The Settings tab has the same button, either way round, whenever you
+change your mind.
+
 **Or run from source** — needs Python 3.11+ and nothing else; this tool has no
-third-party dependencies.
-
-Add it to the Start menu once, then search for "Delta":
+third-party dependencies. Double-click **`Delta-RetroArch Synchronizer.bat`** in
+this folder, or add the Start menu entry from the command line:
 
 ```
-powershell -ExecutionPolicy Bypass -File tools\install_start_menu.ps1
+python -m delta_retroarch_synchronizer start-menu
 ```
 
-That installs per-user, needs no admin rights, and takes `-Uninstall` to remove
-it. Or just double-click **`Delta-RetroArch Synchronizer.bat`** in this folder.
+`--remove` takes it back out.
 
 The launcher window finds Delta's Dropbox folder and your RetroArch install by
 itself, shows what it found, and gives you one button: **Sync and Play**. That

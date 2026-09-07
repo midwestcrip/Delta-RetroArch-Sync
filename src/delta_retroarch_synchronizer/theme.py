@@ -258,6 +258,22 @@ def apply(root: tk.Misc, palette: Palette) -> None:
         foreground=[("disabled", palette.muted)],
     )
 
+    # A button that has just done something says so on itself. Same padding as
+    # TButton on purpose: this style is swapped in and out under the pointer,
+    # and a different size would make the surrounding row jump.
+    style.configure(
+        "Success.TButton",
+        background=palette.surface,
+        foreground=palette.log_ok,
+        bordercolor=palette.log_ok,
+        padding=(10, 5),
+    )
+    style.map(
+        "Success.TButton",
+        background=[("pressed", palette.border), ("active", palette.surface)],
+        foreground=[("disabled", palette.muted), ("active", palette.log_ok)],
+    )
+
     style.configure(
         "TCheckbutton",
         background=palette.window,

@@ -33,7 +33,9 @@ from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 from typing import Any
 
 from . import config as config_module
-from . import delta_writer, discovery, dropbox_api, health, paths, restore, theme
+from . import delta_writer, discovery, dropbox_api, health, paths, restore
+from . import shortcut as shortcut_module
+from . import theme
 from . import inspect as inspect_module
 from . import sync as sync_module
 from . import systems
@@ -132,6 +134,61 @@ def backup_row(point: "restore.RestorePoint") -> tuple[str, str, str, str]:
         point.backup.when,
         f"{point.backup.size:,} B",
     )
+
+
+class Confirmation:
+    """Reports success on the button that was pressed.
+
+    The third naive-user test found the gap: pressing "Save settings" on the
+    Settings tab wrote "Settings saved to config.toml" to the log, which lives
+    on the *Sync* tab. From where the user was standing the button did nothing
+    at all. The log entry is still written -- it is the running record -- but
+    the button now answers for itself.
+    """
+
+    #: Long enough to read without watching for it, short enough that the
+    #: button is back to its own name before anyone reaches for it again.
+    MILLISECONDS = 1800
+
+    def __init__(self, button: ttk.Button) -> None:
+        self.button = button
+        self.resting_text = str(button.cget("text"))
+        self.resting_style = str(button.cget("style")) or "TButton"
+        self._pending: str | None = None
+
+    def show(self, text: str, *, style: str = "Success.TButton") -> None:
+        # Cancel first: a second press during the flash would otherwise let the
+        # first timer fire and restore over the second message.
+        self._cancel()
+        self.button.configure(text=text, style=style)
+        self._pending = self.button.after(self.MILLISECONDS, self._restore)
+
+    def settle(self, text: str) -> None:
+        """Rename the button itself, without interrupting a flash in progress.
+
+        The Start menu button's own name alternates between adding and
+        removing, so its resting label is not fixed at construction the way
+        "Save settings" is.
+        """
+        self.resting_text = text
+        if self._pending is None:
+            self.button.configure(text=text, style=self.resting_style)
+
+    def _restore(self) -> None:
+        self._pending = None
+        try:
+            self.button.configure(text=self.resting_text, style=self.resting_style)
+        except tk.TclError:  # the window closed while the flash was pending
+            pass
+
+    def _cancel(self) -> None:
+        if self._pending is None:
+            return
+        try:
+            self.button.after_cancel(self._pending)
+        except tk.TclError:
+            pass
+        self._pending = None
 
 
 class Tooltip:
@@ -311,6 +368,9 @@ class LauncherWindow:
 
         self._report_startup()
         self.root.after(100, self._drain)
+        # After the window is on screen, so the question arrives over something
+        # that already explains what this program is.
+        self.root.after(400, self._offer_start_menu)
 
     # ---------------------------------------------------------------- layout
 
@@ -345,7 +405,7 @@ class LauncherWindow:
         # Sync and Play stays outside the tabs. It is the reason the program
         # exists, and burying the primary action behind a tab someone might be
         # sitting on is how a tool acquires a reputation for being confusing.
-        notebook = ttk.Notebook(outer)
+        notebook = self.tabs = ttk.Notebook(outer)
         notebook.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
 
         sync_tab = ttk.Frame(notebook, padding=8)
@@ -512,12 +572,32 @@ class LauncherWindow:
 
         actions = ttk.Frame(parent)
         actions.grid(row=3, column=0, sticky="ew")
-        actions.columnconfigure(0, weight=1)
+        actions.columnconfigure(1, weight=1)
+
+        if shortcut_module.supported():
+            # Widths are fixed on both buttons below because their labels change
+            # in place -- "Saved!", "Added!" -- and a button that resizes as it
+            # answers you drags the whole row sideways.
+            self.start_menu_button = ttk.Button(
+                actions, width=22, command=self.on_start_menu
+            )
+            self.start_menu_button.grid(row=0, column=0, sticky="w")
+            self.start_menu_confirm = Confirmation(self.start_menu_button)
+            Tooltip(
+                self.start_menu_button,
+                "Adds this program to your Start menu, so you can find it by "
+                "searching for \u201cDelta\u201d instead of going back to the "
+                "folder you unzipped.\n\n"
+                "Installs for you only and needs no administrator rights. "
+                "Nothing else on your computer is changed, and the same button "
+                "removes it again.",
+            )
+            self._refresh_start_menu_button()
 
         open_button = ttk.Button(
             actions, text="Open settings folder", command=self.on_open_settings_folder
         )
-        open_button.grid(row=0, column=1, padx=4)
+        open_button.grid(row=0, column=2, padx=4)
         Tooltip(
             open_button,
             "Opens the folder holding config.toml, the Dropbox token, the "
@@ -525,9 +605,11 @@ class LauncherWindow:
             "Everything this program remembers lives there, beside the "
             "executable.",
         )
-        ttk.Button(actions, text="Save settings", command=self.on_save).grid(
-            row=0, column=2, padx=4
+        self.save_button = ttk.Button(
+            actions, text="Save settings", width=14, command=self.on_save
         )
+        self.save_button.grid(row=0, column=3, padx=4)
+        self.save_confirm = Confirmation(self.save_button)
 
     def _option_row(
         self, parent: ttk.LabelFrame, row: int, label: str,
@@ -623,7 +705,12 @@ class LauncherWindow:
         if token.is_file():
             self.dropbox_label.configure(text=f"Dropbox authorised{own}")
         else:
-            self.dropbox_label.configure(text=f"Dropbox not authorised{own}")
+            # "Dropbox not authorised" on its own reads as a fault, and the
+            # third naive-user test read it that way -- while every save was
+            # pulling correctly, because pulling never touches Dropbox's API.
+            self.dropbox_label.configure(
+                text=f"Dropbox not authorised{own} — only needed to send saves back"
+            )
 
     def _push_toggled(self) -> None:
         if not self.push_var.get():
@@ -688,6 +775,29 @@ class LauncherWindow:
             self.config = replace(self.config, dropbox_app_key=app_key)
             config_module.save(self.config)
 
+        # Opening the browser first was the third test's complaint: the
+        # explanation went to the log, on a different tab, and Dropbox's consent
+        # page had already taken over the screen before it could be read. Say it
+        # here, in front of the person who pressed the button.
+        if not messagebox.askokcancel(
+            WINDOW_TITLE,
+            "Authorising lets this program read one thing back from Dropbox: "
+            "the version number Dropbox gives a save after your Dropbox app "
+            "uploads it. Delta refuses a save whose version number is wrong, "
+            "which is why sending saves back needs this.\n\n"
+            "Pulling from Delta never needs it. That is why everything else "
+            "works without authorising.\n\n"
+            "There are three steps:\n"
+            "  1. Your browser opens Dropbox's approval page.\n"
+            "  2. You approve, and Dropbox shows you a code.\n"
+            "  3. You come back to this window and paste the code in.\n\n"
+            "Only permission to read file details is requested. This program "
+            "never uploads through Dropbox.",
+            parent=self.root,
+        ):
+            self.write("Authorisation cancelled.")
+            return
+
         verifier = dropbox_api.make_verifier()
         url = dropbox_api.build_authorize_url(app_key, verifier)
         webbrowser.open(url)
@@ -740,7 +850,98 @@ class LauncherWindow:
     def on_save(self) -> None:
         self.config = self._current_config()
         path = config_module.save(self.config)
+        # Both, not either: the log is the running record of what happened, and
+        # the button is what the person who pressed it is actually looking at.
         self.write(f"Settings saved to {path.name}.")
+        self.save_confirm.show("Saved!")
+
+    # ----------------------------------------------------------- start menu
+
+    def _refresh_start_menu_button(self) -> None:
+        label = (
+            "Remove from Start menu"
+            if shortcut_module.installed()
+            else "Add to Start menu"
+        )
+        self.start_menu_confirm.settle(label)
+
+    def on_start_menu(self) -> None:
+        """Add or remove the Start menu entry, whichever the button offers."""
+        removing = shortcut_module.installed()
+        try:
+            if removing:
+                shortcut_module.remove()
+            else:
+                shortcut_module.create()
+        except shortcut_module.ShortcutError as error:
+            verb = "remove" if removing else "add"
+            self.write(f"Could not {verb} the Start menu entry: {error}", "error")
+            messagebox.showerror(WINDOW_TITLE, str(error), parent=self.root)
+            return
+
+        if removing:
+            self.write("Removed from the Start menu.")
+        else:
+            self.write(
+                "Added to the Start menu. Search for “Delta” to find it.",
+                "ok",
+            )
+        self._refresh_start_menu_button()
+        self.start_menu_confirm.show("Removed!" if removing else "Added!")
+
+    def _offer_start_menu(self) -> None:
+        """Ask once, on first run, whether to add a Start menu entry.
+
+        Three separate checkpoints of the third naive-user test came back with
+        the same sentence -- it never appears in the Start menu or in search --
+        so a button on the Settings tab does not fix this on its own. That test
+        never opened Settings; it had no reason to.
+
+        Asked rather than done: a portable program that installs itself
+        somewhere the user did not choose is the behaviour people unzip a
+        portable build to avoid.
+        """
+        if self.config.start_menu_offered or not shortcut_module.supported():
+            return
+
+        # Written before the dialog opens, so force-quitting inside it cannot
+        # turn a once-ever question into one that returns on every launch.
+        # Built from what is on disk rather than from self.config, which by now
+        # holds discovered paths -- recording those would freeze a guess that is
+        # meant to be made fresh each run.
+        config_module.save(replace(config_module.load(), start_menu_offered=True))
+        self.config = replace(self.config, start_menu_offered=True)
+
+        if shortcut_module.installed():
+            return
+
+        wants = messagebox.askyesno(
+            WINDOW_TITLE,
+            "Add this to your Start menu?\n\n"
+            "You would then find it by searching for “Delta”, instead "
+            "of going back to the folder you unzipped it into.\n\n"
+            "It installs for you only, needs no administrator rights, and the "
+            "Settings tab takes it back out. This is the only time you will be "
+            "asked.",
+            parent=self.root,
+        )
+        if not wants:
+            self.write(
+                "Not added to the Start menu. "
+                "The Settings tab can add it whenever you like.",
+                "muted",
+            )
+            return
+
+        try:
+            shortcut_module.create()
+        except shortcut_module.ShortcutError as error:
+            self.write(f"Could not add the Start menu entry: {error}", "error")
+            return
+        self.write(
+            "Added to the Start menu. Search for “Delta” to find it.", "ok"
+        )
+        self._refresh_start_menu_button()
 
     def on_open_settings_folder(self) -> None:
         """Show the folder holding config.toml, the token, manifest and backups.
