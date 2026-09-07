@@ -1,4 +1,4 @@
-"""Putting the launcher in the Start menu.
+"""Putting the launcher in the Start menu and on the desktop.
 
 The third naive-user test raised this three separate times -- at extraction,
 after discovery, and again at the end -- always the same sentence: the app does
@@ -47,6 +47,11 @@ LINK_NAME = f"{paths.APP_NAME}.lnk"
 _FOLDERID_PROGRAMS = "{A77F5D77-2E2B-44C3-A6A2-ABA601054A51}"
 _FOLDERID_DESKTOP = "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}"
 
+#: SHChangeNotify events, and the flag saying we are passing paths as strings.
+_SHCNE_CREATE = 0x00000002
+_SHCNE_DELETE = 0x00000004
+_SHCNF_PATHW = 0x0005
+
 DESCRIPTION = "Sync Delta and RetroArch saves, then play"
 
 #: Assigns each value from the environment, so nothing the user's folder names
@@ -64,6 +69,29 @@ _SCRIPT = (
 
 class ShortcutError(Exception):
     """Creating or removing the shortcut failed, with a reason worth showing."""
+
+
+def _tell_the_shell(path: Path, event: int) -> None:
+    """Tell Explorer a shell item appeared or went away.
+
+    Writing the file is not enough. The desktop caches what it is showing, and
+    a change made by anything other than Explorer itself can go unnoticed --
+    which leaves a **ghost icon**: an icon for a file that is not there. It
+    cannot be opened and it cannot be deleted, because there is nothing behind
+    it to delete, and it survives until something refreshes the folder.
+
+    The user hit exactly that, trying and failing to send a removed shortcut to
+    the Recycle Bin. Their fault report was "it's not going", which is precisely
+    what a ghost looks like from the outside.
+    """
+    if not supported():
+        return
+    try:
+        ctypes.windll.shell32.SHChangeNotify(
+            event, _SHCNF_PATHW, ctypes.c_wchar_p(str(path)), None
+        )
+    except Exception:  # pragma: no cover -- cosmetic; never worth raising for
+        pass
 
 
 def supported() -> bool:
@@ -258,6 +286,7 @@ def write_link(link: Path) -> Path:
     # refused, so confirm against the filesystem rather than the exit code.
     if not link.is_file():
         raise ShortcutError(f"{link} was not created")
+    _tell_the_shell(link, _SHCNE_CREATE)
     return link
 
 
@@ -299,5 +328,6 @@ def remove() -> dict[str, Path]:
             link.unlink()
         except OSError as error:
             raise ShortcutError(str(error)) from error
+        _tell_the_shell(link, _SHCNE_DELETE)
         removed[name] = link
     return removed
