@@ -1,8 +1,8 @@
-"""Tests for the launcher's path resolution.
+"""Tests for the launcher's path resolution and log colouring.
 
-Only ``resolve_paths`` is covered: it is deliberately a module-level function
-rather than a method so it can run without a Tk display, which is what makes the
-window's startup behaviour testable at all.
+Both of the things covered here run without a Tk display -- ``resolve_paths`` is
+a module-level function and ``_level_for`` a static method, deliberately, so the
+window's startup behaviour and its log severities are testable at all.
 
 The explanations matter as much as the paths. Both naive-user tests found that a
 first run said only "not found -- set it below", which is unactionable for
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from delta_retroarch_synchronizer import launcher
+from delta_retroarch_synchronizer import launcher, sync
 from delta_retroarch_synchronizer.config import Config
 from delta_retroarch_synchronizer.discovery import Discovery
 
@@ -106,3 +106,54 @@ def test_partial_discovery_explains_only_the_gap(monkeypatch):
 
     assert notes == [detail]
     assert config.retroarch_config == cfg
+
+
+# --------------------------------------------------------------- log severity
+
+# The log is colour-coded because a wall of identical grey text hid the one line
+# that mattered. Which colour a line gets is decided from the structured outcome
+# rather than its wording, and these pin the distinction that is easiest to lose:
+# a push that was *refused* is amber, a push that was *attempted and broke* is
+# red. Both are `Action.PUSH` with `applied=False`, so only `failed` separates
+# them.
+
+
+def _outcome(action, *, applied=False, failed=False):
+    return sync.Outcome("Game", action, "detail", applied=applied, failed=failed)
+
+
+def test_a_push_that_broke_is_red():
+    assert launcher.LauncherWindow._level_for(
+        _outcome(sync.Action.PUSH, failed=True)
+    ) == "error"
+
+
+def test_a_push_that_was_only_refused_is_amber():
+    """No Dropbox auth is a thing to fix, not a thing that went wrong."""
+    assert launcher.LauncherWindow._level_for(_outcome(sync.Action.PUSH)) == "warn"
+
+
+def test_a_push_that_worked_is_green():
+    assert launcher.LauncherWindow._level_for(
+        _outcome(sync.Action.PUSH, applied=True)
+    ) == "ok"
+
+
+def test_a_conflict_is_red():
+    assert launcher.LauncherWindow._level_for(_outcome(sync.Action.CONFLICT)) == "error"
+
+
+def test_a_skip_is_amber():
+    """Missing core, unverified clock format: worth seeing, not a failure."""
+    assert launcher.LauncherWindow._level_for(_outcome(sync.Action.SKIPPED)) == "warn"
+
+
+def test_nothing_to_do_is_muted():
+    assert launcher.LauncherWindow._level_for(_outcome(sync.Action.NOTHING)) == "muted"
+
+
+def test_failure_outranks_an_applied_flag():
+    """Belt and braces: a red line must never be downgraded by a stale flag."""
+    assert launcher.LauncherWindow._level_for(
+        _outcome(sync.Action.PULL, applied=True, failed=True)
+    ) == "error"

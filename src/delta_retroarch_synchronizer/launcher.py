@@ -711,7 +711,7 @@ class LauncherWindow:
         Taken from the structured result so the colouring cannot drift out of
         step with the message text.
         """
-        if outcome.action is sync_module.Action.CONFLICT:
+        if outcome.failed or outcome.action is sync_module.Action.CONFLICT:
             return "error"
         if outcome.action is sync_module.Action.SKIPPED:
             return "warn"
