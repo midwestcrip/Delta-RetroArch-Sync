@@ -90,8 +90,14 @@ def to_delta(data: bytes) -> bytes:
 def describe(timestamp: int) -> str:
     """A clock value as something a person can check against their memory.
 
-    Local time, because the question being answered is "is that when I last
-    played?" and nobody remembers what they were doing in UTC.
+    Local time, because the question being answered is about a moment in the
+    reader's own day and nobody remembers what they were doing in UTC.
+
+    Note what this value *is*, since it is easy to read it as the wrong thing:
+    it is the instant the cartridge's clock read zero, not the last time the
+    game was played. Gambatte derives the in-game clock from it as
+    ``std::time(0) - baseTime`` (``Rtc::doLatch``), so it normally stays put for
+    the life of a save and only moves when the game itself sets the clock.
     """
     try:
         moment = datetime.fromtimestamp(timestamp, timezone.utc).astimezone()

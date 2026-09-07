@@ -90,6 +90,39 @@ REVISION_MUST_BE_REAL = (
 #: Delta the battery save had changed into a four-byte file.
 PRIMARY_FILE = "gameSave"
 
+#: How recently a file must have changed for a record/save disagreement to be
+#: better explained by Dropbox still downloading than by damage.
+#:
+#: The desktop client fetches a record and its save as two independent files,
+#: and they do not land together. Observed on 2026-09-07: Kirby's Adventure's
+#: record and save arrived twelve seconds apart. A sync landing in that window
+#: sees a record describing a save that is not there yet -- which is a true
+#: statement about a transient state, not corruption, and resolves itself.
+#:
+#: Five minutes is deliberately generous. Being wrong in this direction says
+#: "wait and retry" about a real problem, which costs one more sync; being wrong
+#: the other way says "corrupt, run doctor" about a file that was fine, which is
+#: what actually happened and is far more alarming.
+SETTLING_SECONDS = 300
+
+
+def recently_written(paths: "list[Path]", *, within: float = SETTLING_SECONDS) -> bool:
+    """True if any of these files changed in the last ``within`` seconds.
+
+    Used to tell "Delta is still syncing this" apart from "this is damaged".
+    Deliberately reads mtimes rather than Delta's own ``modifiedDate``: the
+    question is when the *desktop client* wrote the file here, not when Delta
+    wrote it on the phone.
+    """
+    now = datetime.now(timezone.utc).timestamp()
+    for path in paths:
+        try:
+            if now - path.stat().st_mtime < within:
+                return True
+        except OSError:
+            continue
+    return False
+
 
 def encode_for_hashing(payload: dict[str, Any]) -> bytes:
     """Reproduce Swift's ``JSONEncoder`` output for the hashing pass.
@@ -233,6 +266,15 @@ def push_save(
     on_disk = sha1_of(primary_path) if primary_path.is_file() else None
     stated = raw.get("record", {}).get("sha1") if isinstance(raw.get("record"), dict) else None
     if on_disk is not None and stated != on_disk:
+        # The same disagreement has two very different causes, and saying the
+        # alarming one about the harmless one is its own kind of bug.
+        if recently_written([record_path, primary_path]):
+            raise ValueError(
+                f"Delta is still syncing {record_path.name}: its record and its "
+                "save arrived from Dropbox at different moments and do not agree "
+                "yet. Nothing is wrong and nothing was written -- sync again in a "
+                "minute."
+            )
         raise ValueError(
             f"{record_path.name} says the save is {stated} but "
             f"{primary_path.name} is {on_disk}; refusing to push onto a record "

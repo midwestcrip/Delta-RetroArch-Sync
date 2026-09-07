@@ -576,7 +576,14 @@ def pull_clock(
     retro_clock.write_bytes(converted)
     when = clock.describe(clock.delta_timestamp(stored))
     return Outcome(
-        entry.name, Action.PULL, f"clock set to {when} (last played in Delta)", applied=True
+        entry.name,
+        Action.PULL,
+        # Not "last played": this is the instant the cartridge clock read zero,
+        # which is what Gambatte counts forward from. Calling it a play time
+        # invited exactly the wrong conclusion when the in-game clock did not
+        # move during fast-forward.
+        f"clock base set to {when}; the in-game clock counts real time from there",
+        applied=True,
     )
 
 

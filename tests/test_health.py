@@ -97,13 +97,44 @@ class HealthTests(unittest.TestCase):
         hash_check = next(c for c in report.checks if c.name == "record hash")
         self.assertIn("as Delta last wrote it", hash_check.detail)
 
+    def _age(self, seconds: int = 3600) -> None:
+        """Backdate the record and save.
+
+        A disagreement between two files written seconds ago is Dropbox still
+        downloading them, and is reported as such. Making it a *real* fault
+        means making it an old one.
+        """
+        import os
+        import time
+
+        when = time.time() - seconds
+        for path in (self.record_path, self.save_path):
+            os.utime(path, (when, when))
+
     def test_catches_a_record_pointing_at_different_content(self) -> None:
         # The state a half-applied push leaves behind: record and save disagree.
         self._write(build_record("0" * 40))
+        self._age()
 
         report = health.check_game(self.folder, GAME_SHA1)
         self.assertFalse(report.ok)
         self.assertFalse(self.named(report, "record points at the save on disk").ok)
+
+    def test_a_fresh_disagreement_is_reported_as_still_arriving(self) -> None:
+        """The Kirby's Adventure case, 2026-09-07.
+
+        Delta's record and its save are downloaded as two independent files and
+        landed twelve seconds apart. A sync in that window saw a record
+        describing a save that had not arrived yet and called it corruption,
+        which is alarming and wrong -- it resolves itself.
+        """
+        self._write(build_record("0" * 40))  # left with a current mtime
+
+        report = health.check_game(self.folder, GAME_SHA1)
+
+        check = self.named(report, "record points at the save on disk")
+        self.assertTrue(check.ok)
+        self.assertIn("still arriving", check.detail)
 
     def test_catches_a_missing_record(self) -> None:
         # Exactly the state that had to be created by hand to unstick Delta.

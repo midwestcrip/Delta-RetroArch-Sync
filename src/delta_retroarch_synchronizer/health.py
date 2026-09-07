@@ -195,16 +195,27 @@ def check_game(
         checks.append(Check("save present", False, f"{save_path.name} is missing"))
         return Health(checks)
 
+    from .delta_writer import recently_written
+
     file_hash = hashlib.sha1(save_path.read_bytes()).hexdigest()
     claimed = str(raw.get("record", {}).get("sha1", ""))
     agrees = claimed == file_hash
-    checks.append(
-        Check(
-            "record points at the save on disk",
-            agrees,
-            "consistent" if agrees
-            else f"record says {claimed[:12]}, file is {file_hash[:12]}",
+    # A record and its save are downloaded as two independent files and do not
+    # land together, so a disagreement between two freshly-written files is
+    # Dropbox mid-flight rather than damage. Reported as passing, because it is
+    # not a state anyone needs to act on -- it resolves itself.
+    settling = not agrees and recently_written([record_path, save_path])
+    if settling:
+        detail = (
+            "still arriving from Dropbox -- the record and the save were written "
+            "moments apart and do not agree yet. Resolves itself."
         )
+    elif agrees:
+        detail = "consistent"
+    else:
+        detail = f"record says {claimed[:12]}, file is {file_hash[:12]}"
+    checks.append(
+        Check("record points at the save on disk", agrees or settling, detail)
     )
 
     if dropbox is None:

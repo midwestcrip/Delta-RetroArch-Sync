@@ -431,9 +431,37 @@ class SecondaryFileTests(unittest.TestCase):
     def test_a_record_inconsistent_with_its_save_still_blocks_a_clock_push(self) -> None:
         """The preflight must keep checking the save, not the file being written."""
         self.save_path.write_bytes(b"\x01" * 131072)
+        # Backdated, or the disagreement reads as Dropbox still downloading the
+        # pair -- which is a different message for a different, harmless cause.
+        import os
+        import time
+
+        when = time.time() - 3600
+        os.utime(self.save_path, (when, when))
+        os.utime(self.record_path, (when, when))
 
         with self.assertRaises(ValueError) as caught:
             self.push_clock()
 
         self.assertIn("refusing to push", str(caught.exception))
+
+    def test_a_freshly_landed_disagreement_says_delta_is_still_syncing(self) -> None:
+        """Same refusal, different explanation -- and the explanation matters.
+
+        Delta's record and its save are separate downloads that do not land
+        together; on 2026-09-07 they arrived twelve seconds apart. Calling that
+        window "already inconsistent -- run doctor first" sends someone hunting
+        for damage that is not there and fixes itself.
+        """
+        self.save_path.write_bytes(b"\x01" * 131072)  # left with a current mtime
+
+        with self.assertRaises(ValueError) as caught:
+            self.push_clock()
+
+        message = str(caught.exception)
+        self.assertIn("still syncing", message)
+        self.assertIn("sync again", message)
+        self.assertNotIn("run doctor", message)
+        # Still a refusal: nothing was written either way.
+        self.assertEqual(self.clock_path.read_bytes(), self.CLOCK)
         self.assertEqual(self.clock_path.read_bytes(), self.CLOCK)
