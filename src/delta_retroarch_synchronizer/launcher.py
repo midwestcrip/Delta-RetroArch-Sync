@@ -93,6 +93,32 @@ def resolve_paths(
     return config, notes
 
 
+def summarise_changes(applied: list["sync_module.Outcome"]) -> str:
+    """The headline for the end-of-sync summary."""
+    count = len(applied)
+    return f"{count} change{'' if count == 1 else 's'}:"
+
+
+def change_lines(applied: list["sync_module.Outcome"]) -> list[str]:
+    """One short line per thing that actually changed.
+
+    Deliberately not the full detail again -- that is already above, and
+    repeating a path that wraps over three lines would recreate the problem this
+    summary exists to solve. Direction is the useful part: what someone wants
+    from the bottom of the log is "did my thing reach the other side".
+    """
+    lines = []
+    for outcome in applied:
+        if outcome.action is sync_module.Action.PUSH:
+            direction = "sent to Delta"
+        elif outcome.action is sync_module.Action.PULL:
+            direction = "brought to RetroArch"
+        else:
+            direction = outcome.action.value
+        lines.append(f"{outcome.game} — {direction}")
+    return lines
+
+
 def backup_row(point: "restore.RestorePoint") -> tuple[str, str, str, str]:
     """One row of the Backups table.
 
@@ -1089,6 +1115,7 @@ class LauncherWindow:
 
         self._say(f"--- {label} ---", "heading")
         changed_anything = False
+        applied: list[sync_module.Outcome] = []
         for entry in entries:
             if entry.system is None:
                 continue
@@ -1120,11 +1147,24 @@ class LauncherWindow:
                 if outcome.action is sync_module.Action.NOTHING:
                     continue
                 changed_anything = True
+                if outcome.applied:
+                    applied.append(outcome)
                 level = self._level_for(outcome)
                 self._say(f"  {outcome.game}: {outcome.action.value}", level)
                 self._say(f"      {outcome.detail}", level)
             if not any(o.action is not sync_module.Action.NOTHING for o in report.outcomes):
                 self._say(f"  {entry.name}: already up to date", "muted")
+
+        # The log auto-scrolls, so the last thing written is the only thing
+        # guaranteed to be on screen. That makes the bottom the right place for
+        # what actually changed -- and it was the wrong place before: a cheat
+        # push logged second was pushed off the top by the games after it, and
+        # the sync looked like it had done nothing at all.
+        if applied:
+            self._say("")
+            self._say(f"  {summarise_changes(applied)}", "heading")
+            for line in change_lines(applied):
+                self._say(f"    {line}", "ok")
 
         # "Already up to date" is the one message that looks identical whether
         # the sync worked perfectly or Delta has been writing to a different

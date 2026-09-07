@@ -203,3 +203,48 @@ def test_seconds_survive_into_the_table():
         _point("Game.srm", "20260906T210845793346", 1, "Game")
     )[2]
     assert first != second
+
+
+def _change(game: str, action, *, applied: bool = True):
+    return sync.Outcome(game=game, action=action, detail="…", applied=applied)
+
+
+def test_the_summary_counts_what_changed():
+    one = [_change("A", sync.Action.PUSH)]
+    two = one + [_change("B", sync.Action.PULL)]
+    assert launcher.summarise_changes(one) == "1 change:"
+    assert launcher.summarise_changes(two) == "2 changes:"
+
+
+def test_the_summary_says_which_way_each_change_went():
+    """What someone wants from the bottom of the log is whether their edit
+    reached the other side, not the path it was written to."""
+    lines = launcher.change_lines(
+        [
+            _change('Fire Red: cheat "Faster Text Display"', sync.Action.PUSH),
+            _change("Pokemon: Platinum Version", sync.Action.PULL),
+        ]
+    )
+    assert lines == [
+        'Fire Red: cheat "Faster Text Display" — sent to Delta',
+        "Pokemon: Platinum Version — brought to RetroArch",
+    ]
+
+
+def test_a_blocked_system_gets_one_line_not_a_paragraph():
+    """The regression that hid a cheat push on 2026-09-07.
+
+    N64's full conversion note is four wrapped lines, reprinted every sync for a
+    system that never changes, and it shoved the confirmation off the top of a
+    fourteen-line auto-scrolling log within two games.
+    """
+    from delta_retroarch_synchronizer import systems
+
+    n64 = systems.SYSTEMS["n64"]
+
+    assert n64.conversion_summary
+    # Two wrapped lines at most in an 82-column log, against the note's four.
+    assert len(n64.conversion_summary) < 165
+    assert len(n64.conversion_summary) < len(n64.conversion_note)
+    # The full note stays: `inspect` prints it, where it is asked for once.
+    assert n64.conversion_note

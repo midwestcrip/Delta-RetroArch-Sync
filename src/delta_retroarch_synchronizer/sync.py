@@ -765,11 +765,17 @@ def run_sync(
 
     for entry in entries:
         if not entry.supported:
-            note = (
-                entry.system.conversion_note
-                if entry.system and entry.system.conversion_note
-                else "system not enabled for sync"
-            )
+            # The one-line form, because this repeats on every sync for a system
+            # that is permanently blocked. The full note is what `inspect`
+            # prints, where it is asked for once rather than repeated forever.
+            system = entry.system
+            note = "system not enabled for sync"
+            if system is not None:
+                note = (
+                    system.conversion_summary
+                    or system.conversion_note
+                    or note
+                )
             report.outcomes.append(Outcome(entry.name, Action.SKIPPED, note))
             continue
 

@@ -40,8 +40,19 @@ class System:
     clock_cores: tuple[str, ...] = ()
     #: True when a byte-for-byte copy (with a new extension) is sufficient.
     raw_compatible: bool = True
-    #: Set for systems we knowingly do not convert yet.
+    #: Set for systems we knowingly do not convert yet. Long on purpose -- the
+    #: inspector prints it, and someone asking "why is my N64 game skipped?"
+    #: deserves the real answer.
     conversion_note: str = ""
+    #: The same fact in one line, for the launcher's log.
+    #:
+    #: The long note was being reprinted on every sync, four wrapped lines of it,
+    #: for a system that is permanently blocked and never changes. On 2026-09-07
+    #: that buried a cheat push confirmation off the top of a fourteen-line log
+    #: within two games, and the user reasonably concluded nothing had happened.
+    #: A recurring message has to be short; the detail belongs where it is asked
+    #: for, not repeated at someone who has read it.
+    conversion_summary: str = ""
     #: Common ROM extensions, used to name the file we hand to RetroArch.
     rom_exts: tuple[str, ...] = field(default_factory=tuple)
     #: libretro-database's folder name for this system, which is how RetroArch
@@ -124,6 +135,10 @@ SYSTEMS: dict[str, System] = {
             "into one 290KB .srm at fixed offsets; Delta writes a single "
             "bare save of whichever type the cart uses. Needs an offset-mapping "
             "conversion step (see ra_mp64_srm_convert) before it is safe to sync."
+        ),
+        conversion_summary=(
+            "Nintendo 64 saves need a format conversion that is not built yet, "
+            "so this game is reported but never written. Run `inspect` for why."
         ),
         rom_exts=("n64", "z64", "v64"),
         retroarch_db_name="Nintendo - Nintendo 64",
