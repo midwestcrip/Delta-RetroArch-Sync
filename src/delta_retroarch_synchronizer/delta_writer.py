@@ -1,7 +1,11 @@
-"""Writing a save back into Delta's Dropbox folder.
+"""Writing back into Delta's Dropbox folder.
 
 This is the only module that writes to Delta's side, deliberately kept separate
-from the read-only reader so the risk boundary is obvious.
+from the read-only reader so the risk boundary is obvious. Two things can be
+written: a save (``push_save``) and an existing cheat's code (``push_cheat``).
+Everything below is about the save, which is by far the harder of the two --
+``push_cheat`` needs none of the revision handling because a cheat record has no
+attached file at all.
 
 Pushing a save means three coordinated changes, not one:
 
@@ -338,3 +342,86 @@ def push_save(
         f"wrote {new_size:,} B to {save_path.name}, "
         f"record hash preserved as {preserved_hash[:12]}..."
     )
+
+
+def push_cheat(
+    delta_folder: Path,
+    identifier: str,
+    new_code: str,
+    backup_dir: Path,
+) -> str:
+    """Rewrite an existing cheat's code in Delta's folder.
+
+    Simpler than pushing a save, and the reason is structural: a ``Cheat`` record
+    has no ``syncableFiles``, so there is no attached file, no Dropbox revision
+    to read back, and therefore no API call and no authorisation. Everything that
+    made the save push hard is absent here. What remains is the same as ever --
+    write in place, and preserve the top-level hash.
+
+    Only an *existing* cheat can be written. Creating one would mean a new file
+    with no Dropbox property groups, which Harmony drops from its listing without
+    an error; the caller is responsible for never asking for that, and this
+    refuses an identifier it cannot already find.
+    """
+    record_path = resolve_existing(delta_folder, f"Cheat-{identifier}")
+    if not record_path.is_file():
+        raise FileNotFoundError(
+            f"no Cheat record for {identifier}. A cheat that does not already "
+            "exist in Delta cannot be created from here -- make it on the phone."
+        )
+
+    raw = json.loads(record_path.read_text(encoding="utf-8"))
+
+    preserved_hash = raw.get("sha1Hash")
+    if not isinstance(preserved_hash, str) or not preserved_hash:
+        raise ValueError(
+            f"{record_path.name} has no usable sha1Hash; refusing to write a "
+            "record whose Harmony metadata we cannot preserve"
+        )
+
+    # A cheat with attached files is not the record shape this was written
+    # against, and the difference would matter: files carry hashes and revisions
+    # that a save push has to maintain and this does not touch. Refuse rather
+    # than write a record we do not understand.
+    files = raw.get("files")
+    if files not in (None, [], {}):
+        raise ValueError(
+            f"{record_path.name} has attached files, which a Cheat record should "
+            "not; refusing to rewrite a record whose shape is unexpected"
+        )
+
+    record_fields = raw.get("record")
+    if not isinstance(record_fields, dict) or not isinstance(
+        record_fields.get("code"), str
+    ):
+        raise ValueError(f"{record_path.name} has no readable cheat code")
+
+    previous = record_fields["code"]
+    if previous == new_code:
+        return f"{record_path.name} already holds this code"
+
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    shutil.copy2(record_path, backup_dir / f"{record_path.name}.{stamp}.bak")
+
+    record_fields["code"] = new_code
+    record_fields["modifiedDate"] = unix_to_apple(
+        datetime.now(timezone.utc).timestamp()
+    )
+    # `type` is an NSKeyedArchiver plist in base64 and `name` is the key this
+    # cheat is matched by, so both are left exactly as Delta wrote them. Only
+    # the code changes.
+    raw["sha1Hash"] = preserved_hash
+    write_in_place(record_path, _record_bytes(raw))
+
+    written = json.loads(record_path.read_text(encoding="utf-8"))
+    if (
+        written.get("sha1Hash") != preserved_hash
+        or written.get("record", {}).get("code") != new_code
+    ):
+        raise OSError(
+            f"{record_path.name} did not verify after writing; "
+            "restore it from the backup taken above"
+        )
+
+    return f"rewrote {record_path.name}, record hash preserved"

@@ -103,9 +103,19 @@ class Entry:
 class Manifest:
     """Keyed by game SHA-1, which is stable across both sides and all renames."""
 
-    def __init__(self, path: Path, entries: dict[str, Entry] | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        entries: dict[str, Entry] | None = None,
+        cheats: dict[str, str] | None = None,
+    ) -> None:
         self.path = path
         self.entries: dict[str, Entry] = entries or {}
+        #: Last agreed cheat code per cheat UUID, canonicalised to bare hex
+        #: digits. Cheats are not files on Delta's side -- the code lives inside
+        #: the record JSON -- so they cannot use ``FileState`` and get their own
+        #: section rather than a strained fit into the games one.
+        self.cheats: dict[str, str] = cheats or {}
 
     @classmethod
     def load(cls, path: Path) -> "Manifest":
@@ -122,13 +132,25 @@ class Manifest:
         games = raw.get("games") if isinstance(raw, dict) else None
         if not isinstance(games, dict):
             return cls(path)
-        return cls(path, {str(k): Entry.from_json(v) for k, v in games.items()})
+        # A manifest written before cheats were tracked simply has no section,
+        # which reads as "no agreed state" for every cheat -- and that is handled
+        # safely, because two sides that already agree need no history to say so.
+        stored_cheats = raw.get("cheats") if isinstance(raw, dict) else None
+        cheats = (
+            {str(k): str(v) for k, v in stored_cheats.items()}
+            if isinstance(stored_cheats, dict)
+            else {}
+        )
+        return cls(
+            path, {str(k): Entry.from_json(v) for k, v in games.items()}, cheats
+        )
 
     def save(self) -> None:
         """Write atomically, so an interrupted write cannot corrupt the record."""
         payload = {
             "version": 1,
             "games": {key: entry.to_json() for key, entry in self.entries.items()},
+            "cheats": dict(self.cheats),
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(".json.tmp")
@@ -150,3 +172,11 @@ class Manifest:
                 FileState.of(retroarch) if retroarch and retroarch.is_file() else None
             ),
         )
+
+    def cheat_code(self, identifier: str) -> str | None:
+        """The last agreed code for one cheat, or None if there is no history."""
+        return self.cheats.get(identifier)
+
+    def record_cheat(self, identifier: str, canonical: str) -> None:
+        """Record a cheat as agreed on both sides."""
+        self.cheats[identifier] = canonical

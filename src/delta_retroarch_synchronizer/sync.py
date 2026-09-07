@@ -507,36 +507,199 @@ def push_clock(
     )
 
 
+def decide_cheat(
+    agreed: str | None, delta_code: str, retroarch_code: str
+) -> tuple[Action, str]:
+    """What to do about one cheat, from both sides and the last agreed code.
+
+    The same four-way comparison ``decide`` makes for saves, on canonical codes
+    rather than file hashes. Pure, so the matrix can be tested directly.
+
+    The order matters. Equality is checked before history, because two sides that
+    already agree need no history to prove it -- otherwise every cheat would
+    report a conflict the first time this ran, having never been recorded before.
+    """
+    if delta_code == retroarch_code:
+        return Action.NOTHING, "unchanged on both sides"
+    if agreed is None:
+        return Action.CONFLICT, "codes differ and there is no agreed history"
+
+    delta_changed = delta_code != agreed
+    retro_changed = retroarch_code != agreed
+    if delta_changed and retro_changed:
+        return Action.CONFLICT, "both sides changed since the last sync"
+    if delta_changed:
+        return Action.PULL, "changed in Delta"
+    return Action.PUSH, "changed in RetroArch"
+
+
 def sync_cheats(
     entry: inspect_module.GameEntry,
     game_cheats: list[dict[str, str]],
     cheat_dir: Path,
     *,
+    delta_folder: Path | None = None,
+    backup_dir: Path | None = None,
+    state: manifest_module.Manifest | None = None,
+    allow_push: bool = False,
     dry_run: bool = False,
-) -> Outcome | None:
-    """Write a game's Delta cheats out as a RetroArch `.cht` file.
+) -> list[Outcome]:
+    """Reconcile a game's cheats between Delta and RetroArch.
 
-    Delta -> RetroArch only. A cheat created on the RetroArch side would need a
-    brand-new Cheat record in Delta's folder, and a file we create has no Dropbox
-    property groups -- which Harmony requires to see a record at all and only
-    Delta's app can write. So that direction is not possible, rather than merely
-    unimplemented.
+    Editing works both ways; creating does not. A `.cht` entry that matches a
+    Delta cheat by name can be pushed home, because that cheat's record already
+    exists and carries the Dropbox property groups Harmony needs. An entry with
+    no match would need a brand-new record, and a file this tool creates has no
+    property groups -- Harmony drops it from the listing silently. So new cheats
+    are reported as unpushable, which is the honest answer rather than a write
+    that appears to work and never reaches the phone.
+
+    Pushing a cheat needs no Dropbox authorisation, unlike a save: a cheat record
+    has no attached file and therefore no revision to read back.
+
+    The `.cht` is only rewritten when nothing is in conflict. Rewriting it while
+    one cheat disagreed would destroy the RetroArch-side edit before anyone could
+    look at it, which is the silent overwrite this whole design exists to avoid.
     """
     if entry.system is None or not entry.system.retroarch_db_name:
-        return None
+        return []
     if not game_cheats:
-        return None
+        return []
 
     path = cheats_module.cheat_file_path(
         cheat_dir, entry.system.retroarch_db_name, entry.name
     )
-    parsed = [
+    delta_cheats = [
         cheats_module.Cheat(
             name=cheat.get("name", ""),
             code=cheat.get("code", ""),
             type=cheat.get("type", ""),
         )
         for cheat in game_cheats
+    ]
+
+    existing: list[cheats_module.Cheat] = []
+    if path.is_file():
+        try:
+            existing = cheats_module.parse_cheat_file(
+                path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeDecodeError):
+            existing = []
+    # Matched by name, which is the only field an edit leaves alone: the code is
+    # what changes, and the type is not recoverable from a `.cht` at all.
+    by_name = {cheat.name: cheat for cheat in existing}
+
+    outcomes: list[Outcome] = []
+    conflicted = False
+    pushed: list[tuple[str, str]] = []
+
+    for cheat, source in zip(delta_cheats, game_cheats):
+        identifier = source.get("identifier", "")
+        counterpart = by_name.get(cheat.name)
+        if counterpart is None:
+            # Nothing on the RetroArch side to compare against yet; the file
+            # write below brings it into being.
+            continue
+
+        delta_code = cheats_module.canonical_code(cheat.code)
+        retro_code = cheats_module.canonical_code(counterpart.code)
+        agreed = state.cheat_code(identifier) if state is not None else None
+        action, detail = decide_cheat(agreed, delta_code, retro_code)
+
+        label = f"{entry.name}: cheat \"{cheat.name}\""
+
+        if action is Action.NOTHING:
+            if state is not None and agreed != delta_code and not dry_run:
+                state.record_cheat(identifier, delta_code)
+            continue
+        if action is Action.CONFLICT:
+            conflicted = True
+            outcomes.append(
+                Outcome(
+                    label,
+                    Action.CONFLICT,
+                    f"{detail}; neither side touched. Delta has "
+                    f"{cheats_module.to_retroarch_code(cheat.code, cheat.type)}, "
+                    f"RetroArch has {counterpart.code}",
+                )
+            )
+            continue
+        if action is Action.PULL:
+            # Handled by rewriting the whole file below, which is how a `.cht`
+            # is written at all -- there is no per-entry edit.
+            continue
+
+        # Push: RetroArch's copy is the newer one.
+        if not allow_push:
+            outcomes.append(
+                Outcome(label, Action.PUSH, f"{detail}; not pushed (pass --push to enable)")
+            )
+            continue
+        if dry_run:
+            outcomes.append(Outcome(label, Action.PUSH, f"{detail} (dry run)"))
+            continue
+        if delta_folder is None or backup_dir is None or not identifier:
+            continue
+
+        new_code = cheats_module.to_delta_code(counterpart.code, cheat.type)
+        try:
+            note = delta_writer.push_cheat(
+                delta_folder, identifier, new_code, backup_dir
+            )
+        except (OSError, ValueError) as error:
+            outcomes.append(
+                Outcome(label, Action.PUSH, f"{detail}; FAILED: {error}", failed=True)
+            )
+            conflicted = True
+            continue
+
+        pushed.append((identifier, retro_code))
+        outcomes.append(
+            Outcome(label, Action.PUSH, f"{detail}; {note}", applied=True)
+        )
+
+    # A `.cht` entry with no Delta cheat of that name is a cheat made in
+    # RetroArch. Worth saying once per game rather than per entry, and worth
+    # saying at all: silently ignoring it is what makes people think it synced.
+    delta_names = {cheat.name for cheat in delta_cheats}
+    orphans = [cheat.name for cheat in existing if cheat.name not in delta_names]
+    if orphans:
+        outcomes.append(
+            Outcome(
+                entry.name,
+                Action.SKIPPED,
+                f"{len(orphans)} cheat(s) exist only in RetroArch and cannot be "
+                f"created in Delta ({', '.join(orphans)}). Make them on the phone "
+                "and they will come the other way.",
+            )
+        )
+
+    if conflicted:
+        outcomes.append(
+            Outcome(
+                entry.name,
+                Action.SKIPPED,
+                f"{path.name} left as it is while a cheat is in conflict",
+            )
+        )
+        return outcomes
+
+    # Render from Delta's cheats, with anything just pushed folded in -- the
+    # record on disk now holds the RetroArch code, so re-reading would be the
+    # only alternative and this avoids a second pass over the folder.
+    pushed_codes = dict(pushed)
+    rendered = [
+        cheats_module.Cheat(
+            name=cheat.name,
+            code=(
+                pushed_codes[source["identifier"]]
+                if source.get("identifier") in pushed_codes
+                else cheat.code
+            ),
+            type=cheat.type,
+        )
+        for cheat, source in zip(delta_cheats, game_cheats)
     ]
 
     if dry_run:
@@ -549,25 +712,37 @@ def sync_cheats(
                 current = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 current = ""
-        if current == cheats_module.render(parsed):
-            return Outcome(
-                entry.name, Action.NOTHING, f"cheats already current at {path}"
+        if current != cheats_module.render(rendered):
+            outcomes.append(
+                Outcome(
+                    entry.name,
+                    Action.PULL,
+                    f"would write {len(rendered)} cheat(s) to {path}",
+                )
             )
-        return Outcome(
-            entry.name,
-            Action.PULL,
-            f"would write {len(parsed)} cheat(s) to {path}",
+        return outcomes
+
+    changed = cheats_module.write_cheat_file(path, rendered)
+    if changed:
+        outcomes.append(
+            Outcome(
+                entry.name,
+                Action.PULL,
+                f"wrote {len(rendered)} cheat(s) to {path}",
+                applied=True,
+            )
         )
 
-    changed = cheats_module.write_cheat_file(path, parsed)
-    if not changed:
-        return Outcome(entry.name, Action.NOTHING, f"cheats already current at {path}")
-    return Outcome(
-        entry.name,
-        Action.PULL,
-        f"wrote {len(parsed)} cheat(s) to {path}",
-        applied=True,
-    )
+    # Both sides now hold the same thing, so record it as agreed. Done after the
+    # file write rather than per cheat, because a cheat is only truly reconciled
+    # once the `.cht` reflects it.
+    if state is not None:
+        for cheat, source in zip(rendered, game_cheats):
+            identifier = source.get("identifier", "")
+            if identifier:
+                state.record_cheat(identifier, cheats_module.canonical_code(cheat.code))
+
+    return outcomes
 
 
 def run_sync(
@@ -614,14 +789,18 @@ def run_sync(
                 report.outcomes.append(playlist_outcome)
 
         if cheat_dir is not None and cheats_by_game is not None:
-            cheat_outcome = sync_cheats(
-                entry,
-                cheats_by_game.get(entry.identifier, []),
-                cheat_dir,
-                dry_run=dry_run,
+            report.outcomes.extend(
+                sync_cheats(
+                    entry,
+                    cheats_by_game.get(entry.identifier, []),
+                    cheat_dir,
+                    delta_folder=paths.delta_folder,
+                    backup_dir=paths.backup_dir,
+                    state=state,
+                    allow_push=allow_push,
+                    dry_run=dry_run,
+                )
             )
-            if cheat_outcome is not None:
-                report.outcomes.append(cheat_outcome)
 
         target = retroarch_save_path(
             paths.save_dir, entry, core_name, sorted_by_core

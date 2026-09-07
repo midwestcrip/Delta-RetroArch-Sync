@@ -178,16 +178,17 @@ class DryRunAccuracyTests(unittest.TestCase):
             payload = [{"name": "A", "code": "042257BC 000F423F", "type": "ActionReplay"}]
 
             first = sync.sync_cheats(entry, payload, root)
-            assert first is not None
-            self.assertTrue(first.applied)
+            self.assertTrue(any(outcome.applied for outcome in first))
 
             # Now the file is current: both the dry run and the real run must
-            # agree that there is nothing to do.
+            # agree that there is nothing to do. "Nothing to do" is the absence
+            # of an outcome here rather than a NOTHING one, because a game with
+            # several cheats would otherwise report one line per unchanged cheat
+            # on every single sync.
             dry = sync.sync_cheats(entry, payload, root, dry_run=True)
             real = sync.sync_cheats(entry, payload, root)
-            assert dry is not None and real is not None
-            self.assertIs(dry.action, sync.Action.NOTHING)
-            self.assertIs(real.action, sync.Action.NOTHING)
+            self.assertEqual(dry, [])
+            self.assertEqual(real, [])
 
     def test_dry_run_writes_nothing(self) -> None:
         import sys as _sys

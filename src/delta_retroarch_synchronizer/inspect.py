@@ -108,6 +108,11 @@ def collect_cheats(delta_folder: Path) -> dict[str, list[dict[str, str]]]:
             continue
         by_game.setdefault(game_id, []).append(
             {
+                # The record's own UUID, which is how a cheat is addressed for
+                # writing and how its agreed state is keyed in the manifest.
+                # Names are what a `.cht` can be matched by; they are not stable
+                # enough to key state on.
+                "identifier": record.identifier,
                 "name": str(record.fields.get("name", "")),
                 "code": str(record.fields.get("code", "")),
                 "type": str(record.fields.get("type", "")),

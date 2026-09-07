@@ -21,18 +21,27 @@ appears in Delta. ROM export and cheat export work, and the launcher window is
 what you actually use day to day — it syncs, launches RetroArch, and syncs again
 once it closes.
 
-### Cheats only travel one way
+### Cheats: edit anywhere, create on the phone
 
-**Make cheats on your phone.** They appear in RetroArch automatically. A cheat
-created in RetroArch will never reach Delta.
+**Make cheats on your phone.** They appear in RetroArch automatically, and from
+then on you can edit the code on either side and it reaches the other. What you
+cannot do is *create* one in RetroArch.
 
 | | |
 | --- | --- |
 | Cheat made in Delta → appears in RetroArch | Works |
-| Editing a cheat that already exists, from the desktop | Possible, not built |
+| Editing a cheat's code, from either side | Works |
 | Brand-new cheat made in RetroArch → Delta | **Impossible** |
 
-That last row is a hard limit, not a missing feature. Every item in Delta's
+Editing needs `--push` (or the launcher's push setting) because it writes into
+Delta's folder, but unlike a save it needs no Dropbox authorisation: a cheat
+record carries no attached file, so there is no Dropbox revision to look up.
+
+If the same cheat changed on both sides since the last sync, that is reported as
+a conflict and **neither** side is touched — including the `.cht`, which is left
+exactly as you edited it.
+
+That last table row is a hard limit, not a missing feature. Every item in Delta's
 Dropbox folder carries metadata ("property groups") that Harmony requires in
 order to see it at all, and Dropbox scopes that metadata to the app that created
 it — *"Templates and their associated properties can't be accessed by any app
@@ -48,6 +57,11 @@ in fact more simply, since cheats have no attached files and therefore no Dropbo
 revision to resolve. Saves are bidirectional for exactly this reason: Delta
 created the record the first time you saved, and we only ever change what is
 inside it.
+
+A `.cht` entry is matched back to its Delta cheat **by name**, since the code is
+the thing that changes and the cheat type is not recoverable from a `.cht` at
+all. So renaming a cheat in RetroArch unlinks it, and it is then reported as one
+that only exists on the RetroArch side. Rename on the phone instead.
 
 | Phase | State |
 | --- | --- |
