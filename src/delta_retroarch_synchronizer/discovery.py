@@ -66,6 +66,40 @@ def dropbox_roots() -> list[Path]:
     return roots
 
 
+#: Where the Dropbox desktop client puts itself. It is a per-user install by
+#: default but the 32-bit Program Files path is what a real machine here
+#: actually had, so all three are checked rather than assumed.
+_DROPBOX_CLIENTS = (
+    ("ProgramFiles(x86)", "Dropbox/Client/Dropbox.exe"),
+    ("ProgramFiles", "Dropbox/Client/Dropbox.exe"),
+    ("LOCALAPPDATA", "Dropbox/Client/Dropbox.exe"),
+)
+
+
+def dropbox_client() -> Path | None:
+    """The installed Dropbox client, whether or not anyone has signed in.
+
+    Separate from :func:`dropbox_roots` on purpose. ``info.json`` only appears
+    once an account is linked, so an installed-but-signed-out Dropbox looks
+    exactly like no Dropbox at all -- and the third naive-user test hit that
+    case and was told to install software it already had.
+    """
+    for variable, relative in _DROPBOX_CLIENTS:
+        base = os.environ.get(variable)
+        if not base:
+            continue
+        candidate = Path(base).joinpath(*relative.split("/"))
+        if candidate.is_file():
+            return candidate
+
+    # The client has run here even if its executable has since moved: this is
+    # where it keeps its databases, and it is created on first launch.
+    base = os.environ.get("LOCALAPPDATA")
+    if base and (Path(base) / "Dropbox").is_dir():
+        return Path(base) / "Dropbox"
+    return None
+
+
 def find_delta_folder() -> Discovery:
     """Find the 'Delta Emulator' folder inside whichever Dropbox root has it.
 
@@ -74,11 +108,21 @@ def find_delta_folder() -> Discovery:
     """
     roots = dropbox_roots()
     if not roots:
+        # Two different problems with two different answers. Telling someone to
+        # install what they have already installed sends them to a download
+        # page instead of to the sign-in button three feet away.
+        if dropbox_client() is not None:
+            return Discovery(
+                "Delta Emulator folder",
+                None,
+                "Dropbox is installed but not signed in. Open Dropbox and sign "
+                "into the account Delta syncs to, then press Check status.",
+            )
         return Discovery(
             "Delta Emulator folder",
             None,
-            "No Dropbox install found. Install the Dropbox desktop client and "
-            "sign into the account Delta syncs to.",
+            "Dropbox is not installed. Install the Dropbox desktop client from "
+            "dropbox.com, then sign into the account Delta syncs to.",
         )
 
     for root in roots:
@@ -234,14 +278,15 @@ def _app_paths_retroarch_dir() -> list[Path]:
     return []
 
 
-def find_retroarch_config() -> Discovery:
-    """Find retroarch.cfg across the usual Windows install layouts.
+def _config_candidates() -> list[Path]:
+    """Every place retroarch.cfg could be, best guess first.
 
-    Every source here is filtered by whether the file actually exists, which is
-    what makes it safe to consult sources that go stale -- the uninstall entry
-    and App Paths both keep naming a folder long after it is deleted.
+    Split out from the search so a test can empty it. The registry sources are
+    already stubbable one by one, but the fixed paths below are not, and one of
+    them -- C:/RetroArch-Win64 -- exists on this project's own machine, which
+    made "no RetroArch anywhere" impossible to test against.
     """
-    candidates = [
+    return [
         directory / "retroarch.cfg"
         for directory in (
             _registry_retroarch_dirs()
@@ -259,14 +304,37 @@ def find_retroarch_config() -> Discovery:
         / "RetroArch"
         / "retroarch.cfg",
     ]
-    for candidate in candidates:
+
+
+def find_retroarch_config() -> Discovery:
+    """Find retroarch.cfg across the usual Windows install layouts.
+
+    Every source here is filtered by whether the file actually exists, which is
+    what makes it safe to consult sources that go stale -- the uninstall entry
+    and App Paths both keep naming a folder long after it is deleted.
+    """
+    for candidate in _config_candidates():
         if candidate.is_file():
             return Discovery("retroarch.cfg", candidate)
+
+    # Same distinction as Dropbox: RetroArch writes its config on first launch,
+    # so "installed but never opened" and "not installed" are separate problems
+    # and only one of them is solved by downloading anything.
+    installed = find_retroarch_exe()
+    if installed is not None:
+        return Discovery(
+            "retroarch.cfg",
+            None,
+            f"RetroArch is installed at {installed.parent} but has never been "
+            "launched, so it has not written its config yet. Open RetroArch "
+            "once, close it, then press Check status.",
+        )
     return Discovery(
         "retroarch.cfg",
         None,
-        "RetroArch config not found. Install RetroArch and launch it once so it "
-        "writes its config, or set retroarch_config in config.toml.",
+        "RetroArch is not installed. Install it from retroarch.com and launch "
+        "it once so it writes its config, or set retroarch_config in "
+        "config.toml.",
     )
 
 

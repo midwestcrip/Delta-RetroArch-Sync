@@ -18,8 +18,10 @@ from delta_retroarch_synchronizer import launcher, sync
 from delta_retroarch_synchronizer.config import Config
 from delta_retroarch_synchronizer.discovery import Discovery
 
-NO_DROPBOX = "No Dropbox install found. Install the Dropbox desktop client."
-NO_RETROARCH = "RetroArch config not found. Install RetroArch and launch it once."
+#: Real explanations, copied from discovery, so these tests fail if the wording
+#: there ever drifts back to stating a fact the reader cannot act on.
+NO_DROPBOX = "Dropbox is not installed. Install the Dropbox desktop client."
+NO_RETROARCH = "RetroArch is not installed. Install it and launch it once."
 
 
 def _stub(monkeypatch, *, delta: Discovery, retroarch: Discovery, exe: Path | None):

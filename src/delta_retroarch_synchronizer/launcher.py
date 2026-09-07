@@ -33,7 +33,7 @@ from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 from typing import Any
 
 from . import config as config_module
-from . import delta_writer, discovery, dropbox_api, health, paths, restore
+from . import delta_writer, discovery, dropbox_api, guide, health, paths, restore
 from . import shortcut as shortcut_module
 from . import theme
 from . import inspect as inspect_module
@@ -336,6 +336,9 @@ class LauncherWindow:
 
         self.config = config_module.load()
         self.discovery_notes: list[str] = []
+        #: The setup window, while it is open. One at a time.
+        self.instructions: tk.Toplevel | None = None
+        self.instructions_text: tk.Text | None = None
         self.backup_points: list[restore.RestorePoint] = []
         self._fill_in_discovered_paths()
 
@@ -389,6 +392,7 @@ class LauncherWindow:
             palette = theme.palette_for(current)
             theme.apply(self.root, palette)
             theme.apply_to_log(self.log, palette)
+            self._style_instructions()
         self.root.after(theme.POLL_MS, self._follow_system_appearance)
 
     # --------------------------------------------------------------- layout
@@ -442,6 +446,19 @@ class LauncherWindow:
         actions = ttk.Frame(parent)
         actions.grid(row=1, column=0, sticky="ew")
         actions.columnconfigure(0, weight=1)
+
+        # Bottom left, under the log, where the third naive-user test asked for
+        # it. Away from the three buttons that do something, because this one
+        # only explains.
+        instructions_button = ttk.Button(
+            actions, text="Instructions", command=self.on_instructions
+        )
+        instructions_button.grid(row=0, column=0, sticky="w")
+        Tooltip(
+            instructions_button,
+            "Everything needed to set this up, in order, with each step marked "
+            "according to whether this PC has it already.",
+        )
 
         ttk.Button(actions, text="Check status", command=self.on_status).grid(
             row=0, column=1, padx=4
@@ -697,7 +714,165 @@ class LauncherWindow:
                 self.write("")
                 self.write(note, "warn")
             self.write("")
-            self.write("Or set the paths above by hand, then press Save settings.", "muted")
+            self.write(
+                "Press Instructions, bottom left, for the whole procedure with "
+                "each step marked done or not.",
+                "muted",
+            )
+            self.write(
+                "Or set the paths on the Settings tab by hand, then press "
+                "Save settings.",
+                "muted",
+            )
+
+    # ------------------------------------------------------------ the guide
+
+    def _progress(self) -> guide.Progress:
+        """How far this machine has got, read fresh rather than from config.
+
+        Fresh because the whole point of the window is to be looked at while
+        the missing pieces are being installed: someone who signs into Dropbox
+        and presses Instructions again should see that step tick over.
+        """
+        delta = self.config.delta_folder
+        if delta is None or not delta.is_dir():
+            found = discovery.find_delta_folder()
+            delta = found.path
+
+        retro_config = self.config.retroarch_config
+        if retro_config is None or not retro_config.is_file():
+            found = discovery.find_retroarch_config()
+            retro_config = found.path
+
+        cores = 0
+        if retro_config is not None and retro_config.is_file():
+            settings = discovery.parse_retroarch_config(retro_config)
+            cores = len(discovery.installed_cores(retro_config, settings))
+
+        return guide.Progress(
+            dropbox_installed=discovery.dropbox_client() is not None,
+            dropbox_signed_in=bool(discovery.dropbox_roots()),
+            delta_folder_found=delta is not None and delta.is_dir(),
+            retroarch_installed=discovery.find_retroarch_exe(retro_config) is not None,
+            retroarch_launched=retro_config is not None and retro_config.is_file(),
+            cores_installed=cores,
+        )
+
+    def on_instructions(self) -> None:
+        """Open the setup checklist, or bring it forward if it is already up."""
+        if self.instructions is not None and self.instructions.winfo_exists():
+            self.instructions.lift()
+            self.instructions.focus_set()
+            self._fill_instructions()
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title("Setting this up")
+        window.transient(self.root)
+        window.rowconfigure(0, weight=1)
+        window.columnconfigure(0, weight=1)
+
+        frame = ttk.Frame(window, padding=10)
+        frame.grid(row=0, column=0, sticky="nsew")
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+
+        text = tk.Text(
+            frame, width=72, height=22, wrap="word",
+            font=("Segoe UI", 10), padx=12, pady=10, relief="flat",
+        )
+        text.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        text.configure(yscrollcommand=scrollbar.set)
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        buttons.columnconfigure(0, weight=1)
+        ttk.Button(
+            buttons, text="Check again", command=self._fill_instructions
+        ).grid(row=0, column=1, padx=4)
+        ttk.Button(buttons, text="Close", command=window.destroy).grid(
+            row=0, column=2, padx=4
+        )
+
+        self.instructions = window
+        self.instructions_text = text
+        self._style_instructions()
+        self._fill_instructions()
+
+    def _style_instructions(self) -> None:
+        """Colour the setup window for the current theme.
+
+        Its own tags rather than the log's: this is prose in a proportional
+        face, and apply_to_log reads the family back out of the widget by
+        splitting on whitespace, which turns "Segoe UI" into "Segoe".
+        """
+        text = self.instructions_text
+        if text is None or not text.winfo_exists():
+            return
+        palette = theme.palette_for(self.appearance)
+        text.configure(
+            background=palette.log_bg,
+            foreground=palette.log_fg,
+            selectbackground=palette.select_bg,
+            selectforeground=palette.select_fg,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        text.tag_configure(
+            "step", foreground=palette.ink, font=("Segoe UI", 10, "bold"),
+            spacing1=10, spacing3=2,
+        )
+        text.tag_configure("done", foreground=palette.log_ok)
+        text.tag_configure("todo", foreground=palette.log_warn)
+        text.tag_configure(
+            "body", foreground=palette.log_fg, lmargin1=22, lmargin2=22, spacing3=4
+        )
+        text.tag_configure(
+            "note", foreground=palette.log_muted, lmargin1=12, lmargin2=12, spacing3=6
+        )
+        text.tag_configure(
+            "title", foreground=palette.ink, font=("Segoe UI", 12, "bold"), spacing3=8
+        )
+
+    def _fill_instructions(self) -> None:
+        """Rewrite the checklist against what is on this machine right now."""
+        text = self.instructions_text
+        if text is None or not text.winfo_exists():
+            return
+
+        steps = guide.setup_steps(self._progress())
+        remaining = guide.next_step(steps)
+
+        text.configure(state="normal")
+        text.delete("1.0", "end")
+
+        def line(body: str, *tags: str) -> None:
+            start = text.index("end-1c")
+            text.insert("end", body + "\n")
+            for tag in tags:
+                text.tag_add(tag, start, "end-1c")
+
+        if remaining is None:
+            line("Everything is set up.", "title")
+        else:
+            line(f"Next step — {remaining.title}", "title")
+
+        for index, step in enumerate(steps, start=1):
+            line(
+                f"{step.marker} {index}. {step.title}",
+                "step",
+                "done" if step.done else "todo",
+            )
+            line(step.body, "body")
+
+        line("")
+        for note in guide.NOTES:
+            line(note, "note")
+
+        text.configure(state="disabled")
+        text.see("1.0")
 
     def _refresh_dropbox_label(self) -> None:
         token = _state_dir() / dropbox_api.TOKEN_FILENAME
@@ -1229,12 +1404,20 @@ class LauncherWindow:
     def _prepare(self) -> tuple[sync_module.Paths, list, str, bool, Path, Path] | None:
         config = self.config
         if config.delta_folder is None or not config.delta_folder.is_dir():
-            self._say("Delta folder not set or missing.", "error")
+            # "Delta folder not set or missing" was all Check status said, which
+            # the third naive-user test called out by name: the one button that
+            # exists to answer "where am I?" restated the symptom. Discovery has
+            # already worked out which of the three possible causes it is.
+            self._say("Delta's Dropbox folder was not found.", "error")
+            self._say(f"  {discovery.find_delta_folder().detail}", "warn")
+            self._say("  Press Instructions for the whole procedure.", "muted")
             return None
 
         retroarch_config = config.retroarch_config
         if retroarch_config is None or not retroarch_config.is_file():
-            self._say("retroarch.cfg not found. Set the RetroArch path.", "error")
+            self._say("RetroArch's settings file was not found.", "error")
+            self._say(f"  {discovery.find_retroarch_config().detail}", "warn")
+            self._say("  Press Instructions for the whole procedure.", "muted")
             return None
 
         settings = discovery.parse_retroarch_config(retroarch_config)
