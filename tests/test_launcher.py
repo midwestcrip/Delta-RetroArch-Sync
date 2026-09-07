@@ -157,3 +157,49 @@ def test_failure_outranks_an_applied_flag():
     assert launcher.LauncherWindow._level_for(
         _outcome(sync.Action.PULL, applied=True, failed=True)
     ) == "error"
+
+
+def _point(original: str, stamp: str, size: int, label: str) -> "launcher.restore.RestorePoint":
+    from delta_retroarch_synchronizer import restore
+
+    parsed = restore.parse_backup_name(f"{original}.{stamp}.bak")
+    assert parsed is not None
+    return restore.RestorePoint(
+        restore.Backup(Path(original), parsed[0], parsed[1], size), label
+    )
+
+
+def test_a_backup_row_says_which_side_and_when():
+    row = _point(
+        "GameSave-6b47bb75d16514b6a476aa0c73a683a2a4c18765-gameSave",
+        "20260906T210845793346",
+        2048,
+        "Super Mario World",
+    )
+    assert launcher.backup_row(row) == (
+        "Super Mario World",
+        "Delta save",
+        "2026-09-06 21:08:45 UTC",
+        "2,048 B",
+    )
+
+
+def test_a_retroarch_row_is_labelled_by_its_filename():
+    row = _point("Super Mario World.srm", "20260906T210845793346", 2048, "Super Mario World")
+    assert launcher.backup_row(row)[1] == "RetroArch save"
+
+
+def test_seconds_survive_into_the_table():
+    """Two backups from one push differ only in the seconds.
+
+    A push writes the save and then the record, a couple of seconds apart, so a
+    table showing only minutes would present them as the same moment and give
+    no way to tell which row is which.
+    """
+    first = launcher.backup_row(
+        _point("Game.srm", "20260906T210843793346", 1, "Game")
+    )[2]
+    second = launcher.backup_row(
+        _point("Game.srm", "20260906T210845793346", 1, "Game")
+    )[2]
+    assert first != second

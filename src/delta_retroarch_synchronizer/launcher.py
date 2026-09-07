@@ -29,11 +29,11 @@ import webbrowser
 import tkinter as tk
 from dataclasses import replace
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 from typing import Any
 
 from . import config as config_module
-from . import discovery, dropbox_api, health, paths, theme
+from . import delta_writer, discovery, dropbox_api, health, paths, restore, theme
 from . import inspect as inspect_module
 from . import sync as sync_module
 from . import systems
@@ -91,6 +91,21 @@ def resolve_paths(
         )
 
     return config, notes
+
+
+def backup_row(point: "restore.RestorePoint") -> tuple[str, str, str, str]:
+    """One row of the Backups table.
+
+    Module level, like ``resolve_paths``, so what the table actually says can be
+    tested without a Tk display -- the window itself needs one, and the wording
+    is the part worth pinning.
+    """
+    return (
+        point.label,
+        f"{point.backup.side} {point.backup.kind}",
+        point.backup.when,
+        f"{point.backup.size:,} B",
+    )
 
 
 class Tooltip:
@@ -238,6 +253,7 @@ class LauncherWindow:
 
         self.config = config_module.load()
         self.discovery_notes: list[str] = []
+        self.backup_points: list[restore.RestorePoint] = []
         self._fill_in_discovered_paths()
 
         root.title(WINDOW_TITLE)
@@ -307,11 +323,14 @@ class LauncherWindow:
         notebook.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
 
         sync_tab = ttk.Frame(notebook, padding=8)
+        backups_tab = ttk.Frame(notebook, padding=8)
         settings_tab = ttk.Frame(notebook, padding=8)
         notebook.add(sync_tab, text="   Sync   ")
+        notebook.add(backups_tab, text="   Backups   ")
         notebook.add(settings_tab, text="   Settings   ")
 
         self._build_sync_tab(sync_tab)
+        self._build_backups_tab(backups_tab)
         self._build_settings_tab(settings_tab)
 
         self.play_button = ttk.Button(
@@ -344,6 +363,69 @@ class LauncherWindow:
         ttk.Button(actions, text="Sync now", command=self.on_sync).grid(
             row=0, column=2, padx=4
         )
+
+    def _build_backups_tab(self, parent: ttk.Frame) -> None:
+        """Somewhere to see the rolling backups and put one back.
+
+        A list rather than log lines, because choosing a version is a comparison
+        between rows -- which one, from when, how big -- and that is what a table
+        is for. The log is the right shape for what happened; this is the right
+        shape for what could happen.
+        """
+        parent.rowconfigure(1, weight=1)
+        parent.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            parent,
+            text=(
+                "A copy is kept before anything is overwritten. Whatever you "
+                "restore is itself backed up first, so this is undoable."
+            ),
+            style="Muted.TLabel",
+            wraplength=620,
+            justify="left",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 6))
+
+        columns = ("game", "what", "when", "size")
+        self.backup_list = ttk.Treeview(
+            parent, columns=columns, show="headings", height=11, selectmode="browse"
+        )
+        for key, title, anchor in (
+            ("game", "Game", "w"),
+            ("what", "What", "w"),
+            ("when", "When", "w"),
+            ("size", "Size", "e"),
+        ):
+            self.backup_list.heading(key, text=title)
+            self.backup_list.column(key, anchor=anchor, stretch=(key == "game"))
+        self.backup_list.grid(row=1, column=0, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(
+            parent, orient="vertical", command=self.backup_list.yview
+        )
+        scrollbar.grid(row=1, column=1, sticky="ns")
+        self.backup_list.configure(yscrollcommand=scrollbar.set)
+
+        actions = ttk.Frame(parent)
+        actions.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        actions.columnconfigure(0, weight=1)
+
+        ttk.Button(actions, text="Refresh", command=self.on_refresh_backups).grid(
+            row=0, column=1, padx=4
+        )
+        restore_button = ttk.Button(
+            actions, text="Restore selected…", command=self.on_restore_selected
+        )
+        restore_button.grid(row=0, column=2, padx=4)
+        Tooltip(
+            restore_button,
+            "Puts the selected version back, after showing you exactly which "
+            "file it would overwrite.\n\n"
+            "The next sync then carries it to the other side, or reports a "
+            "conflict if that side also changed.",
+        )
+
+        self.on_refresh_backups()
 
     def _build_settings_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -654,6 +736,199 @@ class LauncherWindow:
             return
         self.write(f"Opened {folder}")
 
+    # ------------------------------------------------------------- backups
+
+    def _game_names(self) -> dict[str, str]:
+        """Game SHA-1 to display name, for labelling Delta-side backups.
+
+        Failure is not fatal here. The list is still useful without names --
+        every row keeps its timestamp, side and size -- and a backup whose Delta
+        folder has gone missing is exactly the moment someone needs to see it.
+        """
+        folder = self.config.delta_folder
+        if folder is None or not folder.is_dir():
+            return {}
+        try:
+            return {e.identifier: e.name for e in inspect_module.collect_games(folder)}
+        except OSError:
+            return {}
+
+    def on_refresh_backups(self) -> None:
+        self.config = self._current_config()
+        backup_dir = _state_dir() / sync_module.BACKUP_DIRNAME
+        self.backup_points = restore.restore_points(
+            restore.scan(backup_dir), self._game_names()
+        )
+
+        self.backup_list.delete(*self.backup_list.get_children())
+        for index, point in enumerate(self.backup_points):
+            self.backup_list.insert("", "end", iid=str(index), values=backup_row(point))
+        self._size_backup_columns()
+
+    def _size_backup_columns(self) -> None:
+        """Widen each column to fit what is actually in it.
+
+        Fixed pixel widths were wrong here. Tk column widths are in pixels while
+        the text is drawn in whatever the system font resolves to, so on a
+        display running at 150% the timestamps lost their seconds and "RetroArch
+        clock" became "RetroArch cl" -- and the seconds are the whole reason
+        that column exists, since a push writes the save and the record two or
+        three seconds apart.
+
+        Measuring the font instead means the table fits on any display scale and
+        any font size. Only Game is capped, because a game name has no bound and
+        the window is not resizable; a long one ellipsizes, which is fine when
+        the other three columns are what you compare on.
+        """
+        try:
+            row_font = tkfont.nametofont("TkDefaultFont")
+        except tk.TclError:  # pragma: no cover -- no font database
+            return
+
+        widths = {"game": 120, "what": 60, "when": 60, "size": 50}
+        headings = {"game": "Game", "what": "What", "when": "When", "size": "Size"}
+        for key, title in headings.items():
+            widths[key] = max(widths[key], row_font.measure(title))
+        for item in self.backup_list.get_children():
+            for key, value in zip(headings, self.backup_list.item(item, "values")):
+                widths[key] = max(widths[key], row_font.measure(str(value)))
+
+        # Cell padding Tk adds either side of the text, plus a little air.
+        padding = 18
+        for key in headings:
+            width = widths[key] + padding
+            if key == "game":
+                width = min(width, 260)
+            self.backup_list.column(key, width=width, minwidth=width)
+
+    def _selected_point(self) -> "restore.RestorePoint | None":
+        selection = self.backup_list.selection()
+        if not selection:
+            return None
+        try:
+            return self.backup_points[int(selection[0])]
+        except (ValueError, IndexError):
+            return None
+
+    def on_restore_selected(self) -> None:
+        """Confirm in a dialog, then restore on the worker thread.
+
+        The dialog is this window's equivalent of the CLI's ``--yes``: it names
+        the exact file about to be overwritten rather than asking "are you
+        sure?", because the thing worth checking is *which version*, and no
+        amount of general caution helps with that.
+        """
+        if self.busy:
+            return
+        point = self._selected_point()
+        if point is None:
+            messagebox.showinfo(
+                WINDOW_TITLE, "Pick a version from the list first.", parent=self.root
+            )
+            return
+
+        self.config = self._current_config()
+        prepared = self._prepare()
+        if prepared is None:
+            return
+        sync_paths = prepared[0]
+
+        if point.backup.side == restore.RETROARCH:
+            target = restore.find_retroarch_target(
+                sync_paths.save_dir, point.backup.original_name
+            )
+            if target is None:
+                messagebox.showerror(
+                    WINDOW_TITLE,
+                    f"Nothing named {point.backup.original_name} under "
+                    f"{sync_paths.save_dir}.\n\nRetroArch may not have this game "
+                    "any more, or it now sorts saves into a different folder.",
+                    parent=self.root,
+                )
+                return
+            destination = str(target)
+        else:
+            destination = f"Delta's folder — {point.backup.original_name}"
+
+        confirmed = messagebox.askyesno(
+            WINDOW_TITLE,
+            f"Restore this version?\n\n"
+            f"    {point.label}\n"
+            f"    {point.backup.side} {point.backup.kind}, {point.backup.when}\n"
+            f"    {point.backup.size:,} bytes\n\n"
+            f"This overwrites:\n    {destination}\n\n"
+            f"That file is backed up first, so this can be undone. "
+            f"Afterwards, {restore.RESTORE_IS_A_CHANGE}.",
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+
+        self._run(lambda: self._restore_work(point))
+
+    def _restore_work(self, point: "restore.RestorePoint") -> None:
+        prepared = self._prepare()
+        if prepared is None:
+            return
+        sync_paths, entries, _, _, _, _ = prepared
+
+        self._say(f"Restoring {point.label} from {point.backup.when}", "heading")
+        try:
+            if point.backup.side == restore.RETROARCH:
+                note = restore.restore_retroarch(
+                    point, sync_paths.save_dir, sync_paths.backup_dir
+                )
+            elif point.backup.kind == "cheat":
+                note = restore.restore_delta_cheat(
+                    point, sync_paths.delta_folder, sync_paths.backup_dir
+                )
+            else:
+                note = self._restore_into_delta(point, sync_paths, entries)
+                if note is None:
+                    return
+        except (OSError, ValueError, dropbox_api.DropboxError) as error:
+            self._say(f"  FAILED: {error}", "error")
+            return
+
+        self._say(f"  {note}", "ok")
+        self._say(f"  {restore.RESTORE_IS_A_CHANGE}.", "muted")
+
+    def _restore_into_delta(
+        self, point: "restore.RestorePoint", sync_paths: sync_module.Paths, entries: list
+    ) -> str | None:
+        """The half that needs a record rewritten and a revision read back."""
+        entry = next(
+            (e for e in entries if e.identifier == point.backup.identifier), None
+        )
+        if entry is None:
+            self._say(
+                "  Delta no longer has this game, so there is no record to "
+                "write the restored save into.",
+                "error",
+            )
+            return None
+
+        credentials = dropbox_api.Credentials.load(
+            _state_dir() / dropbox_api.TOKEN_FILENAME
+        )
+        if credentials is None:
+            self._say(f"  Not restored: {delta_writer.REVISION_MUST_BE_REAL}", "warn")
+            return None
+
+        system = entry.system
+        file_identifier = (
+            system.delta_clock_id
+            if point.backup.kind == "clock" and system and system.delta_clock_id
+            else delta_writer.PRIMARY_FILE
+        )
+        return restore.restore_delta_save(
+            point,
+            sync_paths,
+            entry,
+            dropbox_api.DropboxClient(credentials),
+            file_identifier=file_identifier,
+        )
+
     def on_status(self) -> None:
         self._run(self._status_work)
 
@@ -697,6 +972,9 @@ class LauncherWindow:
             elif kind == "done":
                 self.busy = False
                 self.play_button.configure(state="normal")
+                # A sync takes backups of its own, so the list is stale the
+                # moment any work finishes -- not only after a restore.
+                self.on_refresh_backups()
         self.root.after(100, self._drain)
 
     # ----------------------------------------------------------------- work

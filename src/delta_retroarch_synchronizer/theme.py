@@ -294,6 +294,31 @@ def apply(root: tk.Misc, palette: Palette) -> None:
         foreground=[("selected", palette.ink)],
     )
 
+    # The backup list. `fieldbackground` is the part that is easy to miss: without
+    # it the empty area below the last row keeps ttk's default white, which in
+    # dark mode leaves a bright slab under the list.
+    style.configure(
+        "Treeview",
+        background=palette.field,
+        fieldbackground=palette.field,
+        foreground=palette.ink,
+        bordercolor=palette.border,
+        rowheight=22,
+    )
+    style.configure(
+        "Treeview.Heading",
+        background=palette.surface,
+        foreground=palette.muted,
+        bordercolor=palette.border,
+        padding=(6, 4),
+    )
+    style.map(
+        "Treeview",
+        background=[("selected", palette.select_bg)],
+        foreground=[("selected", palette.select_fg)],
+    )
+    style.map("Treeview.Heading", background=[("active", palette.surface)])
+
 
 #: Tag names the launcher applies to log lines. "" means ordinary text.
 LOG_LEVELS = ("heading", "ok", "warn", "error", "muted")
