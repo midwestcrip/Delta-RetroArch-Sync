@@ -134,17 +134,19 @@ SYSTEMS: dict[str, System] = {
         name="Nintendo DS",
         delta_type="com.rileytestut.delta.game.ds",
         delta_core="melonDS",
+        # Delta declares DeSmuME's extension while running melonDS, which looked
+        # for a long time like it might mean a footered .dsv payload. It does
+        # not -- the extension is a migration leftover and the bytes are raw.
+        # See the note above ENABLED_SYSTEMS.
         delta_save_ext="dsv",
         retroarch_save_ext="srm",
-        raw_compatible=False,
-        conversion_note=(
-            "Delta declares the DeSmuME '.dsv' extension while running melonDS. "
-            "Unverified whether the payload carries the DeSmuME footer "
-            "(trailing '|-DESMUME SAVE-|' marker) or is already raw. Inspect a "
-            "real save before converting; strip or append the footer accordingly."
-        ),
+        raw_compatible=True,
         rom_exts=("nds",),
         retroarch_db_name="Nintendo - Nintendo DS",
+        # melonDS DS first: it is the same emulator Delta runs. DeSmuME is kept
+        # as a last resort but unverified here -- RetroArch's frontend owns
+        # writing the .srm so it should be raw whatever the core, and "should"
+        # is not the standard this list is held to.
         retroarch_cores=("melonDS DS", "melonDS", "DeSmuME"),
     ),
 }
@@ -189,7 +191,26 @@ SYSTEMS: dict[str, System] = {
 #: that cartridge has no SRAM at all, which is why Delta stores no save file for
 #: it and why it sat in this folder for a day proving nothing. A battery-backed
 #: game was required: Zelda, Metroid, Kirby's Adventure, Final Fantasy.
-ENABLED_SYSTEMS: frozenset[str] = frozenset({"gba", "snes", "gbc", "nes"})
+#:
+#: ds added 2026-09-07 against a real Pokemon Platinum save, and this one was an
+#: open question from the start rather than a formality. Delta declares DeSmuME's
+#: `.dsv` extension while running melonDS, and `.dsv` is raw save data followed
+#: by a footer ending in the marker `|-DESMUME SAVE-|`. If Delta wrote a real
+#: footered .dsv, copying it to RetroArch would hand the core a save with 122
+#: bytes of trailing metadata where it expects none.
+#:
+#: It does not. Measured on the real file:
+#:
+#:   size            524288 bytes exactly -- 512 KB, the bare chip size, and a
+#:                   power of two, which a footered file cannot be
+#:   DESMUME marker  absent from the file entirely
+#:   tail            0xFF padding, i.e. unwritten flash
+#:
+#: So the extension is a migration leftover and the payload is melonDS's raw
+#: format. DS is a rename, exactly like SNES. The marker was searched for
+#: directly rather than inferred from the size, because a footer on a save that
+#: happened to be short would have left the size looking right.
+ENABLED_SYSTEMS: frozenset[str] = frozenset({"gba", "snes", "gbc", "nes", "ds"})
 
 BY_DELTA_TYPE: dict[str, System] = {s.delta_type: s for s in SYSTEMS.values()}
 

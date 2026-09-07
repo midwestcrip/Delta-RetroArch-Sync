@@ -178,24 +178,42 @@ from each core's `*Types.m` / `*.swift`.
 | SNES | Snes9x | `.srm` | `.srm` | Identical |
 | GBA | VBA-M | `.sav` | `.srm` | Rename only |
 | GBC | Gambatte | `.sav` + `.rtc` | `.srm` + `.rtc` | Rename, both files |
-| DS | melonDS | `.dsv` | `.srm` | **Unverified** |
+| DS | melonDS | `.dsv` | `.srm` | Rename only |
 | N64 | Mupen64Plus | `.sav` | `.srm` | **Needs conversion** |
 
 RetroArch's extension is the frontend's convention, not the core's: the frontend
 owns writing SRAM to disk, so cores cannot override it.
 
-The four "rename only" rows are all raw battery dumps on both sides, so a copy
-with a changed extension is genuinely sufficient.
+The "rename only" rows are all raw battery dumps on both sides, so a copy with a
+changed extension is genuinely sufficient.
 
-### DS — unverified
+### DS — resolved 2026-09-07: Delta writes raw
 
-Delta declares the DeSmuME `.dsv` extension while running melonDS. `.dsv` is
-raw save data plus a footer ending in the marker `|-DESMUME SAVE-|`; melonDS
-itself writes raw. Delta may have kept the extension for migration compatibility
-while writing raw data, or may write a real footered `.dsv`.
+Delta declares the DeSmuME `.dsv` extension while running melonDS. `.dsv` is raw
+save data plus a footer ending in the marker `|-DESMUME SAVE-|`; melonDS itself
+writes raw. So Delta had either kept the extension for migration compatibility
+while writing raw data, or was writing a real footered `.dsv` — and the second
+would mean handing RetroArch's core a save with trailing metadata where it
+expects none.
 
-**To verify:** read the tail of a real Delta DS save and look for the marker.
-Strip or append the footer accordingly. Do not guess.
+Measured on a real Pokémon Platinum save:
+
+| | |
+| --- | --- |
+| Size | 524,288 bytes exactly — 512 KB, the bare chip size |
+| Power of two | Yes, which a footered file cannot be |
+| `\|-DESMUME SAVE-\|` | **Absent from the file entirely** |
+| Tail | `ff ff ff …`, unwritten flash padding |
+
+The marker was searched for across the whole file rather than inferred from the
+size, because a footer on a save that happened to be short would have left the
+size looking right.
+
+So the extension is a migration leftover and DS is a rename, like SNES. Verified
+end to end the same day: the pull landed byte-identical (SHA-1 match against
+Delta's copy) at `saves/melonDS DS/Pokémon - Platinum Version.srm`.
+
+The RetroArch → Delta direction has not yet been checked on device.
 
 ### N64 — needs real conversion
 
@@ -206,9 +224,20 @@ whichever type the cartridge uses. Converting means detecting the type by size
 offset. [`ra_mp64_srm_convert`](https://github.com/drehren/ra_mp64_srm_convert)
 is a working reference for the offset layout.
 
-Both DS and N64 are excluded from `ENABLED_SYSTEMS` in `systems.py`. The
-inspector reports them; the sync will never write them until their conversion is
-implemented and tested against real data.
+N64 is excluded from `ENABLED_SYSTEMS` in `systems.py`. The inspector reports it;
+the sync will never write it until the conversion is implemented and tested
+against real data. DS was excluded on the same grounds until 2026-09-07, when a
+real save showed there was no conversion to implement.
+
+A real Super Mario 64 save is **512 bytes** — 4 Kbit EEPROM, 56 bytes of it
+nonzero. That pins the EEPROM case only; SRAM, FlashRAM and the mempaks still
+need a save each before the offset mapping can be trusted in both directions.
+
+One consequence to plan for: the **size guard** in `delta_writer.push_save`
+refuses a push whose byte count differs from the record's, which is correct for
+every current system and exactly wrong for N64, where reading 512 bytes out of a
+290 KB `.srm` is the intended result. It needs a per-system exemption, not a
+bypass.
 
 ## Push: what actually failed
 

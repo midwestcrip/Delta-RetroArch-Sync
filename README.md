@@ -73,13 +73,14 @@ that only exists on the RetroArch side. Rename on the phone instead.
 | 4. Cheat sync (`.cht` generation) | Working, Delta -> RetroArch only |
 | 5. Launcher window | Working |
 
-Currently cleared for sync: **GBA, SNES, GBC and NES**, each verified against a
-real save — Fire Red, Super Mario World, Pokémon Crystal and Kirby's Adventure
-respectively. Being the same plain-copy path was never the bar; each was enabled
-only once a real save had been checked for a header, footer or wrapper. Game Boy
-Color also syncs its real-time clock, on the Gambatte core only. N64 and DS need
-genuine format conversion and are hard-blocked in `systems.py` until then — see
-[docs/research.md](docs/research.md).
+Currently cleared for sync: **GBA, SNES, GBC, NES and DS**, each verified against
+a real save — Fire Red, Super Mario World, Pokémon Crystal, Kirby's Adventure and
+Pokémon Platinum respectively. Being the same plain-copy path was never the bar;
+each was enabled only once a real save had been checked for a header, footer or
+wrapper. Game Boy Color also syncs its real-time clock, on the Gambatte core only.
+
+**N64 is still hard-blocked** in `systems.py` and needs genuine format
+conversion — see [docs/research.md](docs/research.md).
 
 ## Requirements
 

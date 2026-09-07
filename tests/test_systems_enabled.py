@@ -24,12 +24,44 @@ def test_enabled_systems_carry_no_conversion_note():
         assert not systems.SYSTEMS[key].conversion_note, key
 
 
-@pytest.mark.parametrize("key", ["n64", "ds"])
+@pytest.mark.parametrize("key", ["n64"])
 def test_systems_needing_conversion_stay_blocked(key):
-    """N64 packs into a combined .srm; DS may carry a DeSmuME footer."""
+    """N64 packs EEPROM, SRAM, FlashRAM and four mempaks into one ~290KB .srm
+    at fixed offsets, while Delta writes a single bare save of whichever type
+    the cartridge uses. That is a real conversion, not a copy.
+
+    DS used to be in this list. It left on 2026-09-07 by measurement, not by
+    decision -- see test_ds_is_raw_despite_its_extension.
+    """
     assert key not in systems.ENABLED_SYSTEMS
     assert not systems.SYSTEMS[key].raw_compatible
     assert systems.SYSTEMS[key].conversion_note
+
+
+def test_ds_is_raw_despite_its_extension():
+    """Enabled 2026-09-07 against a real Pokemon Platinum save.
+
+    The extension is the trap here. Delta declares DeSmuME's `.dsv` while
+    running melonDS, and a real `.dsv` carries a trailing `|-DESMUME SAVE-|`
+    footer that would have to be stripped. The file says otherwise: 524,288
+    bytes exactly -- 512 KB, the bare chip size and a power of two, which a
+    footered file cannot be -- with no marker anywhere in it.
+
+    So the extension is a migration leftover, the payload is raw, and the
+    "conversion" is a rename. This test exists to make the claim explicit: if
+    DS is ever found to need a footer after all, this is what has to change.
+    """
+    ds = systems.SYSTEMS["ds"]
+
+    assert "ds" in systems.ENABLED_SYSTEMS
+    assert ds.raw_compatible
+    assert not ds.conversion_note
+    assert ds.delta_save_ext == "dsv"
+    assert ds.retroarch_save_ext == "srm"
+    assert ds.extra_files == ()
+    # melonDS is what Delta runs, so its libretro core is what this was
+    # verified against and what should be preferred.
+    assert ds.retroarch_cores[0] == "melonDS DS"
 
 
 def test_nes_is_a_plain_copy_of_battery_ram():
@@ -57,7 +89,7 @@ def test_every_enabled_system_can_actually_be_played():
 
 def test_the_enabled_set_is_exactly_what_was_verified():
     """Deliberately exact: widening this set is a decision, not a side effect."""
-    assert systems.ENABLED_SYSTEMS == frozenset({"gba", "snes", "gbc", "nes"})
+    assert systems.ENABLED_SYSTEMS == frozenset({"gba", "snes", "gbc", "nes", "ds"})
 
 
 def test_gbc_carries_a_clock_file_that_is_not_synced():
