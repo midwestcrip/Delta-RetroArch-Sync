@@ -27,6 +27,17 @@ class System:
     retroarch_save_ext: str
     #: Extra Delta file identifiers synced alongside the main save.
     extra_files: tuple[str, ...] = ()
+    #: Delta's file identifier for the real-time-clock companion file, and the
+    #: extension RetroArch's core gives the same thing. Empty for systems with
+    #: no clock, which is most of them.
+    delta_clock_id: str = ""
+    retroarch_clock_ext: str = ""
+    #: Cores whose clock file format has been checked against a real file.
+    #: Deliberately separate from ``retroarch_cores``: a core can be perfectly
+    #: fine to play with while storing its clock in a format we have not
+    #: verified, and writing the wrong shape over it would corrupt it. A core
+    #: absent from here plays normally and simply gets no clock sync.
+    clock_cores: tuple[str, ...] = ()
     #: True when a byte-for-byte copy (with a new extension) is sufficient.
     raw_compatible: bool = True
     #: Set for systems we knowingly do not convert yet.
@@ -64,6 +75,13 @@ SYSTEMS: dict[str, System] = {
         retroarch_save_ext="srm",
         # Delta syncs the RTC clock file as a second file on the same record.
         extra_files=("gameTimeSave",),
+        delta_clock_id="gameTimeSave",
+        retroarch_clock_ext="rtc",
+        # Gambatte only. Its .rtc is eight little-endian bytes, verified against
+        # a real file. mGBA's core writes a .rtc of the same name that is a
+        # 48-byte struct, and SameBoy and TGB Dual are unchecked -- so those
+        # play fine and get no clock sync rather than a corrupted one.
+        clock_cores=("Gambatte",),
         raw_compatible=True,
         rom_exts=("gbc", "gb"),
         retroarch_db_name="Nintendo - Game Boy Color",

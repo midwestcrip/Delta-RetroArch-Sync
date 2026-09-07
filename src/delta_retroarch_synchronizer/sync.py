@@ -20,7 +20,7 @@ from enum import Enum
 from pathlib import Path
 
 from . import cheats as cheats_module
-from . import harmony
+from . import clock, harmony
 from . import delta_writer, dropbox_api
 from . import inspect as inspect_module
 from . import manifest as manifest_module
@@ -58,6 +58,12 @@ class Outcome:
     action: Action
     detail: str = ""
     applied: bool = False
+    #: Set when the action was attempted and went wrong, as opposed to being
+    #: declined or left alone. A refusal ("not pushed, no Dropbox auth") is a
+    #: warning; a write that raised is an error, and the log colours them
+    #: differently. Kept structural so the severity cannot drift away from the
+    #: wording of the message.
+    failed: bool = False
 
 
 @dataclass
@@ -295,6 +301,8 @@ def push_with_revision(
     entry: inspect_module.GameEntry,
     source: Path,
     dropbox: "dropbox_api.DropboxClient",
+    *,
+    file_identifier: str = delta_writer.PRIMARY_FILE,
 ) -> str:
     """Push a save, then repair the record to name its real Dropbox revision.
 
@@ -312,10 +320,15 @@ def push_with_revision(
     carries on with what it had. Nothing is left half-applied.
     """
     save_name = harmony.resolve_existing(
-        paths.delta_folder, f"GameSave-{entry.identifier}-gameSave"
+        paths.delta_folder, f"GameSave-{entry.identifier}-{file_identifier}"
     ).name
     delta_writer.push_save(
-        paths.delta_folder, entry.identifier, source, paths.backup_dir, revision=None
+        paths.delta_folder,
+        entry.identifier,
+        source,
+        paths.backup_dir,
+        file_identifier=file_identifier,
+        revision=None,
     )
 
     expected = dropbox_api.content_hash(paths.delta_folder / save_name)
@@ -327,9 +340,171 @@ def push_with_revision(
         entry.identifier,
         source,
         paths.backup_dir,
+        file_identifier=file_identifier,
         revision=revision,
     )
     return f"{note}, revision {revision}"
+
+
+def clock_files(
+    entry: inspect_module.GameEntry, save_target: Path, core_name: str
+) -> tuple[Path, Path] | None:
+    """Delta's and RetroArch's clock files for a game, if both are meaningful.
+
+    Returns None -- meaning "this game has no clock to sync" -- when the system
+    has no clock file at all (every system but Game Boy Color), or when the core
+    in use is not one whose format has been verified. See ``System.clock_cores``.
+    """
+    system = entry.system
+    if system is None or not system.delta_clock_id or not system.retroarch_clock_ext:
+        return None
+    if core_name not in system.clock_cores:
+        return None
+    if entry.save_path is None:
+        return None
+
+    delta_clock = harmony.resolve_existing(
+        entry.save_path.parent, f"GameSave-{entry.identifier}-{system.delta_clock_id}"
+    )
+    retro_clock = clock.retroarch_clock_path(
+        save_target, system.retroarch_clock_ext
+    )
+    return delta_clock, retro_clock
+
+
+def unverified_clock_core(
+    entry: inspect_module.GameEntry, core_name: str
+) -> str | None:
+    """Why a game with a clock is not getting one synced, if that is the case.
+
+    Worth saying out loud rather than silently skipping: the save will carry
+    across perfectly and the in-game date will not, which looks like a bug in
+    the sync rather than a deliberate limit.
+    """
+    system = entry.system
+    if system is None or not system.delta_clock_id:
+        return None
+    if not system.clock_cores or core_name in system.clock_cores:
+        return None
+    return (
+        f"clock not synced: {core_name} stores it in a format this tool has not "
+        f"verified. The save is unaffected. Use "
+        f"{system.clock_cores[0]} for the in-game clock to follow too."
+    )
+
+
+def pull_clock(
+    entry: inspect_module.GameEntry,
+    save_target: Path,
+    core_name: str,
+    backup_dir: Path,
+    *,
+    dry_run: bool = False,
+) -> Outcome | None:
+    """Bring Delta's real-time clock across to RetroArch.
+
+    Only ever called in the same direction as the save it belongs to, and only
+    when the save actually moved. The clock is a reference point paired with the
+    save: writing one without the other makes the emulator measure elapsed time
+    from the wrong instant, and writing an older clock over a newer one would
+    move the in-game date backwards, which Pokemon Crystal notices.
+    """
+    unverified = unverified_clock_core(entry, core_name)
+    if unverified is not None:
+        return Outcome(entry.name, Action.SKIPPED, unverified)
+
+    resolved = clock_files(entry, save_target, core_name)
+    if resolved is None:
+        return None
+    delta_clock, retro_clock = resolved
+    if not delta_clock.is_file():
+        return None
+
+    try:
+        stored = delta_clock.read_bytes()
+        converted = clock.to_retroarch(stored)
+    except (OSError, ValueError) as error:
+        return Outcome(entry.name, Action.SKIPPED, f"clock not synced: {error}")
+
+    if retro_clock.is_file() and retro_clock.read_bytes() == converted:
+        return None
+    if dry_run:
+        return Outcome(entry.name, Action.PULL, f"would write clock to {retro_clock}")
+
+    backup(retro_clock, backup_dir)
+    retro_clock.parent.mkdir(parents=True, exist_ok=True)
+    retro_clock.write_bytes(converted)
+    when = clock.describe(clock.delta_timestamp(stored))
+    return Outcome(
+        entry.name, Action.PULL, f"clock set to {when} (last played in Delta)", applied=True
+    )
+
+
+def push_clock(
+    paths: "Paths",
+    entry: inspect_module.GameEntry,
+    save_target: Path,
+    core_name: str,
+    dropbox: "dropbox_api.DropboxClient | None",
+    *,
+    dry_run: bool = False,
+) -> Outcome | None:
+    """Send RetroArch's real-time clock back to Delta.
+
+    Writes into Delta's folder, so it goes through ``delta_writer`` with the
+    same record handling and revision round-trip the save gets. The clock is a
+    second file on the same record with its own hash and revision.
+    """
+    unverified = unverified_clock_core(entry, core_name)
+    if unverified is not None:
+        return Outcome(entry.name, Action.SKIPPED, unverified)
+
+    resolved = clock_files(entry, save_target, core_name)
+    if resolved is None:
+        return None
+    delta_clock, retro_clock = resolved
+    if not retro_clock.is_file() or not delta_clock.is_file():
+        return None
+
+    try:
+        converted = clock.to_delta(retro_clock.read_bytes())
+    except (OSError, ValueError) as error:
+        return Outcome(entry.name, Action.SKIPPED, f"clock not pushed: {error}")
+
+    if delta_clock.read_bytes() == converted:
+        return None
+    if dry_run:
+        return Outcome(entry.name, Action.PUSH, "would push clock to Delta (dry run)")
+    if dropbox is None:
+        return Outcome(
+            entry.name, Action.PUSH, f"clock not pushed; {delta_writer.REVISION_MUST_BE_REAL}"
+        )
+
+    system = entry.system
+    assert system is not None
+    staged = paths.state_dir / f"{entry.identifier}.{system.delta_clock_id}.staged"
+    try:
+        paths.state_dir.mkdir(parents=True, exist_ok=True)
+        staged.write_bytes(converted)
+        note = push_with_revision(
+            paths, entry, staged, dropbox, file_identifier=system.delta_clock_id
+        )
+    except (OSError, ValueError, dropbox_api.DropboxError) as error:
+        return Outcome(
+            entry.name, Action.PUSH, f"clock FAILED: {error}", failed=True
+        )
+    finally:
+        try:
+            staged.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    return Outcome(
+        entry.name,
+        Action.PUSH,
+        f"clock sent to Delta ({clock.describe(clock.delta_timestamp(converted))}); {note}",
+        applied=True,
+    )
 
 
 def sync_cheats(
@@ -483,7 +658,12 @@ def run_sync(
                 )
             except (OSError, ValueError, dropbox_api.DropboxError) as error:
                 report.outcomes.append(
-                    Outcome(entry.name, Action.PUSH, f"{detail}; FAILED: {error}")
+                    Outcome(
+                        entry.name,
+                        Action.PUSH,
+                        f"{detail}; FAILED: {error}",
+                        failed=True,
+                    )
                 )
                 continue
             state.record(entry.identifier, entry.save_path, target)
@@ -495,6 +675,11 @@ def run_sync(
                     applied=True,
                 )
             )
+            clock_outcome = push_clock(
+                paths, entry, target, core_name, dropbox, dry_run=dry_run
+            )
+            if clock_outcome is not None:
+                report.outcomes.append(clock_outcome)
             continue
 
         if action is not Action.PULL:
@@ -505,6 +690,11 @@ def run_sync(
             report.outcomes.append(
                 Outcome(entry.name, Action.PULL, f"{detail} (dry run)")
             )
+            clock_outcome = pull_clock(
+                entry, target, core_name, paths.backup_dir, dry_run=True
+            )
+            if clock_outcome is not None:
+                report.outcomes.append(clock_outcome)
             continue
 
         assert entry.save_path is not None
@@ -516,6 +706,12 @@ def run_sync(
         if saved is not None:
             note += f" (previous version backed up)"
         report.outcomes.append(Outcome(entry.name, Action.PULL, note, applied=True))
+
+        clock_outcome = pull_clock(
+            entry, target, core_name, paths.backup_dir, dry_run=dry_run
+        )
+        if clock_outcome is not None:
+            report.outcomes.append(clock_outcome)
 
     if not dry_run:
         state.save()
