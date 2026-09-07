@@ -22,9 +22,20 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 SUPERSAMPLE = 8
-#: Sizes Windows actually asks for: Start menu and taskbar use the small ones,
-#: the file browser's large view uses 256.
-SIZES = (256, 128, 64, 48, 32, 16)
+#: Sizes Windows actually asks for.
+#:
+#: The two that matter are GetSystemMetrics(SM_CXSMICON), 16 logical pixels, and
+#: SM_CXICON, 32 -- title bar and taskbar take the first, Alt-Tab and the shell
+#: the second. Both are asked for in *physical* pixels once the process is
+#: DPI-aware, so each display scaling wants a different entry: 20 and 40 at
+#: 125%, 24 and 48 at 150%, 28 and 56 at 175%, 32 and 64 at 200%.
+#:
+#: The set below covers every scaling Windows offers up to 200%. It was
+#: 16/32/48/64/128/256, which meant a 125% display -- the commonest of the lot --
+#: had *neither* size it wanted and Windows enlarged a 16 to 20 and a 32 to 40.
+#: Enlarging an icon is exactly what makes one look soft, and the whole point of
+#: shipping several sizes is that it never has to.
+SIZES = (256, 128, 64, 56, 48, 40, 32, 28, 24, 20, 16)
 
 DELTA_PURPLE = (124, 77, 217, 255)
 DELTA_PURPLE_DARK = (86, 50, 160, 255)

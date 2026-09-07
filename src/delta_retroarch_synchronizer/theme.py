@@ -21,6 +21,8 @@ import tkinter as tk
 from dataclasses import dataclass
 from tkinter import ttk
 
+from . import display
+
 #: How often to re-read the system setting. Cheap on Windows (one registry
 #: read); memoised elsewhere, see system_appearance.
 POLL_MS = 4000
@@ -235,7 +237,7 @@ def apply(root: tk.Misc, palette: Palette) -> None:
         background=palette.surface,
         foreground=palette.ink,
         bordercolor=palette.border,
-        padding=(10, 5),
+        padding=display.pad(10, 5),
     )
     style.map(
         "TButton",
@@ -250,7 +252,7 @@ def apply(root: tk.Misc, palette: Palette) -> None:
         background=palette.accent,
         foreground=palette.accent_ink,
         bordercolor=palette.accent,
-        padding=(10, 9),
+        padding=display.pad(10, 9),
     )
     style.map(
         "Primary.TButton",
@@ -266,7 +268,7 @@ def apply(root: tk.Misc, palette: Palette) -> None:
         background=palette.surface,
         foreground=palette.log_ok,
         bordercolor=palette.log_ok,
-        padding=(10, 5),
+        padding=display.pad(10, 5),
     )
     style.map(
         "Success.TButton",
@@ -274,12 +276,17 @@ def apply(root: tk.Misc, palette: Palette) -> None:
         foreground=[("disabled", palette.muted), ("active", palette.log_ok)],
     )
 
+    # The indicator is drawn by clam at a fixed pixel size that ignores
+    # `tk scaling`, so on a 150% display it stays a 10-pixel box beside
+    # 18-pixel text -- which reads as a rendering fault rather than a style.
     style.configure(
         "TCheckbutton",
         background=palette.window,
         foreground=palette.ink,
         indicatorbackground=palette.field,
         indicatorforeground=palette.accent_ink,
+        indicatorsize=display.px(11),
+        indicatormargin=display.pad(1, 1, 5, 1),
     )
     style.map(
         "TCheckbutton",
@@ -293,7 +300,7 @@ def apply(root: tk.Misc, palette: Palette) -> None:
         foreground=palette.ink,
         bordercolor=palette.border,
         insertcolor=palette.ink,
-        padding=4,
+        padding=display.px(4),
     )
 
     style.configure("TNotebook", background=palette.window, bordercolor=palette.border)
@@ -302,7 +309,7 @@ def apply(root: tk.Misc, palette: Palette) -> None:
         background=palette.surface,
         foreground=palette.muted,
         bordercolor=palette.border,
-        padding=(16, 7),
+        padding=display.pad(16, 7),
     )
     style.map(
         "TNotebook.Tab",
@@ -319,14 +326,14 @@ def apply(root: tk.Misc, palette: Palette) -> None:
         fieldbackground=palette.field,
         foreground=palette.ink,
         bordercolor=palette.border,
-        rowheight=22,
+        rowheight=display.px(22),
     )
     style.configure(
         "Treeview.Heading",
         background=palette.surface,
         foreground=palette.muted,
         bordercolor=palette.border,
-        padding=(6, 4),
+        padding=display.pad(6, 4),
     )
     style.map(
         "Treeview",

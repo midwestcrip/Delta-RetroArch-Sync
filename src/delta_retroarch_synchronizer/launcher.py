@@ -33,7 +33,7 @@ from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 from typing import Any
 
 from . import config as config_module
-from . import delta_writer, discovery, dropbox_api, guide, health, paths
+from . import delta_writer, discovery, display, dropbox_api, guide, health, paths
 from . import processes, restore
 from . import shortcut as shortcut_module
 from . import theme
@@ -204,6 +204,9 @@ class Tooltip:
     """
 
     DELAY_MS = 450
+    #: A 96-DPI width, so it goes through display.px like every other pixel
+    #: dimension -- unscaled, a tooltip on a 150% display wraps at two thirds
+    #: the intended line length and comes out a tall narrow ribbon.
     WRAP_PIXELS = 340
 
     def __init__(self, widget: tk.Widget, text: str) -> None:
@@ -234,8 +237,8 @@ class Tooltip:
         if self.tip is not None:
             return
         try:
-            x = self.widget.winfo_pointerx() + 14
-            y = self.widget.winfo_pointery() + 20
+            x = self.widget.winfo_pointerx() + display.px(14)
+            y = self.widget.winfo_pointery() + display.px(20)
             screen_w = self.widget.winfo_screenwidth()
             screen_h = self.widget.winfo_screenheight()
         except tk.TclError:
@@ -251,13 +254,13 @@ class Tooltip:
             tip,
             text=self.text,
             justify="left",
-            wraplength=self.WRAP_PIXELS,
+            wraplength=display.px(self.WRAP_PIXELS),
             background=palette.tip_bg,
             foreground=palette.tip_fg,
             relief="solid",
             borderwidth=1,
-            padx=8,
-            pady=6,
+            padx=display.px(8),
+            pady=display.px(6),
         ).pack()
 
         # A tooltip opened near the right or bottom edge would otherwise be cut
@@ -265,10 +268,11 @@ class Tooltip:
         tip.update_idletasks()
         width = tip.winfo_reqwidth()
         height = tip.winfo_reqheight()
-        x = min(x, screen_w - width - 8)
-        if y + height > screen_h - 8:
-            y = self.widget.winfo_pointery() - height - 12
-        tip.wm_geometry(f"+{max(8, x)}+{max(8, y)}")
+        margin = display.px(8)
+        x = min(x, screen_w - width - margin)
+        if y + height > screen_h - margin:
+            y = self.widget.winfo_pointery() - height - display.px(12)
+        tip.wm_geometry(f"+{max(margin, x)}+{max(margin, y)}")
         self.tip = tip
 
     def _hide(self, _event: object = None) -> None:
@@ -346,14 +350,26 @@ class LauncherWindow:
         root.title(WINDOW_TITLE)
         root.resizable(False, False)
 
+        # Before any widget is built: everything below is sized from this.
+        display.adopt(root)
+
         # Gives the window its own taskbar and title-bar icon instead of the
         # generic Python feather.
+        #
+        # Two calls, not one. iconbitmap is what Tk offers and what the title
+        # bar and Alt-Tab read, but it hands Windows the whole .ico and lets it
+        # choose, which on a scaled display means taking the 32-pixel entry and
+        # enlarging it to the 48 the taskbar wants. set_window_icon then asks
+        # for each size explicitly, so the matching entry is used and nothing is
+        # stretched.
         icon = paths.resource_dir() / "assets" / "synchronizer.ico"
         if icon.is_file():
             try:
                 root.iconbitmap(default=str(icon))
             except tk.TclError:
                 pass
+            root.update_idletasks()  # the window must exist to receive WM_SETICON
+            display.set_window_icon(root, icon)
 
         self.delta_var = tk.StringVar(value=str(self.config.delta_folder or ""))
         self.exe_var = tk.StringVar(value=str(self.config.retroarch_exe or ""))
@@ -402,7 +418,7 @@ class LauncherWindow:
         self.root.rowconfigure(0, weight=1)
         self.root.columnconfigure(0, weight=1)
 
-        outer = ttk.Frame(self.root, padding=8)
+        outer = ttk.Frame(self.root, padding=display.px(8))
         outer.grid(sticky="nsew")
         outer.rowconfigure(0, weight=1)
         outer.columnconfigure(0, weight=1)
@@ -413,9 +429,9 @@ class LauncherWindow:
         notebook = self.tabs = ttk.Notebook(outer)
         notebook.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
 
-        sync_tab = ttk.Frame(notebook, padding=8)
-        backups_tab = ttk.Frame(notebook, padding=8)
-        settings_tab = ttk.Frame(notebook, padding=8)
+        sync_tab = ttk.Frame(notebook, padding=display.px(8))
+        backups_tab = ttk.Frame(notebook, padding=display.px(8))
+        settings_tab = ttk.Frame(notebook, padding=display.px(8))
         notebook.add(sync_tab, text="   Sync   ")
         notebook.add(backups_tab, text="   Backups   ")
         notebook.add(settings_tab, text="   Settings   ")
@@ -439,7 +455,7 @@ class LauncherWindow:
 
         self.log = tk.Text(
             parent, height=14, width=82, wrap="word",
-            font=("Consolas", 10), padx=8, pady=6,
+            font=("Consolas", 10), padx=display.px(8), pady=display.px(6),
         )
         self.log.configure(state="disabled", relief="flat")
         self.log.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
@@ -486,7 +502,7 @@ class LauncherWindow:
                 "restore is itself backed up first, so this is undoable."
             ),
             style="Muted.TLabel",
-            wraplength=620,
+            wraplength=display.px(620),
             justify="left",
         ).grid(row=0, column=0, sticky="w", pady=(0, 6))
 
@@ -541,7 +557,7 @@ class LauncherWindow:
         ).grid(row=0, column=0, sticky="w", pady=(0, 6))
 
         # Not named `paths`: that shadows the paths module this file imports.
-        path_frame = ttk.LabelFrame(parent, text="Paths", padding=6)
+        path_frame = ttk.LabelFrame(parent, text="Paths", padding=display.px(6))
         path_frame.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         path_frame.columnconfigure(1, weight=1)
 
@@ -558,7 +574,9 @@ class LauncherWindow:
             directory=True, help_key="rom_dir",
         )
 
-        options = ttk.LabelFrame(parent, text="Sync options", padding=6)
+        options = ttk.LabelFrame(
+            parent, text="Sync options", padding=display.px(6)
+        )
         options.grid(row=2, column=0, sticky="ew", pady=(0, 6))
 
         self._option_row(
@@ -700,6 +718,14 @@ class LauncherWindow:
         self.write(f"Delta folder : {delta or 'not found'}")
         self.write(f"RetroArch    : {exe or 'not found'}")
         self._refresh_dropbox_label()
+        # Only when it failed. Working correctly is not news, and a line about
+        # display scaling in a log about saves would be noise every single run.
+        if display.on_windows() and display.awareness() == "unavailable":
+            self.write(
+                "Note: this Windows could not be told about display scaling, "
+                "so the window may look soft. Nothing else is affected.",
+                "muted",
+            )
         if delta and exe:
             self.write("Ready. Press Sync and Play.", "ok")
             if self.config.sync_on_open:
@@ -773,14 +799,15 @@ class LauncherWindow:
         window.rowconfigure(0, weight=1)
         window.columnconfigure(0, weight=1)
 
-        frame = ttk.Frame(window, padding=10)
+        frame = ttk.Frame(window, padding=display.px(10))
         frame.grid(row=0, column=0, sticky="nsew")
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
 
         text = tk.Text(
             frame, width=72, height=22, wrap="word",
-            font=("Segoe UI", 10), padx=12, pady=10, relief="flat",
+            font=("Segoe UI", 10),
+            padx=display.px(12), pady=display.px(10), relief="flat",
         )
         text.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
@@ -823,18 +850,23 @@ class LauncherWindow:
         )
         text.tag_configure(
             "step", foreground=palette.ink, font=("Segoe UI", 10, "bold"),
-            spacing1=10, spacing3=2,
+            spacing1=display.px(10), spacing3=display.px(2),
         )
         text.tag_configure("done", foreground=palette.log_ok)
         text.tag_configure("todo", foreground=palette.log_warn)
+        indent = display.px(22)
         text.tag_configure(
-            "body", foreground=palette.log_fg, lmargin1=22, lmargin2=22, spacing3=4
+            "body", foreground=palette.log_fg,
+            lmargin1=indent, lmargin2=indent, spacing3=display.px(4),
+        )
+        note_indent = display.px(12)
+        text.tag_configure(
+            "note", foreground=palette.log_muted,
+            lmargin1=note_indent, lmargin2=note_indent, spacing3=display.px(6),
         )
         text.tag_configure(
-            "note", foreground=palette.log_muted, lmargin1=12, lmargin2=12, spacing3=6
-        )
-        text.tag_configure(
-            "title", foreground=palette.ink, font=("Segoe UI", 12, "bold"), spacing3=8
+            "title", foreground=palette.ink, font=("Segoe UI", 12, "bold"),
+            spacing3=display.px(8),
         )
 
     def _fill_instructions(self) -> None:
@@ -1197,11 +1229,14 @@ class LauncherWindow:
                 widths[key] = max(widths[key], row_font.measure(str(value)))
 
         # Cell padding Tk adds either side of the text, plus a little air.
-        padding = 18
+        # The measurements themselves already come back in real pixels, because
+        # tkfont measures the font as drawn; only these two constants are
+        # 96-DPI numbers.
+        padding = display.px(18)
         for key in headings:
             width = widths[key] + padding
             if key == "game":
-                width = min(width, 260)
+                width = min(width, display.px(260))
             self.backup_list.column(key, width=width, minwidth=width)
 
     def _selected_point(self) -> "restore.RestorePoint | None":
@@ -1701,6 +1736,13 @@ class LauncherWindow:
 
 
 def main() -> int:
+    # Before tk.Tk(), and it cannot be moved: Windows fixes a process's DPI
+    # awareness when its first window is created, and ignores it afterwards.
+    display.make_process_aware()
+    # Without an explicit identity a Python-hosted window is grouped on the
+    # taskbar under pythonw.exe and shows its icon, whatever icon we set here.
+    display.set_app_id("midwestcrip.DeltaRetroArchSynchronizer")
+
     root = tk.Tk()
     try:
         root.call("tk", "scaling", 1.25)
