@@ -697,8 +697,8 @@ class LauncherWindow:
         self.write(f"{WINDOW_TITLE}", "heading")
         delta = self.config.delta_folder
         exe = self.config.retroarch_exe
-        self.write(f"Delta folder : {delta or 'not found — set it below'}")
-        self.write(f"RetroArch    : {exe or 'not found — set it below'}")
+        self.write(f"Delta folder : {delta or 'not found'}")
+        self.write(f"RetroArch    : {exe or 'not found'}")
         self._refresh_dropbox_label()
         if delta and exe:
             self.write("Ready. Press Sync and Play.", "ok")
@@ -1372,6 +1372,10 @@ class LauncherWindow:
                 break
             if kind == "log":
                 self.write(text, level)
+            elif kind == "paths":
+                self.delta_var.set(str(self.config.delta_folder or ""))
+                self.exe_var.set(str(self.config.retroarch_exe or ""))
+                self.rom_var.set(str(self.config.retroarch_rom_dir or ""))
             elif kind == "window":
                 # Driven through the queue like everything else: this is asked
                 # for from the worker thread, and Tk is not safe to touch from
@@ -1424,8 +1428,52 @@ class LauncherWindow:
         # push blocked for want of Dropbox authorisation.
         return "ok" if outcome.applied else "warn"
 
+    def _rediscover(self) -> bool:
+        """Run discovery again, and tell the window if anything turned up.
+
+        Without this, Check status could never recover from a problem being
+        fixed: the paths were resolved once when the window opened, so someone
+        who read "Dropbox is installed but not signed in", signed in, and
+        pressed the button was told the same thing again -- and restarting the
+        program was the only way through. That is exactly the sequence the
+        empty state asks the user to follow.
+
+        The entry fields have to be updated too, not just the config: the next
+        action reads its paths back out of them, so leaving them empty would
+        throw away what was just found.
+        """
+        before = (
+            self.config.delta_folder,
+            self.config.retroarch_config,
+            self.config.retroarch_exe,
+        )
+        self._fill_in_discovered_paths()
+        after = (
+            self.config.delta_folder,
+            self.config.retroarch_config,
+            self.config.retroarch_exe,
+        )
+        if before == after:
+            return False
+        self.messages.put(("paths", "", ""))
+        return True
+
     def _prepare(self) -> tuple[sync_module.Paths, list, str, bool, Path, Path] | None:
         config = self.config
+        missing = (
+            config.delta_folder is None
+            or not config.delta_folder.is_dir()
+            or config.retroarch_config is None
+            or not config.retroarch_config.is_file()
+        )
+        if missing and self._rediscover():
+            config = self.config
+            self._say("Found something that was not there before:", "ok")
+            if config.delta_folder is not None:
+                self._say(f"  Delta folder : {config.delta_folder}", "ok")
+            if config.retroarch_exe is not None:
+                self._say(f"  RetroArch    : {config.retroarch_exe}", "ok")
+
         if config.delta_folder is None or not config.delta_folder.is_dir():
             # "Delta folder not set or missing" was all Check status said, which
             # the third naive-user test called out by name: the one button that
@@ -1470,6 +1518,12 @@ class LauncherWindow:
         return paths, entries, installed, sorted_by_core, cheat_dir, playlist_dir
 
     def _status_work(self) -> None:
+        # A heading, because this is a new reading rather than more of the same
+        # log. Without one, pressing Check status straight after opening the
+        # window looks like the startup report simply repeating itself -- which
+        # is what the third naive-user test saw.
+        self._say("")
+        self._say("--- Status ---", "heading")
         prepared = self._prepare()
         if prepared is None:
             return
