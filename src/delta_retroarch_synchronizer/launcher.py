@@ -35,6 +35,7 @@ from typing import Any
 from . import config as config_module
 from . import delta_writer, discovery, display, dropbox_api, guide, health, paths
 from . import processes, restore
+from . import tray as tray_module
 from . import shortcut as shortcut_module
 from . import theme
 from . import inspect as inspect_module
@@ -341,6 +342,17 @@ class LauncherWindow:
 
         self.config = config_module.load()
         self.discovery_notes: list[str] = []
+        #: Shown only while RetroArch has the screen. Clicking it, or
+        #: RetroArch closing, brings the window back.
+        self.tray = tray_module.TrayIcon(
+            paths.resource_dir() / "assets" / "synchronizer.ico",
+            f"{WINDOW_TITLE} — RetroArch is running",
+            self._come_back,
+        )
+        #: True while the window is hidden rather than merely minimised, so the
+        #: two ways back (the icon, and RetroArch exiting) do not fight.
+        self.in_tray = False
+
         #: The setup window, while it is open. One at a time.
         self.instructions: tk.Toplevel | None = None
         self.instructions_text: tk.Text | None = None
@@ -1413,13 +1425,13 @@ class LauncherWindow:
                 self.rom_var.set(str(self.config.retroarch_rom_dir or ""))
             elif kind == "window":
                 # Driven through the queue like everything else: this is asked
-                # for from the worker thread, and Tk is not safe to touch from
-                # anywhere but the thread that made it.
-                if text == "iconify":
-                    self.root.iconify()
+                # for from the worker thread and from the tray icon's own
+                # thread, and Tk is not safe to touch from anywhere but the
+                # thread that made it.
+                if text == "hide":
+                    self._hide_to_tray()
                 else:
-                    self.root.deiconify()
-                    self.root.lift()
+                    self._show_from_tray()
             elif kind == "done":
                 self.busy = False
                 self.play_button.configure(state="normal")
@@ -1434,17 +1446,40 @@ class LauncherWindow:
         self.messages.put(("log", text, level))
 
     def _get_out_of_the_way(self) -> None:
-        """Minimise while RetroArch has the screen.
-
-        The third naive-user test asked for the system tray. Tk has no tray of
-        its own and reaching one means a dependency this project does not have,
-        so it minimises to the taskbar instead -- the same gesture, nothing
-        added.
-        """
-        self.messages.put(("window", "iconify", ""))
+        """Ask the window to leave the screen while RetroArch has it."""
+        self.messages.put(("window", "hide", ""))
 
     def _come_back(self) -> None:
-        self.messages.put(("window", "deiconify", ""))
+        """Ask for it back. Called from the worker thread when RetroArch
+        exits, and from the tray icon's thread when the icon is clicked."""
+        self.messages.put(("window", "show", ""))
+
+    def _hide_to_tray(self) -> None:
+        """Out of the way properly: off the taskbar, into the notification area.
+
+        The first attempt minimised, and the user's objection was exact -- a
+        minimised window still holds a taskbar button, which is the thing they
+        wanted gone. ``withdraw`` removes it, but only the tray icon makes that
+        safe: a withdrawn window with nothing to click is a program that cannot
+        be reached.
+
+        So the icon goes up first and the window is only hidden if that worked.
+        Minimising is the fallback, because a taskbar button is a far better
+        failure than a vanished program.
+        """
+        if self.tray.show():
+            self.root.withdraw()
+            self.in_tray = True
+        else:
+            self.root.iconify()
+            self.in_tray = False
+
+    def _show_from_tray(self) -> None:
+        self.tray.hide()
+        self.in_tray = False
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
 
     @staticmethod
     def _level_for(outcome: "sync_module.Outcome") -> str:
@@ -1692,25 +1727,31 @@ class LauncherWindow:
             return
 
         # Looked for before the sync so the answer is not buried under the
-        # sync's own output.
-        already_open = processes.find_running(exe)
+        # sync's own output. By name, not by the configured path: this machine
+        # carries retroarch.exe at two locations, config named one, the user had
+        # started the other, and a second copy opened anyway.
+        running = processes.find_by_name(exe.name)
 
         self._sync_once("Sync before playing")
 
-        if already_open is not None:
-            # Pressing this with RetroArch already open used to start a second
-            # copy. Attaching is better than refusing: the point of the button
-            # is the sync that happens after the game closes, and that works
-            # just as well on a window this program did not open. It also
-            # answers the question the third test asked next -- what happens to
-            # saves when RetroArch is started some other way.
+        if running:
+            # Attaching rather than merely refusing: the point of the button is
+            # the sync that happens after the game closes, and that works just
+            # as well on a window this program did not open. It also answers
+            # what happens to saves when RetroArch is started some other way.
+            where = sorted({str(path) for _pid, path in running})
             self._say(
-                "RetroArch is already open, so a second copy will not be "
-                "started. Waiting for that window to close.",
-                "muted",
+                f"RetroArch is already running, so a second copy will not be "
+                f"started. Waiting for it to close.",
+                "warn",
             )
+            for path in where:
+                self._say(f"    {path}", "muted")
             self._get_out_of_the_way()
-            processes.wait_for_exit(already_open)
+            # All of them. Two emulators writing saves for the same games is
+            # the state this is here to avoid, so the sync waits for the last.
+            for pid, _path in running:
+                processes.wait_for_exit(pid)
             self._come_back()
             self._say("RetroArch closed.", "muted")
         else:
@@ -1744,10 +1785,14 @@ def main() -> int:
     display.set_app_id("midwestcrip.DeltaRetroArchSynchronizer")
 
     root = tk.Tk()
+    # A fixed `tk scaling` of 1.25 used to be set here. display.adopt now works
+    # the factor out from the display and sets it, so a constant guess is at
+    # best redundant and at worst fights the real number.
+    window = LauncherWindow(root)
     try:
-        root.call("tk", "scaling", 1.25)
-    except tk.TclError:
-        pass
-    LauncherWindow(root)
-    root.mainloop()
+        root.mainloop()
+    finally:
+        # An icon left in the notification area after the program exits is the
+        # classic tray bug -- Windows only reaps it when someone hovers over it.
+        window.tray.hide()
     return 0

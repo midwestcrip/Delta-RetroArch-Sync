@@ -98,31 +98,44 @@ def image_path(pid: int) -> Path | None:
         kernel32.CloseHandle(handle)
 
 
-def find_running(executable: Path) -> int | None:
-    """The process id of a running copy of exactly this executable.
+def find_by_name(name: str) -> list[tuple[int, Path]]:
+    """Every running process with this executable name, wherever it lives.
 
-    Matched on the full path, not the file name. Someone with a portable
-    RetroArch beside an installed one has two different programs sharing a name,
-    and attaching to the wrong one would wait on a window the user is not
-    playing in.
+    By name and not by path, which was the first version's mistake. It matched
+    the *configured* executable's full path, on the reasoning that a portable
+    RetroArch beside an installed one is two different programs sharing a name
+    and attaching to the wrong one would wait on a window nobody is playing in.
+
+    True, and beside the point. This machine has retroarch.exe at both
+    ``C:/RetroArch-Win64`` and ``C:/Media/Games/Emulators/RetroArch``; config
+    named one, the user had started the other, the match failed, and a second
+    RetroArch opened -- the exact fault the check exists to prevent. Worse, the
+    program then waited on the copy *it* had started, so closing the one being
+    played never brought the window back.
+
+    Two copies of an emulator writing saves for the same games is a bad state
+    whatever their paths, so any of them is reason enough not to start another.
     """
     if not supported():
-        return None
-    try:
-        wanted = executable.resolve()
-    except OSError:
-        wanted = executable
+        return []
 
+    wanted = name.lower()
+    found: list[tuple[int, Path]] = []
     for pid in process_ids():
-        found = image_path(pid)
-        if found is None or found.name.lower() != wanted.name.lower():
-            continue
-        try:
-            if found.resolve() == wanted:
-                return pid
-        except OSError:  # pragma: no cover -- a path that vanished mid-scan
-            continue
-    return None
+        path = image_path(pid)
+        if path is not None and path.name.lower() == wanted:
+            found.append((pid, path))
+    return found
+
+
+def find_running(executable: Path) -> int | None:
+    """The process id of a running copy of this executable, by name.
+
+    The path is used only to take the name from; see :func:`find_by_name` for
+    why matching the whole path was wrong.
+    """
+    running = find_by_name(executable.name)
+    return running[0][0] if running else None
 
 
 def wait_for_exit(pid: int, *, timeout_ms: int = 0xFFFFFFFF) -> bool:
