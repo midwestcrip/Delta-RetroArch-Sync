@@ -76,6 +76,16 @@ REVISION_MUST_BE_REAL = (
     "`delta-retroarch-sync auth` once to enable it"
 )
 
+#: A GameSave record can carry more than one file. Game Boy Color records carry
+#: two: the battery save and a four-byte real-time-clock file.
+#:
+#: ``record.sha1`` describes *this* one and no other -- verified against a real
+#: Crystal record, whose ``record.sha1`` equals the ``gameSave`` entry's hash
+#: while the ``gameTimeSave`` entry carries its own. So writing a secondary file
+#: must leave ``record.sha1`` alone; setting it to the clock's hash would tell
+#: Delta the battery save had changed into a four-byte file.
+PRIMARY_FILE = "gameSave"
+
 
 def encode_for_hashing(payload: dict[str, Any]) -> bytes:
     """Reproduce Swift's ``JSONEncoder`` output for the hashing pass.
@@ -209,12 +219,19 @@ def push_save(
     # after our own first push the stored value deliberately no longer describes
     # the contents. What is still a real invariant, and covers the fields this
     # function actually edits, is that the record agrees with the save beside it.
-    on_disk = sha1_of(save_path) if save_path.is_file() else None
+    #
+    # Checked against the *primary* save whichever file is being written, because
+    # that is what record.sha1 describes. Comparing it against a secondary file
+    # would make every clock push look like a corrupt record.
+    primary_path = resolve_existing(
+        delta_folder, f"GameSave-{identifier}-{PRIMARY_FILE}"
+    )
+    on_disk = sha1_of(primary_path) if primary_path.is_file() else None
     stated = raw.get("record", {}).get("sha1") if isinstance(raw.get("record"), dict) else None
     if on_disk is not None and stated != on_disk:
         raise ValueError(
             f"{record_path.name} says the save is {stated} but "
-            f"{save_path.name} is {on_disk}; refusing to push onto a record "
+            f"{primary_path.name} is {on_disk}; refusing to push onto a record "
             "that is already inconsistent -- run doctor first"
         )
 
@@ -279,7 +296,10 @@ def push_save(
         file_entry["versionIdentifier"] = revision
 
     record_fields = raw.setdefault("record", {})
-    record_fields["sha1"] = new_hash
+    # Only the primary file is described by record.sha1 -- see PRIMARY_FILE. The
+    # modified date is bumped either way, because the record did change.
+    if file_identifier == PRIMARY_FILE:
+        record_fields["sha1"] = new_hash
     record_fields["modifiedDate"] = unix_to_apple(datetime.now(timezone.utc).timestamp())
 
     # Deliberately unchanged. Recomputing it here is what made Delta ask the
@@ -300,11 +320,14 @@ def push_save(
         ),
         None,
     )
+    expected_record_sha1 = (
+        new_hash if file_identifier == PRIMARY_FILE else record_fields.get("sha1")
+    )
     if (
         written.get("sha1Hash") != preserved_hash
         or written_entry is None
         or written_entry.get("sha1Hash") != new_hash
-        or written.get("record", {}).get("sha1") != new_hash
+        or written.get("record", {}).get("sha1") != expected_record_sha1
     ):
         raise OSError(
             f"{record_path.name} did not verify after writing; "

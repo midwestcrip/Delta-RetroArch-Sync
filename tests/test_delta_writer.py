@@ -305,3 +305,135 @@ class FilenameCasingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SecondaryFileTests(unittest.TestCase):
+    """Pushing a file that is not the record's primary save.
+
+    Game Boy Color records carry two files: the battery save and a four-byte
+    real-time clock. They share a record but not a hash -- ``record.sha1``
+    describes the save and nothing else, verified against a real Crystal record
+    whose ``record.sha1`` equals its ``gameSave`` entry while ``gameTimeSave``
+    carries its own.
+
+    Before this was handled, pushing the clock would have set ``record.sha1`` to
+    the clock's hash -- telling Delta the 32KB battery save had become four
+    bytes. It failed closed rather than doing that, because the preflight
+    compared ``record.sha1`` against whichever file was being written, so a
+    clock push always looked like an inconsistent record.
+    """
+
+    CLOCK = bytes.fromhex("6a9dcb79")
+    NEW_CLOCK = bytes.fromhex("6a9dcc00")
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.delta = self.root / "Delta Emulator"
+        self.delta.mkdir()
+        self.backups = self.root / "backups"
+
+        self.record_path = self.delta / f"GameSave-{GAME_SHA1}"
+        self.save_path = self.delta / f"GameSave-{GAME_SHA1}-gameSave"
+        self.save_hash = seed_consistent_record(self.record_path, self.save_path)
+
+        # Add the clock as a second file, exactly as a real GBC record has it.
+        self.clock_path = self.delta / f"GameSave-{GAME_SHA1}-gameTimeSave"
+        self.clock_path.write_bytes(self.CLOCK)
+        raw = json.loads(self.record_path.read_text(encoding="utf-8"))
+        raw["files"].append(
+            {
+                "versionIdentifier": "aaaaaaaaaaaaaaaaaaaaa",
+                "remoteIdentifier": f"/delta emulator/gamesave-{GAME_SHA1}-gametimesave",
+                "size": 4,
+                "identifier": "gameTimeSave",
+                "sha1Hash": hashlib.sha1(self.CLOCK).hexdigest(),
+            }
+        )
+        self.record_path.write_text(
+            json.dumps(raw, separators=(",", ":")), encoding="utf-8"
+        )
+        self.preserved = raw["sha1Hash"]
+        self.primary_sha1 = raw["record"]["sha1"]
+
+        self.source = self.root / "new.rtc"
+        self.source.write_bytes(self.NEW_CLOCK)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def push_clock(self, revision: str | None = "bbbbbbbbbbbbbbbbbbbbb") -> str:
+        return delta_writer.push_save(
+            self.delta,
+            GAME_SHA1,
+            self.source,
+            self.backups,
+            file_identifier="gameTimeSave",
+            revision=revision,
+        )
+
+    def test_pushing_the_clock_writes_only_the_clock(self) -> None:
+        self.push_clock()
+
+        self.assertEqual(self.clock_path.read_bytes(), self.NEW_CLOCK)
+        self.assertEqual(len(self.save_path.read_bytes()), 131072)
+
+    def test_the_records_save_hash_is_left_alone(self) -> None:
+        """The battery save did not change, so record.sha1 must not either."""
+        self.push_clock()
+        raw = json.loads(self.record_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(raw["record"]["sha1"], self.primary_sha1)
+
+    def test_the_clocks_own_entry_is_updated(self) -> None:
+        self.push_clock()
+        raw = json.loads(self.record_path.read_text(encoding="utf-8"))
+
+        entry = next(f for f in raw["files"] if f["identifier"] == "gameTimeSave")
+        self.assertEqual(entry["sha1Hash"], hashlib.sha1(self.NEW_CLOCK).hexdigest())
+        self.assertEqual(entry["size"], 4)
+        self.assertEqual(entry["versionIdentifier"], "bbbbbbbbbbbbbbbbbbbbb")
+
+    def test_the_saves_entry_is_untouched(self) -> None:
+        self.push_clock()
+        raw = json.loads(self.record_path.read_text(encoding="utf-8"))
+
+        entry = next(f for f in raw["files"] if f["identifier"] == "gameSave")
+        self.assertEqual(entry["sha1Hash"], self.primary_sha1)
+        self.assertEqual(entry["size"], 131072)
+
+    def test_the_top_level_hash_is_still_preserved(self) -> None:
+        """The rule that stops Delta conflicting applies to every file."""
+        self.push_clock()
+        raw = json.loads(self.record_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(raw["sha1Hash"], self.preserved)
+
+    def test_the_modified_date_still_moves(self) -> None:
+        before = json.loads(self.record_path.read_text(encoding="utf-8"))
+        self.push_clock()
+        after = json.loads(self.record_path.read_text(encoding="utf-8"))
+
+        self.assertGreater(
+            after["record"]["modifiedDate"], before["record"]["modifiedDate"]
+        )
+
+    def test_a_clock_of_the_wrong_size_is_refused(self) -> None:
+        """The size guard covers every file on the record, not just the save."""
+        self.source.write_bytes(b"\x00" * 8)
+
+        with self.assertRaises(ValueError) as caught:
+            self.push_clock()
+
+        self.assertIn("changed format", str(caught.exception))
+        self.assertEqual(self.clock_path.read_bytes(), self.CLOCK)
+
+    def test_a_record_inconsistent_with_its_save_still_blocks_a_clock_push(self) -> None:
+        """The preflight must keep checking the save, not the file being written."""
+        self.save_path.write_bytes(b"\x01" * 131072)
+
+        with self.assertRaises(ValueError) as caught:
+            self.push_clock()
+
+        self.assertIn("refusing to push", str(caught.exception))
+        self.assertEqual(self.clock_path.read_bytes(), self.CLOCK)
