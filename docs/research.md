@@ -215,6 +215,35 @@ Delta's copy) at `saves/melonDS DS/Pokémon - Platinum Version.srm`.
 
 The RetroArch → Delta direction has not yet been checked on device.
 
+### The clock base barely ever moves, and Crystal does not move it
+
+Gambatte stores `baseTime_` — the instant the cartridge clock read zero — and
+derives the live clock as `std::time(0) - baseTime_` (`Rtc::doLatch`). Two
+consequences, both established the hard way on 2026-09-07:
+
+**Fast-forward cannot advance it.** It counts real seconds. Speeding up the CPU
+does nothing, on hardware or in any emulator. An in-game clock that "did not
+move" during fast-forward is correct behaviour, not a sync failure.
+
+**Setting the in-game time does not move the base either.** `baseTime_` changes
+only in `setDh`/`setDl`/`setH`/`setM`/`setS` — the game writing the MBC3 RTC
+registers — or on the 511-day overflow. Pokémon Crystal evidently does not write
+them: a new game was started in RetroArch with the time set (player name
+`TESTBOY` → `TESTGAL`, confirmed in both the primary and backup save copies),
+RetroArch rewrote the `.rtc` afterwards, and the base was **unchanged**. Crystal
+keeps its own time reference in the save's own data instead.
+
+So the in-game time travels **inside the battery save**, which already syncs.
+The `.rtc` is a separate, near-static reference whose only job is to keep both
+machines counting from the same instant — which matters, because Gambatte's
+constructor sets `baseTime_(0)`, and a machine with no `.rtc` would compute an
+elapsed time measured in decades.
+
+The practical upshot: the clock *pull* is what carries the value, and it has run.
+The clock *push* is correct but close to unreachable through normal play — it
+compares, finds both sides identical, and declines. `doctor` reports whether the
+two sides agree, which is the only thing here that can be silently wrong.
+
 ### N64 — needs real conversion
 
 RetroArch's mupen64plus-next writes a single ~290 KB `.srm` packing EEPROM,
