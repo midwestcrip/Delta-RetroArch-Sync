@@ -484,3 +484,173 @@ folder is therefore treated as strictly read-only by this tool.
 - <https://github.com/drehren/ra_mp64_srm_convert>
 - <https://github.com/JesseTG/melonds-ds/discussions/168>
 - <https://forums.desmume.org/viewtopic.php?id=1678>
+
+
+---
+
+## Five questions revisited, 2026-09-07
+
+Four of these had been recorded as settled. Two of the four were wrong, and one
+of the "impossible" ones turns out to be a version problem rather than a wall.
+
+### 1. Creating cheats: still impossible, now confirmed from Dropbox's side
+
+Previously argued from Delta's source alone. Dropbox's own API spec closes it
+independently: templates "are owned either by a user/app pair or team/app pair"
+and "can't be accessed by any app other than the app that created them". So the
+`Harmony` template belongs to Delta's app registration and no scope on our app
+key can reach it -- `files.metadata.write` writes properties, but only under a
+template we own, and Harmony reads Delta's.
+
+Unchanged conclusion, now with two independent proofs instead of one. The
+placeholder workaround above is still the only route.
+
+Worth watching: Delta has begun adding **sanctioned URL-scheme hooks**
+(`delta://gameInfo`, the Library Export toggle). None of them touch cheats, but
+the existence of that surface is the first sign of a supported way in.
+
+### 2. Controller Pak over USB: buildable, and the cost is a dependency
+
+The `.mpk` files are reachable without a jailbreak. Delta's `Info.plist` sets
+`UIFileSharingEnabled`, which is exactly the flag that exposes an app's
+`Documents/` over **AFC** (Apple File Conduit), and the paks live at
+`Documents/Cores/Mupen64Plus/Saves/`.
+
+**pymobiledevice3** is a pure-Python 3 implementation that runs on Windows and
+provides `HouseArrestService`, which opens an AFC channel scoped to a single
+bundle's container, with a `documents_only` flag that limits it to exactly the
+directory we want. Read and write both.
+
+What it would cost:
+
+- **A third-party dependency**, which this project currently does not have at
+  all. That is the real price, not the code.
+- **Apple's usbmux service on Windows**, which arrives with iTunes or the Apple
+  Devices app. pymobiledevice3 is pure Python but the transport is not: it talks
+  to Apple's driver. A user without iTunes cannot use the feature.
+- **A USB cable and a trusted pairing.** Nothing works over Dropbox; this is a
+  wholly separate transport from everything else the tool does.
+- **A device-present model.** Every other operation here works against a folder
+  on disk whether or not the phone is nearby. This one would not.
+
+So it is not blocked, it is *expensive*, and the expense is architectural rather
+than technical. Recorded as a decision to take deliberately, not a gap to close
+by default.
+
+**A cheaper prize sits next to it.** Standalone mupen64plus (and Project64)
+write **separate** `.eep` / `.sra` / `.fla` / `.mpk1-4` files -- which is exactly
+the shape Delta stores. Only RetroArch's core packs them into one 296,960-byte
+`.srm`. So for a standalone N64 emulator there is no conversion to do at all,
+and Controller Paks would be plain file copies *if* they could be fetched.
+
+### 3. Save states: NOT a proprietary format. A version lock.
+
+This was recorded as impossible on the strength of `syncableKeys` carrying
+`coreIdentifier` and `coreVersion`, plus Delta's user-facing FAQ ("Delta save
+states and cheat files are only compatible with Delta"). The FAQ is a
+simplification and the conclusion drawn from it was too strong.
+
+A `.svs` for DS **is a melonDS save state**, byte for byte, with no Delta
+wrapper. Reverse-engineered and implemented in `lautixhx/svs-sav-converter`:
+
+```
+MELN                16-byte header
+<4-byte ASCII id><4-byte LE length>   repeated
+  NDSG   ~16 MB   GPU/CPU/RAM snapshot
+  NDSC   ~16 KB   cartridge state
+  ARM9 / ARM7 / WIFI / DMA ...
+SRAM metadata       24 bytes, backup type and size (size at +12, LE uint32)
+SRAM data           the battery save, verbatim
+```
+
+So the blocker is not the container. It is that a save state is a memory dump
+whose layout changes whenever the emulator does -- Delta's own FAQ records that
+updating melonDS 0.9.4 -> 0.9.5 broke every existing state, which is the same
+fact from the other direction.
+
+Measured here: RetroArch's core is **melonDS DS 1.3.0** (`display_version` in
+`melondsds_libretro.info`, `savestate_features = serialized`), wrapping melonDS
+1.x. Delta 1.6 shipped melonDS **0.9.5**. Different major versions, so states do
+not interchange *today* -- but "the versions do not match" is a very different
+claim from "the format is proprietary", and if they ever converge the barrier
+disappears on its own.
+
+**The immediately useful part**: the battery save is extractable from a `.svs`
+with about forty lines of parsing. That is a real recovery path for someone
+whose only copy of a save is inside a state -- worth having whatever happens to
+state sync.
+
+### 4. Standalone emulators instead of RetroArch
+
+Mostly a discovery-and-naming problem, not a format one -- with two exceptions
+that must be measured rather than assumed.
+
+| Delta core | Standalone equivalent | Save shape | Note |
+| --- | --- | --- | --- |
+| visualboyadvance-m | mGBA | `.sav` beside the ROM | RetroArch sorts into folders; standalone does not |
+| gambatte | mGBA / SameBoy | `.sav` + clock | **`.rtc` layout differs per emulator** -- see the clock section |
+| nestopia | Nestopia UE | `.sav` | **may be gzip** -- see below |
+| snes9x | Snes9x | `.srm` beside the ROM | matches |
+| mupen64plus | mupen64plus / Project64 | separate `.eep`/`.sra`/`.fla`/`.mpk` | **no conversion needed**, unlike RetroArch |
+| melonDS | melonDS | `.sav` in `Documents\melonDS\saves` | configurable |
+
+Two traps:
+
+- **Nestopia's `.sav` is gzip-compressed on some platforms.** The nesdev thread
+  that reports it also carries the correction that Windows builds write raw and
+  the macOS build compresses. Windows is the only platform this tool targets, so
+  it is probably raw -- and "probably" is not the standard `ENABLED_SYSTEMS` is
+  held to. Measure a real file before enabling.
+- **Saves live beside the ROM** for most standalone emulators, not in a central
+  folder. RetroArch's `savefile_directory` has no equivalent, so discovery would
+  have to key off each emulator's own config, and there is no single convention.
+
+The structural change needed is smaller than it looks: `systems.py` already
+separates "which core" from "what layout", and `System.converted_cores` already
+exists precisely to say *this layout has been checked against this core*. A
+standalone target is another entry in that table plus its own discovery, not a
+new architecture.
+
+### 5. The DS clock: nothing to sync, and that is not a limitation
+
+Verified against the real Dropbox folder rather than reasoned about:
+
+```
+Pokemon: Platinum Version  [Nintendo DS]   save 524,288 B   extra: none
+Pokemon: Crystal Version   [GBC]           save  32,768 B   extra: ['gameTimeSave']
+```
+
+Delta attaches a clock file to Game Boy Color records and to nothing else, which
+matches the explicit `if game.type == .gbc` in `GameSave.swift`. There is no DS
+clock in Dropbox to sync.
+
+And none is needed, because the two systems keep time differently:
+
+- A **Game Boy** cartridge has its own RTC counting from the instant it was
+  started. Gambatte stores that instant as a base and derives the reading as
+  `time(0) - base`. Two machines only agree if they share the base -- hence the
+  sync we built.
+- A **DS** has a system clock, and melonDS's RTC rework stores an **offset in
+  seconds from host time** in a separate `rtc.bin`. With no offset set, the
+  emulated DS reads real time. Both the phone and the PC have correct real time,
+  so they agree without anything being exchanged.
+
+Confirmed on disk: the only `.rtc` anywhere in either RetroArch install is
+`saves/Gambatte/Pokémon - Crystal Version.rtc`; the `saves/melonDS DS/` folder
+has no clock file, and melonDS DS's own documentation lists `.srm` as the only
+save it writes.
+
+The one case that would not travel is a **deliberate** offset -- someone setting
+a wrong date in DS firmware settings on one side. Delta exposes no way to sync
+that and stores nothing to sync, so it stays local. That is a corner, not a gap.
+
+### Sources
+
+- <https://github.com/dropbox/dropbox-api-spec/blob/main/file_properties.stone>
+- <https://github.com/doronz88/pymobiledevice3>
+- <https://doronz88.github.io/pymobiledevice3/installation/>
+- <https://github.com/lautixhx/svs-sav-converter>
+- <https://faq.deltaemulator.com/using-delta/nintendo-ds/incompatible-save-states>
+- <https://melonds.kuribo64.net/comments.php?id=192>
+- <https://docs.libretro.com/library/melonds_ds/>
+- <https://forums.nesdev.org/viewtopic.php?t=5262>
