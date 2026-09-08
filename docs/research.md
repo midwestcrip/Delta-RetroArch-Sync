@@ -624,8 +624,21 @@ the original "states can never work" conclusion was built on. Worth noting that
 it is a true statement about *interchange* and says nothing about reading the
 file, which is the distinction this whole section turns on.
 
-Two diagnostics are built in for the first time it meets a real file, because
-that run is also the experiment:
+**The first real run checks itself.** When the state is still in Delta's synced
+folder, `extract-save` follows `SaveState-<uuid>` → `relationships.game.identifier`
+→ `GameSave-<sha1>-gameSave` and compares what it recovered against Delta's own
+battery save for that game. Byte-identical is the result that promotes this from
+"parses" to "verified" — and it costs nothing to check, so it happens unasked.
+Three outcomes, each meaning something different:
+
+| Result | Reading |
+| --- | --- |
+| Identical | The extraction is correct. This is the experiment succeeding. |
+| Same length, a few bytes differ | Expected — the game wrote to SRAM after its last in-game save. Save in-game immediately before making the state to avoid it. |
+| Different length | Should not happen. Investigate before trusting either file. |
+
+Two further diagnostics are built in for that first real file, because that run
+is also the experiment:
 
 - If `MELN` is missing from offset 0 but present later, it says at what offset.
   That would mean Delta wraps the state after all, contradicting the finding

@@ -81,6 +81,7 @@ from __future__ import annotations
 
 import struct
 from dataclasses import dataclass
+from pathlib import Path
 
 #: melonDS's savestate magic, at offset 0 of an unwrapped state.
 MAGIC = b"MELN"
@@ -328,4 +329,124 @@ def extract_battery_save(blob: bytes) -> ExtractedSave:
         save_type=SAVE_SIZES[length],
         cart_variant=CART_VARIANTS.get(remainder),
         version=version,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Checking an extraction against Delta's own copy
+#
+# A state that synced from Delta lands in the same flat folder as everything
+# else, next to the record naming its game -- which means the game's *battery
+# save* is usually sitting right there too. Comparing the two turns the first
+# real run into a self-checking experiment instead of something someone has to
+# remember to verify by hand.
+#
+# This is a report, never a gate. Extraction has already succeeded by the time
+# any of this runs, and every way it can fail to find a counterpart returns
+# None. A state copied off the phone by hand, or one whose game has no save yet,
+# simply gets no comparison.
+# ---------------------------------------------------------------------------
+
+#: The file identifier Delta attaches the state itself under, from
+#: ``SaveState.syncableFiles``. The record is the same name without it.
+STATE_FILE_SUFFIX = "-saveState"
+
+
+@dataclass(frozen=True)
+class DeltaComparison:
+    """An extracted save measured against Delta's own battery save."""
+
+    battery_path: Path
+    game_name: str | None
+    #: ``None`` when the two are different lengths, since a byte count would be
+    #: meaningless -- and a length mismatch is the interesting failure anyway.
+    differing_bytes: int | None
+    delta_size: int
+    extracted_size: int
+
+    @property
+    def identical(self) -> bool:
+        return self.differing_bytes == 0
+
+    @property
+    def same_length(self) -> bool:
+        return self.delta_size == self.extracted_size
+
+    def describe(self) -> str:
+        """One line saying how much this run proves."""
+        if self.identical:
+            return (
+                f"identical to Delta's own battery save ({self.delta_size:,} B). "
+                "The extraction is confirmed correct, not merely well-formed."
+            )
+        if not self.same_length:
+            return (
+                f"DIFFERENT LENGTH from Delta's battery save: recovered "
+                f"{self.extracted_size:,} B against Delta's {self.delta_size:,} B. "
+                "That should not happen and is worth investigating before "
+                "trusting either file."
+            )
+        assert self.differing_bytes is not None
+        share = self.differing_bytes / self.delta_size * 100
+        # A handful of bytes out of half a megabyte rounds to "0.00%", which
+        # reads as a bug rather than as reassurance. Below a hundredth of a
+        # percent the count is the only number worth printing.
+        measured = f" ({share:.2f}%)" if share >= 0.01 else ""
+        return (
+            f"same length as Delta's battery save, {self.differing_bytes:,} of "
+            f"{self.delta_size:,} bytes differ{measured}. Expected if the game "
+            "wrote to SRAM after its last in-game save; a large share is not."
+        )
+
+
+def compare_with_delta(state_path: Path, extracted: bytes) -> DeltaComparison | None:
+    """Compare an extracted save against Delta's battery save for the same game.
+
+    Only possible when the state is still sitting in Delta's synced folder,
+    because the link runs through the records: the ``SaveState`` record names
+    its game, and the game's identifier names the ``GameSave`` file. Returns
+    ``None`` whenever any link in that chain is missing, which is the normal
+    case for a state that was copied somewhere else first.
+    """
+    from . import harmony
+
+    name = state_path.name
+    if not name.lower().endswith(STATE_FILE_SUFFIX.lower()):
+        return None
+
+    folder = state_path.parent
+    record_path = folder / name[: -len(STATE_FILE_SUFFIX)]
+    if not record_path.is_file():
+        return None
+
+    record = harmony.parse_record(record_path)
+    if record is None or record.type.lower() != "savestate":
+        return None
+
+    game_id = record.related_identifier("game")
+    if not game_id:
+        return None
+
+    battery = folder / f"GameSave-{game_id}-gameSave"
+    if not battery.is_file():
+        return None
+
+    try:
+        delta_bytes = battery.read_bytes()
+    except OSError:
+        return None
+
+    game_record = harmony.parse_record(folder / f"Game-{game_id}")
+    game_name = game_record.name if game_record is not None else None
+
+    differing: int | None = None
+    if len(delta_bytes) == len(extracted):
+        differing = sum(1 for a, b in zip(delta_bytes, extracted) if a != b)
+
+    return DeltaComparison(
+        battery_path=battery,
+        game_name=game_name,
+        differing_bytes=differing,
+        delta_size=len(delta_bytes),
+        extracted_size=len(extracted),
     )

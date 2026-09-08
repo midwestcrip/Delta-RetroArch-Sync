@@ -184,11 +184,12 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual(extracted.save_type, "FLASH 4 Mbit")
 
     def test_every_save_size_round_trips(self) -> None:
+        """All ten, NAND included. The big ones are the same code path, but
+        leaving them out is how "we can't test that" quietly becomes true."""
+        pattern = bytes(range(256))
         for size, name in sorted(savestate.SAVE_SIZES.items()):
-            if size > 1024 * 1024:
-                continue  # the NAND sizes are 8-64 MB; the shape is identical
             with self.subTest(size=size, name=name):
-                sram = bytes((i * 7) % 256 for i in range(size))
+                sram = (pattern * (size // 256 + 1))[:size]
                 extracted = savestate.extract_battery_save(a_state_holding(sram))
                 self.assertEqual(extracted.data, sram)
                 self.assertEqual(extracted.save_type, name)
@@ -441,3 +442,126 @@ class ReaderAgreementTests(unittest.TestCase):
         )
         self.assertEqual(ours, theirs)
         self.assertEqual(savestate.extract_battery_save(blob).data, bytes(512))
+
+
+class DeltaComparisonTests(unittest.TestCase):
+    """The cross-check that makes the first real run self-verifying.
+
+    A state synced from Delta lands beside the record naming its game, and that
+    game's battery save is usually in the same folder. Comparing the two is what
+    separates "the file parsed" from "the extraction is correct" -- so these
+    build a miniature Delta folder and check every way the link can be followed
+    or fail to be.
+    """
+
+    SHA1 = "0862ec35b24de5c7e2dcb88c9eea0873110d755c"
+    UUID = "1B4E28BA-2FA1-11D2-883F-0016D3CCA427"
+
+    def setUp(self) -> None:
+        import json
+        import tempfile
+
+        self.folder = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, self.folder, True)
+        self.sram = PLATINUM
+
+        (self.folder / f"SaveState-{self.UUID}").write_text(
+            json.dumps(
+                {
+                    "type": "SaveState",
+                    "identifier": self.UUID,
+                    "record": {"name": "Slot 1", "filename": f"{self.UUID}.svs"},
+                    "files": [],
+                    "relationships": {
+                        "game": {"type": "Game", "identifier": self.SHA1}
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.folder / f"Game-{self.SHA1}").write_text(
+            json.dumps(
+                {
+                    "type": "Game",
+                    "identifier": self.SHA1,
+                    "record": {"name": "Pokemon: Platinum Version"},
+                    "files": [],
+                    "relationships": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.state = self.folder / f"SaveState-{self.UUID}-saveState"
+        self.state.write_bytes(a_state_holding(self.sram))
+        self.battery = self.folder / f"GameSave-{self.SHA1}-gameSave"
+
+    def test_an_identical_save_is_reported_as_confirmation(self) -> None:
+        self.battery.write_bytes(self.sram)
+        result = savestate.compare_with_delta(self.state, self.sram)
+        assert result is not None
+        self.assertTrue(result.identical)
+        self.assertEqual(result.differing_bytes, 0)
+        self.assertEqual(result.game_name, "Pokemon: Platinum Version")
+        self.assertIn("confirmed correct", result.describe())
+
+    def test_a_few_differing_bytes_are_counted_not_alarmed_about(self) -> None:
+        """Expected when the game wrote to SRAM after its last in-game save."""
+        drifted = bytearray(self.sram)
+        for index in (0, 5, 99, 100_000):
+            drifted[index] ^= 0xFF
+        self.battery.write_bytes(bytes(drifted))
+        result = savestate.compare_with_delta(self.state, self.sram)
+        assert result is not None
+        self.assertFalse(result.identical)
+        self.assertTrue(result.same_length)
+        self.assertEqual(result.differing_bytes, 4)
+        self.assertIn("4 of", result.describe())
+
+    def test_a_length_mismatch_is_called_out_loudly(self) -> None:
+        """This one should not happen, so it must not read like drift."""
+        self.battery.write_bytes(self.sram[: 256 * 1024])
+        result = savestate.compare_with_delta(self.state, self.sram)
+        assert result is not None
+        self.assertIsNone(result.differing_bytes)
+        self.assertFalse(result.same_length)
+        self.assertIn("DIFFERENT LENGTH", result.describe())
+
+    def test_no_comparison_when_the_battery_save_is_absent(self) -> None:
+        self.assertIsNone(savestate.compare_with_delta(self.state, self.sram))
+
+    def test_no_comparison_when_the_record_is_absent(self) -> None:
+        self.battery.write_bytes(self.sram)
+        (self.folder / f"SaveState-{self.UUID}").unlink()
+        self.assertIsNone(savestate.compare_with_delta(self.state, self.sram))
+
+    def test_no_comparison_for_a_state_copied_elsewhere(self) -> None:
+        """The ordinary case: someone pulled the file out to their Desktop."""
+        self.battery.write_bytes(self.sram)
+        loose = self.folder / "my save state.svs"
+        loose.write_bytes(self.state.read_bytes())
+        self.assertIsNone(savestate.compare_with_delta(loose, self.sram))
+
+    def test_the_comparison_survives_Delta_lowercasing_the_record(self) -> None:
+        """Delta re-uploads records under Dropbox's pathLower, so a record it has
+        touched is named savestate-<uuid>. Reading is case-insensitive on NTFS,
+        but the record's own type field is what gets checked."""
+        import json
+
+        self.battery.write_bytes(self.sram)
+        path = self.folder / f"SaveState-{self.UUID}"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["type"] = "savestate"
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        result = savestate.compare_with_delta(self.state, self.sram)
+        assert result is not None
+        self.assertTrue(result.identical)
+
+    def test_a_record_for_something_else_is_not_followed(self) -> None:
+        import json
+
+        self.battery.write_bytes(self.sram)
+        path = self.folder / f"SaveState-{self.UUID}"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["type"] = "GameSave"
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        self.assertIsNone(savestate.compare_with_delta(self.state, self.sram))

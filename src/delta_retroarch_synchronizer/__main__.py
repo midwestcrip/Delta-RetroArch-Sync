@@ -535,14 +535,31 @@ def run_extract_save_command(
     print(f"  cartridge:   {variant}")
     print(f"  state format: version {extracted.version[0]}.{extracted.version[1]}")
     print(f"  written to:  {target}")
+
+    # Only possible when the state is still in Delta's synced folder, where the
+    # records link it to its game and the game to its battery save. When it is,
+    # this is the difference between "the file parsed" and "the extraction is
+    # correct", so it is worth doing unasked.
+    comparison = savestate.compare_with_delta(state_path, extracted.data)
+    if comparison is not None:
+        game = comparison.game_name or "this game"
+        print(f"\nChecked against Delta's own save for {game}:")
+        print(f"  {comparison.describe()}")
+    else:
+        print(
+            "\nNo cross-check: this state is not sitting in Delta's synced "
+            "folder beside its record, so there is nothing to compare against."
+        )
+
     print(
         "\nThis is the raw battery save. Delta and RetroArch both take it as-is "
         "-- rename it to what the other side expects rather than converting it."
     )
-    print(
-        "Check it before relying on it: the layout is read from melonDS's "
-        "source and has not been verified against a real Delta state."
-    )
+    if comparison is None or not comparison.identical:
+        print(
+            "Check it before relying on it: the layout is read from melonDS's "
+            "source and has not been verified against a real Delta state."
+        )
     return 0
 
 

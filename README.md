@@ -228,6 +228,13 @@ That writes a plain `.sav` beside the state and touches nothing else — not
 Delta's folder, not RetroArch's saves, not the manifest. Rename the result to
 whatever the side you want it on expects.
 
+**It checks its own work when it can.** A save state that synced from Delta sits
+in the same folder as the record naming its game, and that game's battery save is
+usually right there too — so the command compares what it recovered against
+Delta's own copy and tells you whether they match byte for byte. That is the
+difference between "the file parsed" and "the extraction is correct". A state
+you copied somewhere else first simply gets no cross-check, and says so.
+
 Two honest caveats. It is **Nintendo DS only**: a `.svs` for any other system is
 that core's own state format, and the command will say so rather than half-work.
 And the layout is read from melonDS's source but **has not yet been run against
@@ -441,8 +448,8 @@ manifest or somebody's save backups.
 python -m pytest tests -q
 ```
 
-424 tests. `python -m unittest discover -s tests` also runs the whole suite and
-needs nothing installed, but it reports 266 — that is the number of test
+437 tests. `python -m unittest discover -s tests` also runs the whole suite and
+needs nothing installed, but it reports 279 — that is the number of test
 *methods*, and it does not tally the subtests inside them. Same coverage, and
 pytest is the only third-party package this repository asks for anywhere.
 
