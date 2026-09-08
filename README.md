@@ -9,9 +9,14 @@ that to disk. This tool is the missing piece in the middle: it reconciles
 Delta's mirrored folder against RetroArch's directories around the moments you
 actually play.
 
-**Not in scope:** save states (different internal formats, and RetroAchievements
-hardcore mode rules them out anyway), controller skins, and app configs. See
-[docs/brief.md](docs/brief.md).
+**Not in scope:** save states, controller skins, and app configs. Skins and
+configs have no shared representation between the two apps to convert between.
+Save states are a narrower story than "incompatible formats" — a Delta `.svs`
+turns out to be the emulator's own save state byte for byte, and what stops them
+interchanging is that Delta and RetroArch ship *different versions* of the same
+emulator. See [docs/research.md](docs/research.md#save-states-not-a-proprietary-format-a-version-lock).
+The original brief is kept at [docs/brief.md](docs/brief.md) as a historical
+record, annotated where it turned out wrong.
 
 ## Status
 
@@ -67,15 +72,26 @@ then elimination where exactly one cheat is unpaired on each side. So editing a
 cheat's name and code at once works. Renaming two at once in a way that leaves
 the pairing genuinely ambiguous does not, and is reported rather than guessed.
 
-| Phase | State |
+| | State |
 | --- | --- |
-| 1. Read-only inspector | Working |
-| 2. Save sync, Delta -> RetroArch | Working, verified on real data |
-| 2b. Save sync, RetroArch -> Delta | Working, confirmed on device (needs `auth`) |
-| 6. Health checks (`doctor`) | Working |
-| 3. ROM sync | Working |
-| 4. Cheat sync (`.cht` generation) | Working, Delta -> RetroArch only |
-| 5. Launcher window | Working |
+| Save sync, Delta → RetroArch | Working, verified on device |
+| Save sync, RetroArch → Delta | Working, verified on device — needs `auth` |
+| Game Boy Color clock sync | Working, Gambatte core only |
+| N64 save conversion | Working, Mupen64Plus-Next only |
+| ROM export | Working |
+| Cheat export, Delta → RetroArch | Working |
+| Cheat editing and renaming, both ways | Working |
+| Creating a cheat in RetroArch | **Impossible** — see above |
+| Read-only inspector (`inspect`) | Working |
+| Health checks (`doctor`) | Working |
+| Rolling backups and `restore` | Working |
+| Launcher window | Working |
+
+One gap worth naming: the DS **RetroArch → Delta** direction has not been tested
+on a real device yet, only the other way. It uses the same code path as the five
+systems that have been, and DS is a plain copy with no conversion, so there is no
+particular reason to expect trouble — but it has not been proven, and this file
+would rather say so than let you find out.
 
 **Every system Delta supports now syncs: GBA, SNES, GBC, NES, DS and N64.** Each
 was enabled only once a real save had been inspected for a header, footer or
@@ -182,6 +198,19 @@ Reports where it found Delta's Dropbox folder and RetroArch's config, then lists
 every game Delta has synced with its SHA-1, save sizes, cheats, and whether
 RetroArch already holds a matching save. It never writes.
 
+The whole set:
+
+| Command | What it does |
+| --- | --- |
+| `gui` | Open the launcher window — the same thing the shortcut does |
+| `inspect` | Report what both sides hold. Never writes |
+| `doctor` | Check that pushed saves are in a state Delta can act on |
+| `sync` | Reconcile saves. `--dry-run` to see it first, `--push` to also write back into Delta |
+| `backups` | List the saves and cheats that can be put back |
+| `restore N` | Put one back. Writes nothing without `--yes` |
+| `shortcuts` | Add the Start menu and desktop shortcuts. `--remove` takes them out |
+| `auth` | Authorise Dropbox once, so pushing can read file revisions |
+
 If automatic discovery gets a path wrong, copy `config.example.toml` to
 `config.toml` and override it. `config.toml` is gitignored, because this
 repository is public and that file holds machine-specific absolute paths.
@@ -204,9 +233,16 @@ the record — with none of the fuzzy filename matching these tools usually need
 
 Data loss is the failure mode this is designed against.
 
-- **Delta's Dropbox folder is treated as read-only.** Delta warns that editing it
-  can cause data loss, and Harmony reconciles against Dropbox file revisions, so
-  writing there out of band would desync Delta itself.
+- **Delta's Dropbox folder is read-only except on the two paths that must write
+  to it.** Delta warns that editing it can cause data loss, and Harmony
+  reconciles against Dropbox file revisions, so a careless write there desyncs
+  Delta itself — which is not a worry, it is what happened twice during
+  development. Syncing your desktop progress back to your phone is impossible
+  without writing, so exactly two operations do: pushing a save, and rewriting a
+  cheat. Both back the file up first, change only the bytes of the existing file
+  rather than replacing it, and verify by re-reading afterwards. Everything else
+  — discovery, `inspect`, ROM export, cheat export, `doctor` — never writes
+  there at all.
 - **Conflicts are never silently resolved.** A manifest of the last known-good
   state is compared against *both* sides. Only one side changed, that side wins;
   both changed, it is flagged, not guessed. This is what closes the gap when
@@ -381,11 +417,13 @@ manifest or somebody's save backups.
 python -m pytest tests -q
 ```
 
-203 tests. `python -m unittest discover -s tests` also runs the whole suite and
-needs nothing installed, but it reports 116 — that is the number of test
+396 tests. `python -m unittest discover -s tests` also runs the whole suite and
+needs nothing installed, but it reports 238 — that is the number of test
 *methods*, and it does not tally the subtests inside them. Same coverage, and
 pytest is the only third-party package this repository asks for anywhere.
 
 The suite runs against a synthetic Delta folder built from the layout documented
-in `docs/research.md`. When real data is available, the first job is to diff it
-against those fixtures and correct whichever one is wrong.
+in `docs/research.md`. Where real data has since been available it has been
+diffed against those fixtures, and several of the fixtures were the thing that
+turned out to be wrong — the DS save format and the N64 storage sizes both came
+back from real files rather than from the layout as first written.
