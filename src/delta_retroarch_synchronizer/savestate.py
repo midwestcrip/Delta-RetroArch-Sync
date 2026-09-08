@@ -399,6 +399,49 @@ class DeltaComparison:
         )
 
 
+def is_in_delta_folder(state_path: Path) -> bool:
+    """Whether this state is still sitting in Delta's synced folder.
+
+    Decided by whether its record sits beside it, which is the same link the
+    cross-check follows. Matters because the recovered save must never be
+    written *into* that folder: it would be a new file in another app's storage,
+    and Dropbox would dutifully sync it to every device.
+    """
+    name = state_path.name
+    if not name.lower().endswith(STATE_FILE_SUFFIX.lower()):
+        return False
+    return (state_path.parent / name[: -len(STATE_FILE_SUFFIX)]).is_file()
+
+
+def suggested_output(state_path: Path, fallback_dir: Path) -> Path:
+    """Where to put the recovered save when the user has not said.
+
+    Beside the state, unless that is Delta's folder -- then somewhere of ours.
+    Named after the game when the records can say what it is, because
+    ``SaveState-1B4E28BA-2FA1-11D2-883F-0016D3CCA427-saveState.sav`` is not a
+    filename anyone wants to look at afterwards.
+    """
+    from . import harmony
+
+    name: str | None = None
+    if is_in_delta_folder(state_path):
+        folder = state_path.parent
+        record = harmony.parse_record(
+            folder / state_path.name[: -len(STATE_FILE_SUFFIX)]
+        )
+        if record is not None:
+            game_id = record.related_identifier("game")
+            if game_id:
+                game = harmony.parse_record(folder / f"Game-{game_id}")
+                if game is not None and game.name:
+                    name = game.name
+        stem = name or state_path.name[: -len(STATE_FILE_SUFFIX)]
+        safe = "".join(c for c in stem if c not in '<>:"/\|?*').strip() or "recovered"
+        return fallback_dir / f"{safe}.sav"
+
+    return state_path.with_suffix(".sav")
+
+
 def compare_with_delta(state_path: Path, extracted: bytes) -> DeltaComparison | None:
     """Compare an extracted save against Delta's battery save for the same game.
 
@@ -450,3 +493,102 @@ def compare_with_delta(state_path: Path, extracted: bytes) -> DeltaComparison | 
         delta_size=len(delta_bytes),
         extracted_size=len(extracted),
     )
+
+
+# ---------------------------------------------------------------------------
+# Finding the save states Delta has synced
+#
+# Typing a path with a UUID in it is a needless way to get something wrong, and
+# the interesting question is usually "what have I got?" rather than "read this
+# exact file". Listing them also answers, for free, the open question of what
+# the *other* cores write into a .svs -- every state that is not melonDS shows
+# its own magic instead of being a silent failure.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FoundState:
+    """A save state sitting in Delta's synced folder."""
+
+    path: Path
+    game_name: str | None
+    #: Display name of the system, when the game's record identifies one.
+    system: str | None
+    #: The emulator Delta runs for that system, which is whose state format
+    #: this file is in. The reason only DS is readable today: each of these is
+    #: a different emulator with its own layout.
+    delta_core: str | None
+    #: What the user called the slot in Delta.
+    slot_name: str | None
+    size: int
+    #: The first four bytes. ``MELN`` means melonDS and therefore readable.
+    magic: bytes
+
+    @property
+    def recoverable(self) -> bool:
+        return self.magic == MAGIC
+
+    def describe_format(self) -> str:
+        """What this state is, in the terms someone reading a list needs."""
+        if self.recoverable:
+            return "melonDS - can recover"
+        printable = "".join(
+            chr(b) if 0x20 <= b < 0x7F else "." for b in self.magic
+        )
+        core = self.delta_core or "another core"
+        return f"{core} - not readable ({printable})"
+
+
+def find_states(folder: Path) -> list[FoundState]:
+    """Every synced save state in Delta's folder, newest game name first.
+
+    Reads only the first four bytes of each state. A DS state is ~16 MB and
+    there may be a lot of them, so identifying the format must not mean loading
+    them all.
+    """
+    from . import harmony, systems
+
+    found: list[FoundState] = []
+    for path in sorted(folder.glob("*")):
+        if not path.is_file():
+            continue
+        if not path.name.lower().endswith(STATE_FILE_SUFFIX.lower()):
+            continue
+
+        record = harmony.parse_record(folder / path.name[: -len(STATE_FILE_SUFFIX)])
+        game_name: str | None = None
+        system_name: str | None = None
+        core_name: str | None = None
+        slot_name: str | None = None
+        if record is not None:
+            slot_name = record.name
+            game_id = record.related_identifier("game")
+            if game_id:
+                game = harmony.parse_record(folder / f"Game-{game_id}")
+                if game is not None:
+                    game_name = game.name
+                    system = systems.for_delta_type(str(game.fields.get("type", "")))
+                    if system is not None:
+                        system_name = system.name
+                        core_name = system.delta_core
+
+        try:
+            with path.open("rb") as handle:
+                magic = handle.read(4)
+            size = path.stat().st_size
+        except OSError:
+            continue
+
+        found.append(
+            FoundState(
+                path=path,
+                game_name=game_name,
+                system=system_name,
+                delta_core=core_name,
+                slot_name=slot_name,
+                size=size,
+                magic=magic,
+            )
+        )
+
+    return sorted(found, key=lambda s: ((s.game_name or "").lower(), s.path.name))

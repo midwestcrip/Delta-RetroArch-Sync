@@ -34,7 +34,7 @@ from typing import Any
 
 from . import config as config_module
 from . import delta_writer, discovery, display, dropbox_api, guide, health, paths
-from . import processes, restore
+from . import processes, restore, savestate
 from . import tray as tray_module
 from . import shortcut as shortcut_module
 from . import theme
@@ -43,6 +43,11 @@ from . import sync as sync_module
 from . import systems
 
 WINDOW_TITLE = "Delta-RetroArch Synchronizer"
+
+#: Where a recovered battery save goes when the user does not choose. Never
+#: Delta's folder: that would put a new file into another app's storage and
+#: Dropbox would sync it to every device.
+RECOVERED_DIRNAME = "recovered"
 
 
 def _state_dir() -> Path:
@@ -443,13 +448,16 @@ class LauncherWindow:
 
         sync_tab = ttk.Frame(notebook, padding=display.px(8))
         backups_tab = ttk.Frame(notebook, padding=display.px(8))
+        states_tab = ttk.Frame(notebook, padding=display.px(8))
         settings_tab = ttk.Frame(notebook, padding=display.px(8))
         notebook.add(sync_tab, text="   Sync   ")
         notebook.add(backups_tab, text="   Backups   ")
+        notebook.add(states_tab, text="   Save states   ")
         notebook.add(settings_tab, text="   Settings   ")
 
         self._build_sync_tab(sync_tab)
         self._build_backups_tab(backups_tab)
+        self._build_states_tab(states_tab)
         self._build_settings_tab(settings_tab)
 
         self.play_button = ttk.Button(
@@ -558,6 +566,232 @@ class LauncherWindow:
         )
 
         self.on_refresh_backups()
+
+    def _build_states_tab(self, parent: ttk.Frame) -> None:
+        """Recovering a battery save out of a save state, without typing a path.
+
+        A list rather than a file picker, for the same reason Backups is a list:
+        the states are already known, their filenames are UUIDs nobody can read,
+        and picking one is a comparison between rows. It also answers "which of
+        these can I even do anything with" at a glance, which a file dialog
+        cannot.
+        """
+        parent.rowconfigure(1, weight=1)
+        parent.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            parent,
+            text=(
+                "Save states do not sync between Delta and RetroArch, but the "
+                "battery save inside one can be pulled out — useful when a "
+                "state is the only copy of your progress left. Only Nintendo "
+                "DS states can be read; the other systems are listed so you "
+                "can see what is there."
+            ),
+            style="Muted.TLabel",
+            wraplength=display.px(620),
+            justify="left",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 6))
+
+        columns = ("game", "slot", "system", "format", "size")
+        self.state_list = ttk.Treeview(
+            parent, columns=columns, show="headings", height=11, selectmode="browse"
+        )
+        for key, title, anchor in (
+            ("game", "Game", "w"),
+            ("slot", "Slot", "w"),
+            ("system", "System", "w"),
+            ("format", "Format", "w"),
+            ("size", "Size", "e"),
+        ):
+            self.state_list.heading(key, text=title)
+            self.state_list.column(key, anchor=anchor, stretch=(key == "game"))
+        self.state_list.grid(row=1, column=0, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(
+            parent, orient="vertical", command=self.state_list.yview
+        )
+        scrollbar.grid(row=1, column=1, sticky="ns")
+        self.state_list.configure(yscrollcommand=scrollbar.set)
+
+        actions = ttk.Frame(parent)
+        actions.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        actions.columnconfigure(0, weight=1)
+
+        ttk.Button(actions, text="Refresh", command=self.on_refresh_states).grid(
+            row=0, column=1, padx=4
+        )
+        recover_button = ttk.Button(
+            actions, text="Recover save…", command=self.on_recover_state
+        )
+        recover_button.grid(row=0, column=2, padx=4)
+        self.recover_confirmation = Confirmation(recover_button)
+        Tooltip(
+            recover_button,
+            "Writes the battery save from the selected state to a file you "
+            "choose.\n\n"
+            "Nothing else is touched — not Delta's folder, not RetroArch's "
+            "saves, not the manifest. When the state came from Delta, the "
+            "result is checked against Delta's own save for that game.",
+        )
+
+        self.on_refresh_states()
+
+    def on_refresh_states(self) -> None:
+        """Re-scan Delta's folder for synced save states."""
+        self.config = self._current_config()
+        self.found_states: list[savestate.FoundState] = []
+
+        self.state_list.delete(*self.state_list.get_children())
+
+        folder = self.config.delta_folder
+        if folder is None or not folder.is_dir():
+            self.state_list.insert(
+                "", "end", values=("Delta's folder not found", "", "", "", "")
+            )
+            return
+
+        try:
+            self.found_states = savestate.find_states(folder)
+        except OSError as error:
+            self.state_list.insert("", "end", values=(str(error), "", "", "", ""))
+            return
+
+        if not self.found_states:
+            self.state_list.insert(
+                "",
+                "end",
+                values=(
+                    "No save states synced yet",
+                    "",
+                    "",
+                    "make a manual one in Delta",
+                    "",
+                ),
+            )
+            return
+
+        for index, found in enumerate(self.found_states):
+            self.state_list.insert(
+                "",
+                "end",
+                iid=str(index),
+                values=(
+                    found.game_name or found.path.name,
+                    found.slot_name or "",
+                    found.system or "unknown",
+                    found.describe_format(),
+                    f"{found.size:,} B",
+                ),
+            )
+
+    def _selected_state(self) -> "savestate.FoundState | None":
+        selection = self.state_list.selection()
+        if not selection:
+            return None
+        try:
+            return self.found_states[int(selection[0])]
+        except (ValueError, IndexError, AttributeError):
+            return None
+
+    def on_recover_state(self) -> None:
+        """Extract the selected state's battery save to a file the user picks.
+
+        Deliberately not on the worker thread: this reads one file and writes
+        one file, touching neither side of the sync, so there is nothing for it
+        to race with and nothing to leave half-done.
+        """
+        found = self._selected_state()
+        if found is None:
+            messagebox.showinfo(
+                WINDOW_TITLE, "Pick a save state from the list first.",
+                parent=self.root,
+            )
+            return
+
+        if not found.recoverable:
+            core = found.delta_core or "that system's emulator"
+            messagebox.showinfo(
+                WINDOW_TITLE,
+                f"That state is in {core}'s own save state format, not "
+                f"melonDS's.\n\nOnly Nintendo DS states can be read at the "
+                f"moment — every emulator writes its own, and each one is a "
+                f"separate piece of work to support.",
+                parent=self.root,
+            )
+            return
+
+        try:
+            extracted = savestate.extract_battery_save(found.path.read_bytes())
+        except (OSError, savestate.SaveStateError) as error:
+            self._say(f"Could not read that save state: {error}", "error")
+            messagebox.showerror(
+                WINDOW_TITLE,
+                f"Could not read that save state.\n\n{error}",
+                parent=self.root,
+            )
+            return
+
+        suggested = savestate.suggested_output(
+            found.path, _state_dir() / RECOVERED_DIRNAME
+        )
+        try:
+            suggested.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+
+        chosen = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Save the recovered battery save",
+            initialfile=suggested.name,
+            initialdir=str(suggested.parent),
+            defaultextension=".sav",
+            filetypes=[("Battery save", "*.sav"), ("RetroArch save", "*.srm"),
+                       ("All files", "*.*")],
+        )
+        if not chosen:
+            return
+
+        destination = Path(chosen)
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(extracted.data)
+        except OSError as error:
+            self._say(f"Could not write {destination}: {error}", "error")
+            messagebox.showerror(
+                WINDOW_TITLE, f"Could not write that file.\n\n{error}",
+                parent=self.root,
+            )
+            return
+
+        label = found.game_name or found.path.name
+        self._say(
+            f"Recovered {extracted.size:,} B ({extracted.save_type}) from "
+            f"{label} to {destination}",
+            "heading",
+        )
+
+        comparison = savestate.compare_with_delta(found.path, extracted.data)
+        if comparison is None:
+            self._say(
+                "No cross-check: Delta has no battery save for that game to "
+                "compare against.",
+                "warning",
+            )
+            self.recover_confirmation.show("Recovered")
+            return
+
+        self._say(comparison.describe(), "" if comparison.identical else "warning")
+        if comparison.identical:
+            self.recover_confirmation.show("Matches Delta")
+        else:
+            messagebox.showwarning(
+                WINDOW_TITLE,
+                "The recovered save was written, but it does not match Delta's "
+                "own save for this game byte for byte.\n\n"
+                f"{comparison.describe()}\n\nThe Sync tab has the details.",
+                parent=self.root,
+            )
 
     def _build_settings_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)

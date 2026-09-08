@@ -228,6 +228,12 @@ That writes a plain `.sav` beside the state and touches nothing else — not
 Delta's folder, not RetroArch's saves, not the manifest. Rename the result to
 whatever the side you want it on expects.
 
+**The launcher has a Save states tab**, which is the easier way to do this: it
+lists every save state Delta has synced — game, slot, system, and whether it can
+be read — so you pick one from a list instead of typing a path with a UUID in
+it. Non-DS states are listed too, greyed out with the name of the emulator that
+wrote them.
+
 **It checks its own work when it can.** A save state that synced from Delta sits
 in the same folder as the record naming its game, and that game's battery save is
 usually right there too — so the command compares what it recovered against
@@ -448,8 +454,8 @@ manifest or somebody's save backups.
 python -m pytest tests -q
 ```
 
-437 tests. `python -m unittest discover -s tests` also runs the whole suite and
-needs nothing installed, but it reports 279 — that is the number of test
+450 tests. `python -m unittest discover -s tests` also runs the whole suite and
+needs nothing installed, but it reports 292 — that is the number of test
 *methods*, and it does not tally the subtests inside them. Same coverage, and
 pytest is the only third-party package this repository asks for anywhere.
 

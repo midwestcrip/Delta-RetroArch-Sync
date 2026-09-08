@@ -512,10 +512,14 @@ def run_extract_save_command(
         print(f"Cannot extract a save from {state_path.name}:\n  {error}")
         return 1
 
+    # Never beside the state when the state is in Delta's synced folder: that
+    # would put a new file into another app's storage and Dropbox would sync it
+    # everywhere. suggested_output falls back to our own state directory.
+    recovered_dir = paths.state_dir() / "recovered"
     target = (
         Path(destination).expanduser()
         if destination
-        else state_path.with_suffix(".sav")
+        else savestate.suggested_output(state_path, recovered_dir)
     )
     if target.exists() and not force:
         print(f"{target} already exists. Nothing written.")
