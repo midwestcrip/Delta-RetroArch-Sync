@@ -62,11 +62,19 @@ earlier. Nothing here is inferred from the data itself, which is what keeps the
 extraction exact -- the same property that makes the N64 conversion exact.
 
 **Unverified against a real file.** No ``.svs`` exists on the development
-machine and Delta does not appear to sync save states to Dropbox, so every claim
-above is read from melonDS's source and none has been measured. That is a weaker
-footing than anything else in this project, and it is why this module validates
-hard and refuses rather than guessing: a recovery tool that hands back a
-plausible-looking wrong file is worse than one that declines.
+machine, so every claim above is read from melonDS's source and none has been
+measured. That is a weaker footing than anything else in this project, and it is
+why this module validates hard and refuses rather than guessing: a recovery tool
+that hands back a plausible-looking wrong file is worse than one that declines.
+
+**Getting a real one is easy, though, and does not need a cable.** ``SaveState``
+conforms to ``Syncable`` with ``syncableFiles`` of ``saveState`` and
+``thumbnail``, so a state syncs to Dropbox like anything else and lands as
+``SaveState-<uuid>-saveState``. One condition, from ``isSyncingEnabled``::
+
+    (self.type != .auto && self.type != .quick)
+
+**Auto-saves and quick-saves do not sync.** Only a manual save state does.
 """
 
 from __future__ import annotations
@@ -285,7 +293,7 @@ def extract_battery_save(blob: bytes) -> ExtractedSave:
             f"{found or 'none'}."
         )
 
-    if cart.body_start + SRAM_DATA_OFFSET - SECTION_HEADER_SIZE > len(blob):
+    if cart.start + SRAM_DATA_OFFSET > len(blob):
         raise SaveStateError(
             f"the {SRAM_SECTION.decode()} section is truncated before the save "
             "length field."

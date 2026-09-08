@@ -1,12 +1,15 @@
 """Tests for lifting a battery save out of a melonDS save state.
 
 **These fixtures are synthetic, and that is a real limitation.** No ``.svs``
-exists on the development machine and Delta does not appear to sync save states
-to Dropbox, so unlike every other format in this project the layout has not been
-measured against a real file. The builder below is written to mirror melonDS
-0.9.5's ``Savestate.cpp`` and ``NDSCart.cpp`` byte for byte -- which means these
-tests prove the parser matches *the layout as read from that source*, and prove
-nothing about whether Delta writes exactly that.
+exists on the development machine, so unlike every other format in this project
+the layout has not been measured against a real file. The builder below is
+written to mirror melonDS 0.9.5's ``Savestate.cpp`` and ``NDSCart.cpp`` byte for
+byte -- which means these tests prove the parser matches *the layout as read
+from that source*, and prove nothing about whether Delta writes exactly that.
+
+A real state is obtainable without a cable: ``SaveState`` is ``Syncable``, so a
+**manual** save state (not an auto-save or a quick-save -- ``isSyncingEnabled``
+excludes both) syncs to Dropbox as ``SaveState-<uuid>-saveState``.
 
 So the offsets and sizes are asserted as literals rather than computed from the
 module. If a real file ever contradicts them, the failure should land on a
@@ -306,3 +309,135 @@ class RefusalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RobustnessTests(unittest.TestCase):
+    """The property that actually matters for a recovery tool.
+
+    Correct-or-refuse, never confidently-wrong. A parser that returns 512 KB of
+    something from the wrong offset is far worse here than one that declines,
+    because the output looks exactly like a save and gets restored over a real
+    one. These push damaged input at it and assert the only two acceptable
+    outcomes.
+    """
+
+    SEED = 20260908
+
+    def test_arbitrary_garbage_only_ever_raises_SaveStateError(self) -> None:
+        """No IndexError or struct.error may escape -- the CLI catches only
+        SaveStateError, so anything else becomes a traceback in someone's face."""
+        import random
+
+        rng = random.Random(self.SEED)
+        for trial in range(200):
+            size = rng.choice([0, 1, 4, 15, 16, 17, 64, 1024])
+            blob = bytes(rng.randrange(256) for _ in range(size))
+            if rng.random() < 0.5:
+                blob = b"MELN" + blob[4:]
+            with self.subTest(trial=trial, size=size):
+                try:
+                    savestate.extract_battery_save(blob)
+                except savestate.SaveStateError:
+                    pass
+
+    def test_truncation_at_any_point_never_returns_a_save(self) -> None:
+        """Every prefix of a valid state is damaged, and none of them may yield
+        a save -- including the ones long enough to contain the whole SRAM."""
+        blob = a_state_holding(PLATINUM)
+        for cut in range(0, len(blob), 4093):  # prime stride, so offsets vary
+            with self.subTest(cut=cut):
+                with self.assertRaises(savestate.SaveStateError):
+                    savestate.extract_battery_save(blob[:cut])
+
+    def test_a_single_flipped_byte_is_caught_or_harmless(self) -> None:
+        """Mutate one byte anywhere and the result must be exactly one of:
+        refused, or the save that byte actually belongs to. Never a different
+        512 KB read from somewhere else."""
+        import random
+
+        rng = random.Random(self.SEED)
+        blob = bytearray(a_state_holding(PLATINUM))
+
+        # Where the save really is, so a mutation landing inside it can be
+        # distinguished from one that corrupts the structure around it.
+        sections = savestate.read_sections(bytes(blob))
+        cart = next(s for s in sections if s.magic == b"NDCS")
+        sram_start = cart.start + savestate.SRAM_DATA_OFFSET
+        sram_end = sram_start + len(PLATINUM)
+
+        for trial in range(300):
+            index = rng.randrange(len(blob))
+            original = blob[index]
+            blob[index] = original ^ 0xFF
+            with self.subTest(trial=trial, index=index):
+                try:
+                    got = savestate.extract_battery_save(bytes(blob)).data
+                except savestate.SaveStateError:
+                    pass
+                else:
+                    expected = bytearray(PLATINUM)
+                    if sram_start <= index < sram_end:
+                        expected[index - sram_start] ^= 0xFF
+                    self.assertEqual(
+                        got,
+                        bytes(expected),
+                        f"byte {index} flipped and extraction returned data that "
+                        "is neither the save nor an error",
+                    )
+            blob[index] = original
+
+
+class ReaderAgreementTests(unittest.TestCase):
+    """Our section walk against a literal transcription of melonDS's own.
+
+    ``Savestate::Section`` seeks ``length - 8`` after consuming the magic and the
+    length. Writing that out separately and requiring both to agree is what would
+    catch an off-by-sixteen in the walker -- the arithmetic is easy to get wrong
+    in a way that still works on a file whose sections happen to be uniform.
+    """
+
+    @staticmethod
+    def melonds_find(blob: bytes, magic: bytes) -> int | None:
+        """``Savestate::Section``'s reader branch, transcribed."""
+        pos = 0x10
+        while True:
+            if pos + 8 > len(blob):
+                return None
+            buf = blob[pos : pos + 4]
+            pos += 4
+            if buf != magic:
+                if buf == b"\x00\x00\x00\x00":
+                    return None
+                length = struct.unpack_from("<I", blob, pos)[0]
+                pos += 4
+                pos += length - 8
+                continue
+            return pos - 4
+
+    def test_both_walkers_find_the_cart_section_at_the_same_offset(self) -> None:
+        for sram_size in (512, 8192, 65536, 524288):
+            with self.subTest(size=sram_size):
+                blob = a_state_holding(bytes(sram_size))
+                theirs = self.melonds_find(blob, b"NDCS")
+                ours = next(
+                    s.start
+                    for s in savestate.read_sections(blob)
+                    if s.magic == b"NDCS"
+                )
+                self.assertEqual(ours, theirs)
+
+    def test_both_walkers_agree_when_sections_are_uneven(self) -> None:
+        """Uniform sections hide an off-by-N. These are deliberately ragged."""
+        blob = build_state(
+            build_section(b"NDSG", b"\x01" * 3),
+            build_section(b"DMA0", b"\x02" * 601),
+            build_section(b"ARM9", b"\x03" * 17),
+            build_section(b"NDSC", b"\x04" * 4095),
+            build_section(b"NDCS", build_cart_body(bytes(512))),
+        )
+        theirs = self.melonds_find(blob, b"NDCS")
+        ours = next(
+            s.start for s in savestate.read_sections(blob) if s.magic == b"NDCS"
+        )
+        self.assertEqual(ours, theirs)
+        self.assertEqual(savestate.extract_battery_save(blob).data, bytes(512))

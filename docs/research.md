@@ -597,6 +597,33 @@ declared file length against the real one, that `NDCS` exists, that the length
 field holds one of the sizes above, and that the save fits inside its section.
 Any of those failing is an error with a reason, never a best-effort extraction.
 
+**Save states do sync, so getting a real one needs no cable.** Checked
+2026-09-08: `SaveState` conforms to `Syncable` with `syncableFiles` of
+`saveState` and `thumbnail`, so a state lands in the same flat folder as
+everything else:
+
+```
+SaveState-<uuid>            JSON record
+SaveState-<uuid>-saveState  the .svs itself
+SaveState-<uuid>-thumbnail  the preview PNG
+```
+
+with one condition, from `SaveState.isSyncingEnabled`:
+
+```swift
+(self.type != .auto && self.type != .quick) && (game is not the melonDS BIOS)
+```
+
+**Auto-saves and quick-saves are excluded.** Only a *manual* save state syncs —
+the kind made from the pause menu into a numbered slot. The absence of any
+`SaveState` record in this folder therefore says the user does not keep manual
+states, which matches the brief, and not that states are unsyncable.
+
+`syncableKeys` carries `coreIdentifier` and `coreVersion`, which is the detail
+the original "states can never work" conclusion was built on. Worth noting that
+it is a true statement about *interchange* and says nothing about reading the
+file, which is the distinction this whole section turns on.
+
 Two diagnostics are built in for the first time it meets a real file, because
 that run is also the experiment:
 
