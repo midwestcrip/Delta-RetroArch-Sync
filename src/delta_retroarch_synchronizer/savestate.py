@@ -376,6 +376,41 @@ def extract_battery_save(
         return extract_snes9x(blob, expected_size)
     if blob.startswith(NESTOPIA_MAGIC):
         return extract_nestopia(blob, expected_size)
+    if blob.startswith(GAMBATTE_VERSION):
+        # gambatte states have no magic, only two version bytes, so the parse
+        # itself is the identification: the fields have to tile the file
+        # exactly. Anything else beginning 00 01 fails that and falls through
+        # to the messages below.
+        try:
+            return extract_gambatte(blob)
+        except SaveStateError:
+            if len(blob) > GAMBATTE_HEADER_SIZE:
+                raise
+
+    if blob.startswith(GZIP_MAGIC):
+        import gzip
+        import zlib
+
+        try:
+            inner = gzip.decompress(blob)
+        except (OSError, EOFError, zlib.error) as error:
+            raise SaveStateError(
+                f"this state is gzip-compressed but will not decompress: "
+                f"{error}"
+            ) from None
+        if inner.startswith(MUPEN64PLUS_MAGIC):
+            raise SaveStateError(
+                "this is a mupen64plus (N64) save state, and there is no "
+                "battery save inside it to recover. mupen64plus keeps the "
+                "cartridge's save in separate .eep/.sra/.fla/.mpk files and "
+                "writes only the flash controller's registers into a state -- "
+                "the save data itself is never part of one. Nothing this tool "
+                "could do would change that."
+            )
+        raise SaveStateError(
+            "this is a gzip-compressed save state, most likely "
+            "visualboyadvance-m's, which this tool cannot read yet."
+        )
 
     # Not a format we read. Say which one it is when the magic identifies it,
     # so the answer is "not supported yet" rather than "unreadable".
@@ -725,6 +760,159 @@ def extract_nestopia(blob: bytes, expected_size: int | None) -> ExtractedSave:
 
 
 # ---------------------------------------------------------------------------
+# mupen64plus -- nothing to recover, and that is the finding
+#
+# An N64 state is gzip, and inside it is ``M64+SAVE``, a version word and the
+# ROM's MD5 as 32 ASCII hex characters. It contains RDRAM, the RSP memory, the
+# PIF RAM and every register -- and **not the battery save**.
+#
+# ``savestates.c`` in mupen64plus-core writes the flashram *controller* state
+# (``page_buf[128]``, ``silicon_id``, ``status``, ``erase_page``, ``mode``) and
+# nothing of the storage behind it. The words ``eeprom``, ``mempak`` and
+# ``sram`` do not appear in that file at all. The save media live in separate
+# ``.eep`` / ``.sra`` / ``.fla`` / ``.mpk`` files and are never part of a state.
+#
+# Confirmed against the real Paper Mario state: Delta's 131,072-byte save does
+# not appear anywhere in the 16,793,412 decompressed bytes, in either byte
+# order. The only hits for the game's own title string were inside RDRAM.
+#
+# So this is not "unsupported". There is nothing in the file to extract, and
+# saying so is more useful than a generic refusal.
+# ---------------------------------------------------------------------------
+
+GZIP_MAGIC = b"\x1f\x8b"
+MUPEN64PLUS_MAGIC = b"M64+SAVE"
+
+#: Delta cores whose save states contain no battery save at all, so listing one
+#: as "not readable yet" would promise something that is never coming.
+CORES_WITHOUT_SAVES_IN_STATES = frozenset({"mupen64plus"})
+
+
+# ---------------------------------------------------------------------------
+# gambatte
+#
+# Read from gambatte's ``statesaver.cpp``, then measured against a real Pokémon
+# Crystal state synced from Delta.
+#
+# The tidiest of the formats here, and the only one besides melonDS that says
+# how big its save is. ``StateSaver::saveState`` writes::
+#
+#     { static const char ver[] = { 0, 1 }; file.write(ver, sizeof(ver)); }
+#     writeSnapShot(file);
+#     for each saver:  file.write(it->label, it->labelsize); (*it->save)(...)
+#
+# So: a two-byte version, a screenshot written as a 24-bit big-endian length
+# followed by that many bytes (zero on the measured file), then a flat run of
+# labelled fields to the end. Each field is its label **including the trailing
+# null**, then a 24-bit big-endian size, then the data -- ``put24`` writes the
+# size for arrays, and the scalar overloads of ``write`` emit a fixed
+# ``00 00 01`` / ``00 00 02`` / ``00 00 04`` prefix, which is the same shape.
+#
+# There is no magic. A gambatte state opens with ``00 01`` and nothing else,
+# which is why the listing shows ``00 01 00 00`` for one. That makes the walk
+# itself the identity check: 114 fields tiling the file exactly, ending on the
+# final byte, is not something another format does by accident.
+#
+# The battery save is the field labelled ``sram``, and its size is the field's
+# own -- 32,768 bytes on the measured file, matching Delta's save exactly. No
+# record needed.
+# ---------------------------------------------------------------------------
+
+#: Not a magic -- the two version bytes every gambatte state starts with.
+GAMBATTE_VERSION = b"\x00\x01"
+#: Version, then the snapshot's 24-bit length.
+GAMBATTE_HEADER_SIZE = 5
+#: The field holding the cartridge's battery-backed RAM.
+GAMBATTE_SRAM_FIELD = b"sram"
+
+
+@dataclass(frozen=True)
+class Field:
+    """One labelled gambatte field."""
+
+    label: bytes
+    #: Offset of the data, past the label and the 24-bit size.
+    start: int
+    length: int
+
+
+def read_gambatte_fields(blob: bytes) -> list[Field]:
+    """Walk a gambatte state's fields, requiring them to tile it exactly.
+
+    The exactness is the point. gambatte states have no magic, so "it parses
+    completely" is the only evidence that this is one -- a file that merely
+    happens to begin ``00 01`` will not also end on a field boundary.
+    """
+    if len(blob) < GAMBATTE_HEADER_SIZE or not blob.startswith(GAMBATTE_VERSION):
+        raise SaveStateError("not a gambatte save state.")
+
+    snapshot = int.from_bytes(blob[2:5], "big")
+    offset = GAMBATTE_HEADER_SIZE + snapshot
+    if offset > len(blob):
+        raise SaveStateError(
+            f"the state's screenshot claims {snapshot:,} bytes, which does not "
+            "fit in the file."
+        )
+
+    fields: list[Field] = []
+    while offset < len(blob):
+        end = blob.find(b"\x00", offset)
+        if end < 0:
+            raise SaveStateError(
+                f"a field label at {offset:#x} is not terminated."
+            )
+        label = blob[offset:end]
+        if not label or not all(0x20 <= c < 0x7F for c in label):
+            raise SaveStateError(
+                f"unreadable field label {label!r} at {offset:#x}."
+            )
+        if end + 4 > len(blob):
+            raise SaveStateError(f"field {label!r} has no size.")
+        length = int.from_bytes(blob[end + 1 : end + 4], "big")
+        start = end + 4
+        if start + length > len(blob):
+            raise SaveStateError(
+                f"field {label!r} claims {length:,} bytes but only "
+                f"{len(blob) - start:,} remain. The state is truncated."
+            )
+        fields.append(Field(label=label, start=start, length=length))
+        offset = start + length
+
+    if offset != len(blob):
+        raise SaveStateError("the state's fields do not fill it exactly.")
+    return fields
+
+
+def extract_gambatte(blob: bytes) -> ExtractedSave:
+    """Lift the battery save out of a gambatte state.
+
+    Self-describing, like melonDS: the ``sram`` field carries its own length, so
+    nothing is needed from Delta's record.
+    """
+    fields = read_gambatte_fields(blob)
+    sram = next((f for f in fields if f.label == GAMBATTE_SRAM_FIELD), None)
+    if sram is None:
+        raise SaveStateError(
+            "no 'sram' field in the state, so this cartridge has no battery "
+            "save to recover."
+        )
+    if sram.length == 0:
+        raise SaveStateError(
+            "the state's 'sram' field is empty -- this cartridge has no "
+            "battery save."
+        )
+
+    return ExtractedSave(
+        data=blob[sram.start : sram.start + sram.length],
+        save_type=f"cartridge SRAM, {sram.length:,} B",
+        cart_variant=None,
+        version=None,
+        core="gambatte",
+        size_from_record=False,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Checking an extraction against Delta's own copy
 #
 # A state that synced from Delta lands in the same flat folder as everything
@@ -971,14 +1159,24 @@ class FoundState:
         return any(self.magic.startswith(p) for p in READABLE_FORMATS)
 
     def describe_format(self) -> str:
-        """What this state is, in the terms someone reading a list needs."""
+        """What this state is, in the terms someone reading a list needs.
+
+        Three answers, not two. "Nothing to recover" is a different fact from
+        "not supported yet", and N64 is the first -- a mupen64plus state simply
+        does not contain the cartridge's save. Telling them apart needs the
+        core from Delta's record, because both formats are gzip on the outside
+        and identifying N64 from the bytes alone would mean decompressing
+        sixteen megabytes to draw one row of a table.
+        """
         if self.recoverable:
             return f"{self.format_name} - can recover"
+        if self.delta_core in CORES_WITHOUT_SAVES_IN_STATES:
+            return f"{self.delta_core} - no save inside a state"
         printable = "".join(
             chr(b) if 0x20 <= b < 0x7F else "." for b in self.magic[:4]
         )
         core = self.delta_core or "another core"
-        return f"{core} - not readable ({printable})"
+        return f"{core} - not readable yet ({printable})"
 
 
 def find_states(folder: Path) -> list[FoundState]:
@@ -1052,11 +1250,14 @@ READABLE_FORMATS: dict[bytes, str] = {
     MAGIC: "melonDS",
     SNES9X_MAGIC: "snes9x",
     NESTOPIA_MAGIC: "nestopia",
+    # Two version bytes rather than a magic. Weak as a prefix, which is fine
+    # here: the listing only uses it to say "worth trying", and extraction
+    # proves it by parsing the whole file.
+    GAMBATTE_VERSION: "gambatte",
 }
 
 #: Magic bytes measured on real Delta save states, 2026-09-08, one manual state
 #: per system. Used to answer "not supported yet" rather than "unreadable".
 IDENTIFIED_FORMATS: dict[bytes, str] = {
     b"\x1f\x8b\x08\x00": "gzip-compressed (mupen64plus or visualboyadvance-m)",
-    b"\x00\x01\x00\x00": "Game Boy (gambatte)",
 }

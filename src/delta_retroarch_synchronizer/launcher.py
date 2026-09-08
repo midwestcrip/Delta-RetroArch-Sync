@@ -709,6 +709,20 @@ class LauncherWindow:
             )
             return
 
+        if not found.recoverable and (
+            found.delta_core in savestate.CORES_WITHOUT_SAVES_IN_STATES
+        ):
+            messagebox.showinfo(
+                WINDOW_TITLE,
+                f"There is no battery save inside an N64 save state to "
+                f"recover.\n\n{found.delta_core} keeps the cartridge's save "
+                "in separate files and writes only the flash controller's "
+                "registers into a state. This is not something that can be "
+                "added later.",
+                parent=self.root,
+            )
+            return
+
         if not found.recoverable:
             core = found.delta_core or "that system's emulator"
             messagebox.showinfo(

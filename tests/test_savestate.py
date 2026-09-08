@@ -258,14 +258,9 @@ class RefusalTests(unittest.TestCase):
     def test_a_format_we_know_but_cannot_read_is_named(self) -> None:
         """"Not supported yet" is a different answer from "unreadable", and the
         magics for all six were measured, so the message can say which."""
-        for magic, expected in (
-            (b"\x1f\x8b\x08\x00", "gzip"),
-            (b"\x00\x01\x00\x00", "gambatte"),
-        ):
-            with self.subTest(magic=magic):
-                with self.assertRaises(savestate.SaveStateError) as caught:
-                    savestate.extract_battery_save(magic + b"\x00" * 4096)
-                self.assertIn(expected, str(caught.exception))
+        with self.assertRaises(savestate.SaveStateError) as caught:
+            savestate.extract_battery_save(b"\x1f\x8b\x08\x00" + b"\x00" * 4096)
+        self.assertIn("gzip", str(caught.exception))
 
     def test_a_wrapped_state_names_the_offset_it_found(self) -> None:
         """If Delta ever does wrap the state, that overturns a documented
