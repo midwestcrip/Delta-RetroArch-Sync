@@ -587,15 +587,27 @@ It is deliberately outside every sync path. It reads one file the user names and
 writes one new file; it never touches Delta's folder, RetroArch's saves or the
 manifest, so a last-resort recovery cannot damage anything that currently works.
 
-**It has never been run on a real `.svs`, and that is the honest status.** There
-is no save state anywhere on this machine: Delta's Dropbox folder contains no
-`SaveState` records at all, RetroArch's `states/` folders are empty, and a
-filesystem search finds no `.svs`. So unlike every other format here, the layout
-is read from source and has not been measured. The gap is closed by refusing
-rather than guessing — the parser checks the magic, the version major, the
-declared file length against the real one, that `NDCS` exists, that the length
-field holds one of the sizes above, and that the save fits inside its section.
-Any of those failing is an error with a reason, never a best-effort extraction.
+**Confirmed on a real Delta save state, 2026-09-08.** Everything above was read
+from melonDS's source first, then measured. The measurement agreed with all of
+it. A manual state of Pokémon Platinum, synced from the phone:
+
+| | |
+| --- | --- |
+| File size | 19,643,269 B — and the header's declared length says the same |
+| Magic | `4d 45 4c 4e` = `MELN`, **at offset 0** — no Delta wrapper |
+| Version | `(9, 0)` — `SAVESTATE_MAJOR` 9, so Delta 1.6 ships melonDS 0.9.5 |
+| Sections | 26, walked cleanly: `NDSG DMA0…DMA7 ARM9 CP15 ARM7` **`NDSC` `NDCS`** `GBAC GPUG GP2A GP2B GP3D SPU. SPIG SPFW SPPW SPTS RTC. WIFI` |
+| Extracted | 524,288 B at `NDCS + 0x20`, FLASH 4 Mbit, retail cart |
+| Cross-check | **SHA-1 identical** to `GameSave-0862ec35…-gameSave` |
+
+Note `NDSC` and `NDCS` sitting adjacent in that list. The transposition was not
+a hypothetical: keying on the wrong one lands in the cart controller's 16 KB
+transfer buffer and returns something that looks like a save.
+
+The strict validation stays as it was — magic, version major, declared length
+against the real one, `NDCS` present, the length field against the fixed size
+table, and the save fitting inside its section. It cost nothing to keep and it
+is what makes a future failure legible.
 
 **Save states do sync, so getting a real one needs no cable.** Checked
 2026-09-08: `SaveState` conforms to `Syncable` with `syncableFiles` of
@@ -646,15 +658,43 @@ is also the experiment:
 - If `NDSC` is present without `NDCS`, it says so specifically, rather than
   reporting a generic parse failure.
 
-**Still unverified beyond that:** whether the same "it is just the emulator's own
-state" finding holds for the *other* systems' `.svs` files, or only for DS. Only
-DS has been opened and read. The other cores write their own state formats and
-none of them will have a `MELN` header, so `extract-save` refuses them with a
-message saying as much rather than appearing to half-work.
+### The other five systems: settled, 2026-09-08
 
-**What would settle all of it:** one real DS `.svs` from the phone. Delta's
-Documents are browsable — `UIFileSharingEnabled` is set — so a state can be
-copied out through the Files app the same way the Controller Paks can.
+A manual save state was made on the phone for every system and the headers read
+off the real files. **The "it is just the emulator's own state" finding holds for
+all six.** Not one of them carries a Delta wrapper — every file begins with its
+emulator's own magic:
+
+| System | Emulator | First 4 bytes | What it is |
+| --- | --- | --- | --- |
+| DS | melonDS | `4d 45 4c 4e` `MELN` | **Readable today** |
+| SNES | snes9x | `23 21 73 39` `#!s9xsnp:0009` | Text header, then named chunks |
+| NES | nestopia | `4e 53 54 1a` `NST\x1a` | Chunked, `NFO` block first |
+| N64 | mupen64plus | `1f 8b 08 00` | **gzip** — decompress, then parse |
+| GBA | visualboyadvance-m | `1f 8b 08 00` | **gzip** — same |
+| GBC | gambatte | `00 01 00 00` | Labelled fields, no magic at all |
+
+Sizes ranged from 13 KB (Kirby's Adventure) to 19.6 MB (Platinum), which is
+mostly a statement about how much RAM each console has.
+
+**All five are buildable, and none is blocked.** The version-lock argument does
+not apply — extracting a save is cutting bytes out of a file, not loading a
+state into an emulator, so only the layout matters. Rough order of difficulty
+from the headers:
+
+- **snes9x** looks easiest. `#!s9xsnp:0009` is a text header followed by named
+  chunks (`NAM:`, and others), one of which is the SRAM.
+- **nestopia** is chunked too, with `NST\x1a` and FourCC-ish blocks.
+- **mupen64plus** and **VBA-M** need a `gzip.decompress` first, which is stdlib,
+  and then have a layout to find. The N64 one is especially interesting because
+  its save regions are the same four this project already maps in `n64.py`.
+- **gambatte** looks fiddliest: no magic, a bare labelled-field serialisation.
+
+**The verification story is already solved for all of them.** Delta holds a
+`GameSave` record for every one of these games, so each extractor can be checked
+against the real battery save the moment it is written — exactly the way the DS
+one was. That is the same discipline `ENABLED_SYSTEMS` enforces: a format is
+supported once a real file has been measured, not before.
 
 ## Push: what actually failed
 

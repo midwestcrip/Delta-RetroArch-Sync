@@ -61,13 +61,27 @@ So the save begins at ``NDCS + 0x20`` and its length is stated four bytes
 earlier. Nothing here is inferred from the data itself, which is what keeps the
 extraction exact -- the same property that makes the N64 conversion exact.
 
-**Unverified against a real file.** No ``.svs`` exists on the development
-machine, so every claim above is read from melonDS's source and none has been
-measured. That is a weaker footing than anything else in this project, and it is
-why this module validates hard and refuses rather than guessing: a recovery tool
-that hands back a plausible-looking wrong file is worse than one that declines.
+**VERIFIED against a real Delta save state, 2026-09-08.** A manual state of
+Pokémon Platinum, 19,643,269 bytes, synced from Delta on the user's phone:
 
-**Getting a real one is easy, though, and does not need a cable.** ``SaveState``
+- ``MELN`` at offset 0. **No Delta wrapper**, as the FAQ's wording had made
+  people assume. The container is melonDS's, unmodified.
+- Version ``(9, 0)`` -- ``SAVESTATE_MAJOR`` 9, confirming Delta 1.6 ships
+  melonDS 0.9.5.
+- The header's declared length equals the file size exactly.
+- 26 sections, walked cleanly. ``NDSC`` and ``NDCS`` really do sit **next to
+  each other**, which is what made the transposition worth guarding against.
+- The save came out at ``NDCS + 0x20``: 524,288 bytes, FLASH 4 Mbit, retail
+  cart -- and **SHA-1 identical to Delta's own battery save for that game**.
+
+So the extraction is correct, not merely well-formed. Everything above was read
+from melonDS 0.9.5's source before any of it could be measured, and the
+measurement agreed with all of it.
+
+The strict validation stays exactly as it was. It cost nothing to keep and it is
+what makes the failure modes legible on a file nobody has seen yet.
+
+**Where a test file comes from,** since it is not obvious: ``SaveState``
 conforms to ``Syncable`` with ``syncableFiles`` of ``saveState`` and
 ``thumbnail``, so a state syncs to Dropbox like anything else and lands as
 ``SaveState-<uuid>-saveState``. One condition, from ``isSyncingEnabled``::

@@ -1,18 +1,18 @@
 """Tests for lifting a battery save out of a melonDS save state.
 
-**These fixtures are synthetic, and that is a real limitation.** No ``.svs``
-exists on the development machine, so unlike every other format in this project
-the layout has not been measured against a real file. The builder below is
-written to mirror melonDS 0.9.5's ``Savestate.cpp`` and ``NDSCart.cpp`` byte for
-byte -- which means these tests prove the parser matches *the layout as read
-from that source*, and prove nothing about whether Delta writes exactly that.
+These fixtures are synthetic, mirroring melonDS 0.9.5's ``Savestate.cpp`` and
+``NDSCart.cpp`` byte for byte. **A real Delta state has since confirmed them**
+(2026-09-08): Pokémon Platinum, 19,643,269 bytes, ``MELN`` at offset 0 with no
+Delta wrapper, version ``(9, 0)``, 26 sections with ``NDSC`` and ``NDCS``
+adjacent, and a 524,288-byte save at ``NDCS + 0x20`` whose SHA-1 matched Delta's
+own battery save exactly.
 
-A real state is obtainable without a cable: ``SaveState`` is ``Syncable``, so a
-**manual** save state (not an auto-save or a quick-save -- ``isSyncingEnabled``
-excludes both) syncs to Dropbox as ``SaveState-<uuid>-saveState``.
+The fixtures stay because they cover what one real file cannot: nine save sizes
+that game does not have, three cart variants, and every way a state can be
+damaged. The real file proves the layout; these prove the handling of it.
 
-So the offsets and sizes are asserted as literals rather than computed from the
-module. If a real file ever contradicts them, the failure should land on a
+The offsets and sizes are asserted as literals rather than computed from the
+module. If a future file ever contradicts them, the failure should land on a
 stated number that someone chose, not on arithmetic that quietly agrees with
 whatever the module happens to do.
 

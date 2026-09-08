@@ -241,12 +241,14 @@ Delta's own copy and tells you whether they match byte for byte. That is the
 difference between "the file parsed" and "the extraction is correct". A state
 you copied somewhere else first simply gets no cross-check, and says so.
 
-Two honest caveats. It is **Nintendo DS only**: a `.svs` for any other system is
-that core's own state format, and the command will say so rather than half-work.
-And the layout is read from melonDS's source but **has not yet been run against
-a real Delta save state**, because there wasn't one available to test with — so
-it validates hard and refuses rather than guessing whenever anything looks
-wrong. Check the recovered file before relying on it.
+**Verified on a real Delta save state** (2026-09-08): a Pokemon Platinum state
+of 19,643,269 bytes gave up a 524,288-byte save whose SHA-1 matched Delta's own
+battery save for that game exactly.
+
+One limit: it is **Nintendo DS only**. Every system's `.svs` is its own
+emulator's save state format — snes9x, nestopia, gambatte, visualboyadvance-m
+and mupen64plus all write something different — so those are listed but not yet
+readable. None of them is blocked, they are just each their own piece of work.
 
 If automatic discovery gets a path wrong, copy `config.example.toml` to
 `config.toml` and override it. `config.toml` is gitignored, because this
