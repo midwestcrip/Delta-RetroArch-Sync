@@ -481,8 +481,11 @@ emulators" below.
 
 ## Save states: not a proprietary format, a version lock
 
-Out of scope, and still out of scope — but for a different reason than the one
-recorded, and the difference matters enough to write down.
+Two separate questions live under this heading, and only one of them is out of
+scope. **Syncing states between Delta and RetroArch** stays out — though for a
+different reason than the one originally recorded, and the difference matters
+enough to write down. **Recovering the battery save out of a state** is a
+different question with a different answer, and it is built.
 
 It had been settled as impossible on the strength of `syncableKeys` carrying
 `coreIdentifier` and `coreVersion`, plus Delta's user-facing FAQ ("Delta save
@@ -490,18 +493,76 @@ states and cheat files are only compatible with Delta"). The FAQ is a
 simplification, and the conclusion drawn from it was too strong.
 
 A `.svs` for DS **is a melonDS save state**, byte for byte, with no Delta
-wrapper of any kind. Structure reverse-engineered and implemented in
-[`lautixhx/svs-sav-converter`](https://github.com/lautixhx/svs-sav-converter):
+wrapper of any kind.
+
+The layout below was re-read on 2026-09-08 from **melonDS 0.9.5's own
+`Savestate.cpp` and `NDSCart.cpp`** — the version Delta 1.6 ships — rather than
+from a description of it. That mattered: the description recorded here
+previously got two things wrong, and either would have produced a parser that
+returned confident nonsense.
+
+File header, 16 bytes, and every section header the same:
 
 ```
-MELN                16-byte header
-<4-byte ASCII id><4-byte LE length>   repeated
-  NDSG   ~16 MB   GPU/CPU/RAM snapshot
-  NDSC   ~16 KB   cartridge state
-  ARM9 / ARM7 / WIFI / DMA ...
-SRAM metadata       24 bytes, backup type and size (size at +12, LE uint32)
-SRAM data           the battery save, verbatim
+file header                     section header
+00  magic "MELN"                00  section magic
+04  version major (u16 LE)      04  section length (u32 LE)
+06  version minor (u16 LE)      08  reserved
+08  total file length (u32 LE)  0C  reserved
+0C  reserved
 ```
+
+**A section's length includes its own 16-byte header.** `Savestate::Section`
+writes `len = pos - CurSection`, measured from the start of the header, and its
+reader seeks `length - 8` after consuming the magic and the length. The first
+section begins at `0x10`; a zero magic ends the walk. Version major is `9` for
+0.9.5, and melonDS refuses a state whose major differs or whose declared length
+does not match the file size.
+
+**The battery save is in section `NDCS`, not `NDSC`.** This is the first thing
+the earlier note got wrong. They are transpositions of each other and they sit
+next to each other in the file, which is how "the save is after NDSC" came to be
+written down — true as a statement about position, and a trap as a statement
+about which section to key on:
+
+- **`NDSC`** is `NDSCart::DoSavestate` — the cart *controller*. SPI registers,
+  `TransferData[0x4000]`, cart type and checksum. This is the ~16 KB section.
+- **`NDCS`** is `CartCommon::DoSavestate` — the cart *itself*, and
+  `CartRetail::DoSavestate` appends the SRAM to it immediately after.
+
+Inside `NDCS`, counting from the start of its header:
+
+| Offset | Field |
+| --- | --- |
+| `0x00` | section header, 16 bytes |
+| `0x10` | `CmdEncMode` (u32) |
+| `0x14` | `DataEncMode` (u32) |
+| `0x18` | `DSiMode` (`Bool32`, written as u32) |
+| `0x1C` | `SRAMLength` (u32) |
+| `0x20` | **the battery save**, `SRAMLength` bytes |
+| | then `SRAMCmd` (u8), `SRAMAddr` (u32), `SRAMStatus` (u8) |
+
+So the save starts at `NDCS + 0x20` and its length is stated four bytes earlier.
+The second thing the earlier note got wrong was placing that length at "+12 of a
+24-byte metadata header" — there is no separate metadata block, just three mode
+words ahead of the length field. The "24 bytes" is what sits between the section
+magic and the length, which is a true count and a misleading description.
+
+The save sizes are not open-ended either. `CartRetail::SetupSave` picks from a
+fixed `sramlen[]` table, so a length outside it means the field being read is not
+the length field:
+
+| Bytes | Type | | Bytes | Type |
+| --- | --- | --- | --- | --- |
+| 512 | EEPROM 4 Kbit | | 262,144 | FLASH 2 Mbit |
+| 8,192 | EEPROM 64 Kbit | | 524,288 | FLASH 4 Mbit |
+| 65,536 | EEPROM 512 Kbit | | 1,048,576 | FLASH 8 Mbit |
+| 131,072 | EEPROM 1 Mbit | | 8–64 MB | NAND |
+
+524,288 is the size of the real Pokémon Platinum save measured from Delta, and
+`SetupSave` fills a fresh buffer with `0xFF` — which is exactly the flash padding
+seen in the tail of that file. Two independent details of this table already
+agree with something measured.
 
 So the blocker is not the container. It is that a save state is a memory dump
 whose layout changes whenever the emulator does — Delta's own FAQ records that
@@ -516,14 +577,44 @@ match" is a very different claim from "the format is proprietary", and if they
 ever converge the barrier disappears on its own without anyone building
 anything.
 
-**The immediately useful part, which does not depend on any of that:** the
-battery save is extractable from a `.svs` with about forty lines of parsing.
-That is a real recovery path for someone whose only copy of a save is inside a
-state, and it is worth having whatever happens to state interchange.
+**The immediately useful part, which does not depend on any of that: built
+2026-09-08** as `savestate.py`, with `extract-save` on the CLI. It lifts the
+battery save out of a state and writes it beside the state as a `.sav`. That is
+a real recovery path for someone whose only copy of a save is inside a state,
+and it is worth having whatever happens to state interchange.
 
-Still unverified: whether the same "it is just the emulator's own state" finding
-holds for the *other* systems' `.svs` files, or only for DS. Only DS has been
-opened and read.
+It is deliberately outside every sync path. It reads one file the user names and
+writes one new file; it never touches Delta's folder, RetroArch's saves or the
+manifest, so a last-resort recovery cannot damage anything that currently works.
+
+**It has never been run on a real `.svs`, and that is the honest status.** There
+is no save state anywhere on this machine: Delta's Dropbox folder contains no
+`SaveState` records at all, RetroArch's `states/` folders are empty, and a
+filesystem search finds no `.svs`. So unlike every other format here, the layout
+is read from source and has not been measured. The gap is closed by refusing
+rather than guessing — the parser checks the magic, the version major, the
+declared file length against the real one, that `NDCS` exists, that the length
+field holds one of the sizes above, and that the save fits inside its section.
+Any of those failing is an error with a reason, never a best-effort extraction.
+
+Two diagnostics are built in for the first time it meets a real file, because
+that run is also the experiment:
+
+- If `MELN` is missing from offset 0 but present later, it says at what offset.
+  That would mean Delta wraps the state after all, contradicting the finding
+  this is built on — worth hearing about rather than working around.
+- If `NDSC` is present without `NDCS`, it says so specifically, rather than
+  reporting a generic parse failure.
+
+**Still unverified beyond that:** whether the same "it is just the emulator's own
+state" finding holds for the *other* systems' `.svs` files, or only for DS. Only
+DS has been opened and read. The other cores write their own state formats and
+none of them will have a `MELN` header, so `extract-save` refuses them with a
+message saying as much rather than appearing to half-work.
+
+**What would settle all of it:** one real DS `.svs` from the phone. Delta's
+Documents are browsable — `UIFileSharingEnabled` is set — so a state can be
+copied out through the Files app the same way the Controller Paks can.
 
 ## Push: what actually failed
 
@@ -741,6 +832,9 @@ happened for the DS save format, the Crystal clock base, and the N64 size guard.
 - <https://github.com/drehren/ra_mp64_srm_convert>
 - <https://github.com/JesseTG/melonds-ds/discussions/168>
 - <https://github.com/lautixhx/svs-sav-converter>
+- <https://github.com/melonDS-emu/melonDS/blob/0.9.5/src/Savestate.cpp>
+- <https://github.com/melonDS-emu/melonDS/blob/0.9.5/src/Savestate.h>
+- <https://github.com/melonDS-emu/melonDS/blob/0.9.5/src/NDSCart.cpp>
 - <https://melonds.kuribo64.net/comments.php?id=192>
 - <https://forums.desmume.org/viewtopic.php?id=1678>
 - <https://forums.nesdev.org/viewtopic.php?t=5262>

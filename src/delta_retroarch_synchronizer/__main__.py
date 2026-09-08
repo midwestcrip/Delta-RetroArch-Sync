@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from . import config as config_module
-from . import delta_writer, discovery, dropbox_api, health, paths, restore
+from . import delta_writer, discovery, dropbox_api, health, paths, restore, savestate
 from . import inspect as inspect_module
 from . import sync as sync_module
 from . import systems
@@ -485,6 +485,67 @@ def run_shortcuts_command(*, remove: bool) -> int:
     return 0
 
 
+def run_extract_save_command(
+    source: str, destination: str | None, force: bool
+) -> int:
+    """Lift the battery save out of a Delta save state.
+
+    Deliberately not part of any sync pass. This reads one file the user names
+    and writes one new file beside it; it never touches Delta's folder,
+    RetroArch's saves, or the manifest. That keeps a last-resort recovery from
+    being able to damage anything that is currently working.
+    """
+    state_path = Path(source).expanduser()
+    if not state_path.is_file():
+        print(f"No such file: {state_path}")
+        return 1
+
+    try:
+        blob = state_path.read_bytes()
+    except OSError as error:
+        print(f"Could not read {state_path}: {error}")
+        return 1
+
+    try:
+        extracted = savestate.extract_battery_save(blob)
+    except savestate.SaveStateError as error:
+        print(f"Cannot extract a save from {state_path.name}:\n  {error}")
+        return 1
+
+    target = (
+        Path(destination).expanduser()
+        if destination
+        else state_path.with_suffix(".sav")
+    )
+    if target.exists() and not force:
+        print(f"{target} already exists. Nothing written.")
+        print("Pass --force to overwrite it, or --output to write elsewhere.")
+        return 1
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(extracted.data)
+    except OSError as error:
+        print(f"Could not write {target}: {error}")
+        return 1
+
+    variant = extracted.cart_variant or "an unrecognised cart type"
+    print(f"\nRecovered {extracted.size:,} B from {state_path.name}")
+    print(f"  save type:   {extracted.save_type}")
+    print(f"  cartridge:   {variant}")
+    print(f"  state format: version {extracted.version[0]}.{extracted.version[1]}")
+    print(f"  written to:  {target}")
+    print(
+        "\nThis is the raw battery save. Delta and RetroArch both take it as-is "
+        "-- rename it to what the other side expects rather than converting it."
+    )
+    print(
+        "Check it before relying on it: the layout is read from melonDS's "
+        "source and has not been verified against a real Delta state."
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="delta-retroarch-synchronizer",
@@ -533,6 +594,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Take the shortcuts back out again.",
     )
+    extract_parser = subparsers.add_parser(
+        "extract-save",
+        help="Recover the battery save from a Delta save state (.svs). DS only.",
+    )
+    extract_parser.add_argument("state", help="Path to the .svs file.")
+    extract_parser.add_argument(
+        "--output",
+        help="Where to write the .sav. Defaults to beside the state.",
+    )
+    extract_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite the output if it already exists.",
+    )
     auth_parser = subparsers.add_parser(
         "auth", help="Authorise Dropbox once, so pushing can read file revisions."
     )
@@ -567,6 +642,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_restore_command(args.number, args.yes)
     if args.command == "shortcuts":
         return run_shortcuts_command(remove=args.remove)
+    if args.command == "extract-save":
+        return run_extract_save_command(args.state, args.output, args.force)
     if args.command == "auth":
         return run_auth_command(args.app_key, args.code)
 

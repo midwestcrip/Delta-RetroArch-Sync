@@ -9,12 +9,14 @@ that to disk. This tool is the missing piece in the middle: it reconciles
 Delta's mirrored folder against RetroArch's directories around the moments you
 actually play.
 
-**Not in scope:** save states, controller skins, and app configs. Skins and
-configs have no shared representation between the two apps to convert between.
-Save states are a narrower story than "incompatible formats" — a Delta `.svs`
-turns out to be the emulator's own save state byte for byte, and what stops them
-interchanging is that Delta and RetroArch ship *different versions* of the same
-emulator. See [docs/research.md](docs/research.md#save-states-not-a-proprietary-format-a-version-lock).
+**Not in scope:** syncing save states, controller skins, and app configs. Skins
+and configs have no shared representation between the two apps to convert
+between. Save states are a narrower story than "incompatible formats" — a Delta
+`.svs` turns out to be the emulator's own save state byte for byte, and what
+stops them interchanging is that Delta and RetroArch ship *different versions* of
+the same emulator. The battery save inside a state **can** be recovered, and
+that is built — see [Getting a save back out of a save state](#getting-a-save-back-out-of-a-save-state)
+and [docs/research.md](docs/research.md#save-states-not-a-proprietary-format-a-version-lock).
 The original brief is kept at [docs/brief.md](docs/brief.md) as a historical
 record, annotated where it turned out wrong.
 
@@ -209,7 +211,29 @@ The whole set:
 | `backups` | List the saves and cheats that can be put back |
 | `restore N` | Put one back. Writes nothing without `--yes` |
 | `shortcuts` | Add the Start menu and desktop shortcuts. `--remove` takes them out |
+| `extract-save` | Recover the battery save out of a Delta save state. DS only |
 | `auth` | Authorise Dropbox once, so pushing can read file revisions |
+
+### Getting a save back out of a save state
+
+Save states do not sync, and are not going to. But the battery save sitting
+*inside* one can be pulled out, which matters when a state is the only copy of
+your progress left:
+
+```bash
+python -m delta_retroarch_synchronizer extract-save "Pokemon Platinum.svs"
+```
+
+That writes a plain `.sav` beside the state and touches nothing else — not
+Delta's folder, not RetroArch's saves, not the manifest. Rename the result to
+whatever the side you want it on expects.
+
+Two honest caveats. It is **Nintendo DS only**: a `.svs` for any other system is
+that core's own state format, and the command will say so rather than half-work.
+And the layout is read from melonDS's source but **has not yet been run against
+a real Delta save state**, because there wasn't one available to test with — so
+it validates hard and refuses rather than guessing whenever anything looks
+wrong. Check the recovered file before relying on it.
 
 If automatic discovery gets a path wrong, copy `config.example.toml` to
 `config.toml` and override it. `config.toml` is gitignored, because this
@@ -417,8 +441,8 @@ manifest or somebody's save backups.
 python -m pytest tests -q
 ```
 
-396 tests. `python -m unittest discover -s tests` also runs the whole suite and
-needs nothing installed, but it reports 238 — that is the number of test
+424 tests. `python -m unittest discover -s tests` also runs the whole suite and
+needs nothing installed, but it reports 266 — that is the number of test
 *methods*, and it does not tally the subtests inside them. Same coverage, and
 pytest is the only third-party package this repository asks for anywhere.
 
