@@ -667,34 +667,64 @@ emulator's own magic:
 
 | System | Emulator | First 4 bytes | What it is |
 | --- | --- | --- | --- |
-| DS | melonDS | `4d 45 4c 4e` `MELN` | **Readable today** |
+| DS | melonDS | `4d 45 4c 4e` `MELN` | Sectioned, self-describing |
 | SNES | snes9x | `23 21 73 39` `#!s9xsnp:0009` | Text header, then named chunks |
 | NES | nestopia | `4e 53 54 1a` `NST\x1a` | Chunked, `NFO` block first |
-| N64 | mupen64plus | `1f 8b 08 00` | **gzip** — decompress, then parse |
+| N64 | mupen64plus | `1f 8b 08 00` | **gzip** — and holds no save at all |
 | GBA | visualboyadvance-m | `1f 8b 08 00` | **gzip** — same |
 | GBC | gambatte | `00 01 00 00` | Labelled fields, no magic at all |
 
 Sizes ranged from 13 KB (Kirby's Adventure) to 19.6 MB (Platinum), which is
 mostly a statement about how much RAM each console has.
 
-**All five are buildable, and none is blocked.** The version-lock argument does
-not apply — extracting a save is cutting bytes out of a file, not loading a
-state into an emulator, so only the layout matters. Rough order of difficulty
-from the headers:
+### All of them built, 2026-09-08
 
-- **snes9x** looks easiest. `#!s9xsnp:0009` is a text header followed by named
-  chunks (`NAM:`, and others), one of which is the SRAM.
-- **nestopia** is chunked too, with `NST\x1a` and FourCC-ish blocks.
-- **mupen64plus** and **VBA-M** need a `gzip.decompress` first, which is stdlib,
-  and then have a layout to find. The N64 one is especially interesting because
-  its save regions are the same four this project already maps in `n64.py`.
-- **gambatte** looks fiddliest: no magic, a bare labelled-field serialisation.
+Five extract. The sixth has nothing to extract. Every one was checked against
+Delta's own battery save for that game, and every one came back **byte-for-byte
+identical**:
 
-**The verification story is already solved for all of them.** Delta holds a
-`GameSave` record for every one of these games, so each extractor can be checked
-against the real battery save the moment it is written — exactly the way the DS
-one was. That is the same discipline `ENABLED_SYSTEMS` enforces: a format is
-supported once a real file has been measured, not before.
+| Emulator | Verified on | Save location | Length from |
+| --- | --- | --- | --- |
+| melonDS | Pokémon Platinum, 524,288 B | `NDCS + 0x20` | the state |
+| gambatte | Pokémon Crystal, 32,768 B | field `sram` | the state |
+| snes9x | Super Mario World, 2,048 B | prefix of block `SRA` | Delta's record |
+| nestopia | Kirby's Adventure, 8,192 B | prefix of chunk `WRM` | Delta's record |
+| visualboyadvance-m | Pokémon Fire Red, 131,072 B | computed offset 594,460 | Delta's record |
+| mupen64plus | Paper Mario | **not in the file** | — |
+
+Three things came out of doing all five that were not obvious from the headers.
+
+**Only two formats say how big the save is.** melonDS writes `SRAMLength` and
+gambatte gives `sram` its own field length, so those two work on a state copied
+anywhere. snes9x writes `Memory.SRAM_SIZE`, a compile-time constant — 0x20000 in
+Delta's build, 0x80000 today — and nestopia writes the whole of `GetWram()`;
+neither records how much of that buffer is the cartridge's. VBA-M records
+nothing at all. So three of the five need the length from Delta's record, which
+is the rule `n64.py` already follows, and refuse without it. Guessing from the
+filler would have worked on every file measured and would silently truncate a
+save that legitimately ends in a run of one byte.
+
+**VBA-M cannot be found by searching, and that was measured rather than
+assumed.** Its state is a flat run of raw writes with nothing naming or sizing
+them, so the save is reached only by adding up everything written before it.
+Scanning the real 2 MB state for a plausible `flashSaveData3` gives **144
+matches**, exactly one of which is right. The offsets are therefore computed
+from the revision Delta actually ships — `GBADeltaCore` pins the submodule at
+453fa0de, whose `CPUWriteState` differs from current upstream — and then
+*checked* before being trusted, because computing against upstream master lands
+about 500 bytes off, which is the near-miss that returns plausible garbage.
+
+**N64 was answered by the oracle before the source explained it.** Delta's
+131,072-byte Paper Mario save appears nowhere in the 16,793,412 decompressed
+bytes of its state, in either byte order. `savestates.c` then said why: it
+writes the flashram controller's registers and none of the storage, and the
+words *eeprom*, *mempak* and *sram* do not occur in it at all. That is a
+permanent absence, not a missing feature, and the tool says so in those terms.
+
+Incidental, found on the way: **Delta's N64 saves are 32-bit word-swapped.**
+Paper Mario's begins `iraMtS o yro`, which is "Mario Story" in four-byte groups.
+Both sides use the same convention so `n64.py` is unaffected, but it is worth
+having written down.
 
 ## Push: what actually failed
 

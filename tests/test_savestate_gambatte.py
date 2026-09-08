@@ -147,13 +147,19 @@ class MupenSaveStatesHoldNoSaveTests(unittest.TestCase):
         self.assertIn("no battery save inside it", message)
         self.assertIn(".eep/.sra/.fla/.mpk", message)
 
-    def test_another_gzip_state_is_reported_as_not_yet_readable(self) -> None:
-        """A GBA state is gzip too, and is a different answer: unsupported, not
-        impossible."""
+    def test_a_GBA_state_is_gzip_too_and_goes_to_the_VBA_M_reader(self) -> None:
+        """Both formats are gzip on the outside, so the dispatcher has to look
+        inside. An N64 state is refused for good; a GBA one is handed to the
+        VBA-M reader, which refuses this stub for a different reason -- it is
+        far too short to hold the blocks that precede the save."""
         inner = b"\x0a\x00\x00\x00" + b"POKEMON FIREBPRE"
         with self.assertRaises(savestate.SaveStateError) as caught:
-            savestate.extract_battery_save(gzip.compress(inner + b"\x00" * 512))
-        self.assertIn("cannot read yet", str(caught.exception))
+            savestate.extract_battery_save(
+                gzip.compress(inner + b"\x00" * 512), expected_size=131072
+            )
+        message = str(caught.exception)
+        self.assertNotIn("no battery save inside it", message)
+        self.assertIn("does not fit", message)
 
     def test_a_corrupt_gzip_state_is_refused_cleanly(self) -> None:
         with self.assertRaises(savestate.SaveStateError) as caught:

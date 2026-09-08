@@ -30,6 +30,8 @@ DS_SHA1 = "0862ec35b24de5c7e2dcb88c9eea0873110d755c"
 GBA_SHA1 = "dd5945db9b930750cb39d00c84da8571feebf417"
 DS_UUID = "1B4E28BA-2FA1-11D2-883F-0016D3CCA427"
 GBA_UUID = "AAAAAAAA-1111-2222-3333-444444444444"
+N64_SHA1 = "3837f44cda784b466c9a2d99df70d77c322b97a0"
+N64_UUID = "BBBBBBBB-1111-2222-3333-444444444444"
 
 
 def melonds_state(sram: bytes) -> bytes:
@@ -111,17 +113,35 @@ class DeltaFolderTests(unittest.TestCase):
             ("Game Boy Advance", "visualboyadvance-m"),
         )
 
-    def test_only_the_DS_state_is_offered_as_recoverable(self) -> None:
+    def test_both_readable_states_are_offered(self) -> None:
         by_game = {s.game_name: s for s in savestate.find_states(self.folder)}
         self.assertTrue(by_game["Pokemon: Platinum Version"].recoverable)
-        self.assertFalse(by_game["Pokemon: Fire Red Version"].recoverable)
+        self.assertTrue(by_game["Pokemon: Fire Red Version"].recoverable)
 
-    def test_a_non_melonDS_state_names_the_core_and_shows_its_magic(self) -> None:
-        """This row is how the other-systems question gets answered by looking."""
+    def test_an_N64_state_is_never_offered(self) -> None:
+        """Not "not yet" -- a mupen64plus state contains no save at all, and
+        the core from the record is the only way to know, since it is gzip on
+        the outside exactly like a readable GBA state."""
+        self._write_game(N64_SHA1, "Paper Mario", "n64")
+        self._write_state(
+            N64_UUID, N64_SHA1, "Slot 1", b"\x1f\x8b\x08\x00" + b"\x00" * 64
+        )
+        found = {s.game_name: s for s in savestate.find_states(self.folder)}
+        paper = found["Paper Mario"]
+        self.assertFalse(paper.recoverable)
+        self.assertIn("no save inside a state", paper.describe_format())
+
+    def test_each_row_names_the_emulator_that_wrote_the_state(self) -> None:
+        """This column is how the other-systems question got answered: by
+        looking at it rather than by running five commands."""
         by_game = {s.game_name: s for s in savestate.find_states(self.folder)}
-        described = by_game["Pokemon: Fire Red Version"].describe_format()
-        self.assertIn("visualboyadvance-m", described)
-        self.assertIn("VBA", described)
+        self.assertIn(
+            "visualboyadvance-m",
+            by_game["Pokemon: Fire Red Version"].describe_format(),
+        )
+        self.assertIn(
+            "melonDS", by_game["Pokemon: Platinum Version"].describe_format()
+        )
 
     def test_the_slot_name_the_user_typed_is_carried_through(self) -> None:
         by_game = {s.game_name: s for s in savestate.find_states(self.folder)}

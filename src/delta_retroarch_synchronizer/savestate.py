@@ -407,10 +407,7 @@ def extract_battery_save(
                 "the save data itself is never part of one. Nothing this tool "
                 "could do would change that."
             )
-        raise SaveStateError(
-            "this is a gzip-compressed save state, most likely "
-            "visualboyadvance-m's, which this tool cannot read yet."
-        )
+        return extract_vbam(inner, expected_size)
 
     # Not a format we read. Say which one it is when the magic identifies it,
     # so the answer is "not supported yet" rather than "unreadable".
@@ -787,6 +784,175 @@ MUPEN64PLUS_MAGIC = b"M64+SAVE"
 #: as "not readable yet" would promise something that is never coming.
 CORES_WITHOUT_SAVES_IN_STATES = frozenset({"mupen64plus"})
 
+#: Delta cores this tool can extract from. Redundant with
+#: :data:`READABLE_FORMATS` for the four that have a distinguishing magic, and
+#: load-bearing for visualboyadvance-m, which shares gzip with mupen64plus.
+READABLE_CORES = frozenset(
+    {"melonDS", "snes9x", "nestopia", "gambatte", "visualboyadvance-m"}
+)
+
+
+# ---------------------------------------------------------------------------
+# visualboyadvance-m
+#
+# The hardest of the six, because a VBA-M state has no structure at all: it is
+# gzip around a flat sequence of raw writes with nothing naming or sizing any of
+# them. ``CPUWriteState`` just calls ``utilGzWrite`` down a list, so the only way
+# to reach the save is to add up everything written before it.
+#
+# Searching for it instead is not an option, and that was measured rather than
+# assumed. The flash block is preceded by ``flashSaveData3``, four ints -- and
+# scanning the real 2 MB state for a plausible one gives **144 matches**, of
+# which exactly one is right. Any pattern search here would be wrong 143 times
+# out of 144.
+#
+# So the offset is computed, and the sizes come from the exact revision Delta
+# ships: ``GBADeltaCore`` pins ``visualboyadvance-m`` at submodule commit
+# 453fa0de, whose ``CPUWriteState`` is materially different from the current
+# upstream one -- no DMA variables, and ``pix`` fixed at ``4 * 241 * 162``.
+# Computing against upstream master lands about 500 bytes off, which is exactly
+# the kind of near-miss that would return plausible garbage.
+#
+# The chain, all from that revision::
+#
+#     4    SAVE_GAME_VERSION            (10)
+#     16   &rom[0xa0]                   the ROM title
+#     4    useBios
+#     180  reg[45] * 4                  Globals.h: reg_pair reg[45]
+#     267  saveGameStruct               115 entries
+#     4    stopState
+#     4    IRQTicks
+#     ---- 479
+#     585224  internalRAM 0x8000, paletteRAM 0x400, workRAM 0x40000,
+#             vram 0x20000, oam 0x400, pix 4*241*162, ioMem 0x400
+#     8741    eepromSaveGame: eepromSaveData 545, eepromSize 4, eepromData 0x2000
+#     ---- 594444  flashSaveData3 starts here
+#     16      flashState, flashReadState, g_flashSize, flashBank
+#     ---- 594460  flashSaveMemory
+#
+# That lands on 594,444 for the real Pokémon Fire Red state, which is exactly
+# where its ``flashSaveData3`` is -- a six-figure number matching on the nose,
+# not a fit.
+#
+# It is still arithmetic against one revision, so it is checked before it is
+# trusted: the version must be 10, and the four ints at the computed offset must
+# be a credible descriptor. If either fails, this refuses. A wrong offset here
+# would return 128 KB of someone else's RAM shaped exactly like a save.
+# ---------------------------------------------------------------------------
+
+#: ``SAVE_GAME_VERSION_10``. A different version means a different layout, and
+#: the layout is the whole basis of this, so anything else is refused.
+VBAM_SAVE_GAME_VERSION = 10
+
+#: Everything ``CPUWriteState`` writes before the fixed RAM blocks.
+VBAM_PREFIX_SIZE = 4 + 16 + 4 + 180 + 267 + 4 + 4  # 479
+
+#: internalRAM, paletteRAM, workRAM, vram, oam, pix, ioMem.
+VBAM_RAM_BLOCKS = 0x8000 + 0x400 + 0x40000 + 0x20000 + 0x400 + (4 * 241 * 162) + 0x400
+
+#: ``eepromSaveGame``: the descriptor, then ``eepromSize``, then the data.
+VBAM_EEPROM_DESC_SIZE = 545
+VBAM_EEPROM_DATA_SIZE = 0x2000
+
+#: ``flashSaveData3``: flashState, flashReadState, g_flashSize, flashBank.
+VBAM_FLASH_DESC_SIZE = 16
+
+#: ``SIZE_FLASH512`` and ``SIZE_FLASH1M`` -- the only two g_flashSize values the
+#: hardware has, and what makes the computed offset checkable.
+VBAM_FLASH_SIZES = (65536, 131072)
+
+#: Save sizes that live in the EEPROM block rather than the flash buffer.
+VBAM_EEPROM_SAVE_SIZES = (512, 8192)
+
+
+def _vbam_offsets() -> tuple[int, int, int]:
+    """``(eeprom data, flash descriptor, flash data)`` offsets in the state."""
+    eeprom_block = VBAM_PREFIX_SIZE + VBAM_RAM_BLOCKS
+    eeprom_data = eeprom_block + VBAM_EEPROM_DESC_SIZE + 4
+    flash_desc = eeprom_data + VBAM_EEPROM_DATA_SIZE
+    return eeprom_data, flash_desc, flash_desc + VBAM_FLASH_DESC_SIZE
+
+
+def extract_vbam(blob: bytes, expected_size: int | None) -> ExtractedSave:
+    """Lift the battery save out of a visualboyadvance-m state.
+
+    ``blob`` is the *decompressed* state. ``expected_size`` decides which buffer
+    the save lives in -- EEPROM saves are in their own block, everything else
+    (SRAM and both flash sizes) is a prefix of ``flashSaveMemory``.
+    """
+    if len(blob) < 24:
+        raise SaveStateError("the state is too short to be a VBA-M save state.")
+
+    version = int.from_bytes(blob[0:4], "little")
+    if version != VBAM_SAVE_GAME_VERSION:
+        raise SaveStateError(
+            f"this is a VBA-M save state of version {version}, and only "
+            f"version {VBAM_SAVE_GAME_VERSION} is understood -- the layout is "
+            "computed by adding up every field written before the save, so a "
+            "different version moves everything. Refusing rather than reading "
+            "the wrong bytes."
+        )
+
+    title = blob[4:20].rstrip(b"\x00").decode("latin-1").strip()
+    eeprom_data, flash_desc, flash_data = _vbam_offsets()
+
+    if expected_size is None:
+        raise SaveStateError(
+            "a VBA-M state does not record how large the cartridge's save is. "
+            "Pass the length with --size, or run this on a state still in "
+            "Delta's synced folder so the record can supply it."
+        )
+
+    if expected_size in VBAM_EEPROM_SAVE_SIZES:
+        end = eeprom_data + expected_size
+        if end > len(blob):
+            raise SaveStateError(
+                "the state is too short to hold its EEPROM block. Either it is "
+                "truncated or it is not the revision this was built against."
+            )
+        return ExtractedSave(
+            data=blob[eeprom_data:end],
+            save_type=f"EEPROM, {expected_size:,} B ({title})",
+            cart_variant=None,
+            version=(version, 0),
+            core="visualboyadvance-m",
+            size_from_record=True,
+        )
+
+    if flash_data + expected_size > len(blob):
+        raise SaveStateError(
+            f"a {expected_size:,}-byte save does not fit at the computed offset "
+            f"{flash_data:,} in a {len(blob):,}-byte state. Either it is "
+            "truncated or it is not the revision this was built against."
+        )
+
+    # The computed offset is only as good as the arithmetic, so make it prove
+    # itself: these four ints are flashSaveData3 and are highly constrained.
+    state, read_state, flash_size, bank = struct.unpack_from(
+        "<iiii", blob, flash_desc
+    )
+    if flash_size not in VBAM_FLASH_SIZES or bank not in (0, 1):
+        raise SaveStateError(
+            f"the bytes at the computed flash offset {flash_desc:,} are not a "
+            f"flash descriptor (size {flash_size}, bank {bank}). This state is "
+            "not the VBA-M revision Delta ships, so the offsets do not apply. "
+            "Refusing rather than returning whatever is there."
+        )
+    if expected_size > flash_size:
+        raise SaveStateError(
+            f"the record says the save is {expected_size:,} bytes but the state "
+            f"says the chip is {flash_size:,}. Refusing."
+        )
+
+    return ExtractedSave(
+        data=blob[flash_data : flash_data + expected_size],
+        save_type=f"flash/SRAM, {expected_size:,} B ({title})",
+        cart_variant=None,
+        version=(version, 0),
+        core="visualboyadvance-m",
+        size_from_record=True,
+    )
+
 
 # ---------------------------------------------------------------------------
 # gambatte
@@ -1145,10 +1311,12 @@ class FoundState:
 
     @property
     def format_name(self) -> str | None:
-        """Which emulator's format this is, when the magic identifies one."""
+        """Which emulator's format this is, when anything identifies one."""
         for prefix, name in READABLE_FORMATS.items():
             if self.magic.startswith(prefix):
                 return name
+        if self.delta_core in READABLE_CORES:
+            return self.delta_core
         for prefix, name in IDENTIFIED_FORMATS.items():
             if self.magic.startswith(prefix):
                 return name
@@ -1156,7 +1324,19 @@ class FoundState:
 
     @property
     def recoverable(self) -> bool:
-        return any(self.magic.startswith(p) for p in READABLE_FORMATS)
+        """Whether a save can be got out of this one.
+
+        The magic settles it for four of the five. GBA cannot be settled that
+        way -- a VBA-M state and an N64 state are both gzip on the outside, and
+        one has a save inside while the other has none -- so the core from
+        Delta's record breaks the tie. Reading the bytes instead would mean
+        decompressing sixteen megabytes to draw a table row.
+        """
+        if self.delta_core in CORES_WITHOUT_SAVES_IN_STATES:
+            return False
+        if any(self.magic.startswith(p) for p in READABLE_FORMATS):
+            return True
+        return self.delta_core in READABLE_CORES
 
     def describe_format(self) -> str:
         """What this state is, in the terms someone reading a list needs.

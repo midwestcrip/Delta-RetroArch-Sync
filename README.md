@@ -211,7 +211,7 @@ The whole set:
 | `backups` | List the saves and cheats that can be put back |
 | `restore N` | Put one back. Writes nothing without `--yes` |
 | `shortcuts` | Add the Start menu and desktop shortcuts. `--remove` takes them out |
-| `extract-save` | Recover the battery save out of a Delta save state. DS only |
+| `extract-save` | Recover the battery save out of a Delta save state |
 | `auth` | Authorise Dropbox once, so pushing can read file revisions |
 
 ### Getting a save back out of a save state
@@ -241,14 +241,32 @@ Delta's own copy and tells you whether they match byte for byte. That is the
 difference between "the file parsed" and "the extraction is correct". A state
 you copied somewhere else first simply gets no cross-check, and says so.
 
-**Verified on a real Delta save state** (2026-09-08): a Pokemon Platinum state
-of 19,643,269 bytes gave up a 524,288-byte save whose SHA-1 matched Delta's own
-battery save for that game exactly.
+**Five of the six systems work, and every one was verified against a real save
+state** on 2026-09-08 — each recovered save came out byte-for-byte identical to
+Delta's own battery save for that game:
 
-One limit: it is **Nintendo DS only**. Every system's `.svs` is its own
-emulator's save state format — snes9x, nestopia, gambatte, visualboyadvance-m
-and mupen64plus all write something different — so those are listed but not yet
-readable. None of them is blocked, they are just each their own piece of work.
+| System | Emulator | Verified against |
+| --- | --- | --- |
+| Game Boy Advance | visualboyadvance-m | Pokémon Fire Red, 131,072 B |
+| Super Nintendo | snes9x | Super Mario World, 2,048 B |
+| Game Boy / Color | gambatte | Pokémon Crystal, 32,768 B |
+| NES | nestopia | Kirby's Adventure, 8,192 B |
+| Nintendo DS | melonDS | Pokémon Platinum, 524,288 B |
+| Nintendo 64 | mupen64plus | **nothing to recover** — see below |
+
+**N64 is not a gap, it is an absence.** A mupen64plus save state contains no
+battery save at all: it stores the flash controller's registers and none of the
+storage behind them, and keeps the cartridge's save in separate `.eep`/`.sra`/
+`.fla`/`.mpk` files. The words *eeprom*, *mempak* and *sram* do not appear in
+mupen64plus's save-state code. Nothing can be added later to change that, and
+the tool says so rather than pretending it is unfinished work.
+
+Two of the formats — melonDS and gambatte — record how big their save is, so
+they work on a state copied anywhere. The other three store a fixed-size buffer
+and never say how much of it is the cartridge's, so they need the length: either
+from Delta's record (automatic, when the state is still in Delta's folder) or
+from `--size`. They refuse rather than guess, because guessing means handing
+back a plausible-looking wrong file.
 
 If automatic discovery gets a path wrong, copy `config.example.toml` to
 `config.toml` and override it. `config.toml` is gitignored, because this
@@ -456,8 +474,8 @@ manifest or somebody's save backups.
 python -m pytest tests -q
 ```
 
-450 tests. `python -m unittest discover -s tests` also runs the whole suite and
-needs nothing installed, but it reports 292 — that is the number of test
+510 tests. `python -m unittest discover -s tests` also runs the whole suite and
+needs nothing installed, but it reports 352 — that is the number of test
 *methods*, and it does not tally the subtests inside them. Same coverage, and
 pytest is the only third-party package this repository asks for anywhere.
 
