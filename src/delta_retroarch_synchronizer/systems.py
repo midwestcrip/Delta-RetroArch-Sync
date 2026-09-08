@@ -201,12 +201,19 @@ SYSTEMS: dict[str, System] = {
 #: the cartridge's 32KB SRAM, raw with no header or footer.
 #:
 #: Its clock syncs too, as of 2026-09-07, but only on Gambatte. Delta carries a
-#: second file on the same record, `gameTimeSave` -- four bytes, a big-endian
-#: Unix timestamp of when the game was last played, used to advance Crystal's
-#: real-time clock. Gambatte-libretro stores the same quantity as eight
+#: second file on the same record, `gameTimeSave` -- four bytes, big-endian,
+#: holding the instant the cartridge's clock read zero. Not a play time: the
+#: emulator derives the live clock as `now - base`, and the base stays put for
+#: the life of a save. Gambatte-libretro stores the same quantity as eight
 #: little-endian bytes in a `.rtc` beside the save, so the two are a lossless
 #: width-and-byte-order swap. Both were confirmed against real files rather than
 #: read out of source, which is why Gambatte is the only entry in `clock_cores`.
+#:
+#: This comment called it "when the game was last played" until 2026-09-08, when
+#: the record history settled it: across eight versions of Crystal's record the
+#: save hash changed six times and the clock value never changed once. See
+#: `clock.py` for the full argument and `docs/research.md` for the Gambatte
+#: source it agrees with.
 #:
 #: `clock_cores` is deliberately narrower than `retroarch_cores`. mGBA-libretro
 #: writes a 48-byte struct under the same filename and SameBoy and TGB Dual are

@@ -2,29 +2,58 @@
 
 Pokemon Crystal and Gold/Silver keep a real-time clock: day and night, the
 Bug-Catching Contest, berry regrowth and Lapras are all gated on it. The clock
-is *not* part of the battery save. Both emulators store the wall-clock time at
-which the game was last saved in a separate file, and advance the cartridge's
-clock on load by however much real time has passed since.
+is *not* part of the battery save; it lives in a file of its own.
 
-That makes the clock file a matched pair with the save. Move one without the
-other and the emulator measures elapsed time from the wrong starting point, so
-the in-game date jumps by however long the two devices were apart.
+**What the stored value is, because it is easy to read as the wrong thing.** It
+is a *base instant*: the moment the cartridge's clock read zero. Gambatte
+derives the live reading as ``std::time(0) - baseTime_`` every time the game
+latches the clock (``Rtc::doLatch``), so the file holds the starting point and
+the clock is computed from it. It is **not** a play time, not a last-saved time,
+and not a clock reading.
+
+The base normally never moves for the life of a save. It changes only when the
+*game* writes the MBC3 clock registers, or on the 511-day overflow -- and
+Crystal does not write them; it keeps its own time reference inside the battery
+save. Two consequences that have each caused a false alarm here: fast-forward
+cannot advance the in-game clock, because it counts real seconds; and setting
+the in-game time does not move the base either.
+
+That is why the clock file still belongs with its save. Both machines must count
+from the same instant, or they derive different in-game clocks from the same
+cartridge -- and Gambatte's constructor starts ``baseTime_`` at zero, so a
+machine with no clock file at all would compute decades of elapsed time.
 
 Both formats were confirmed against real files on 2026-09-06, not inferred:
 
 - **Delta** writes ``GameSave-<sha1>-gameTimeSave``: four bytes, big-endian.
   The Crystal save on this machine held ``6a 9d cb 79`` -> 1788726137 ->
-  2026-09-06 20:22 UTC, which is when the game was last played on the iPad.
-  Read little-endian the same bytes give 2034, so the byte order is not a
-  guess.
+  2026-09-06 20:22 UTC. Read little-endian the same bytes give 2034, so the
+  byte order is evidence rather than a guess.
 - **Gambatte** writes ``<content>.rtc`` beside the save: eight bytes,
-  little-endian. The same game after one session under RetroArch held
+  little-endian. A *freshly started* game under RetroArch held
   ``a6 0d 9e 6a 00 00 00 00`` -> 1788743078, 83 seconds before the file was
-  inspected -- i.e. the moment RetroArch was closed.
+  inspected.
 
-So the conversion is a width-and-byte-order swap and nothing else. It is
-lossless in both directions until the 32-bit timestamp overflows in 2106, and
-``to_delta`` refuses rather than truncating if it ever sees a value that large.
+**Why both of those looked like play times, and are not.** A new game's clock
+starts at zero *now*, so its base is ~now -- which for a fresh save is
+indistinguishable from "when I last played". Both readings above were taken on
+fresh saves, and the coincidence is what the earlier version of this docstring
+mistook for the definition.
+
+Settled against real state on 2026-09-08 rather than argued from source, because
+source-derived answers have been wrong here before. Eight consecutive versions
+of Crystal's Delta record, spanning 2026-09-07 01:05 to 15:08 UTC, show the
+``gameSave`` hash changing six times while ``gameTimeSave`` stays byte-identical
+throughout. The game was played and saved repeatedly; the clock value never
+moved. A last-played timestamp would have moved every time.
+
+So the conversion is a width-and-byte-order swap and nothing else: both sides
+hold the same quantity, in different widths and byte orders. Verified on the
+live files the same day -- Delta's ``6a 9d cb 79`` and RetroArch's
+``79 cb 9d 6a 00 00 00 00`` decode to the identical 1788726137, and ``doctor``
+reports both sides agreeing. It is lossless in both directions until the 32-bit
+timestamp overflows in 2106, and ``to_delta`` refuses rather than truncating if
+it ever sees a value that large.
 
 **Gambatte only.** mGBA's libretro core writes a ``.rtc`` of the same name that
 is a 48-byte ``GBMBCRTCSaveBuffer`` struct -- a different thing entirely, and

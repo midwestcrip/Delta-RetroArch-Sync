@@ -271,6 +271,33 @@ The clock *push* is correct but close to unreachable through normal play — it
 compares, finds both sides identical, and declines. `doctor` reports whether the
 two sides agree, which is the only thing here that can be silently wrong.
 
+**Delta stores the same quantity, confirmed from the record history on
+2026-09-08.** This had only ever been established for Gambatte, from its source;
+the Delta side was assumed to match because Delta also runs Gambatte. Assuming
+it was the weak link, because the conversion in `clock.py` is a plain
+width-and-byte-order swap and is correct only if both files mean the same thing.
+A last-played timestamp on one side and a base instant on the other would have
+been silently shifting Crystal's clock on every sync.
+
+The rolling backups answer it without needing either emulator's source. Eight
+consecutive versions of Crystal's `GameSave` record, spanning 2026-09-07 01:05
+to 15:08 UTC:
+
+| | `gameSave` | `gameTimeSave` |
+| --- | --- | --- |
+| across 8 record versions | **6 distinct hashes** | **1 hash, unchanged** |
+
+The game was played and saved six times over fourteen hours and the clock value
+never moved. A "when the game was last played" timestamp would have moved with
+every one of them. It is a base instant on both sides, the swap is sound, and
+the live files agree: Delta's `6a 9d cb 79` and RetroArch's
+`79 cb 9d 6a 00 00 00 00` both decode to 1788726137, with `doctor` reporting
+`clock: agrees on both sides`.
+
+The reason the original measurements looked like play times is that both were
+taken on **fresh saves**, where the clock starts at zero *now* and the base is
+therefore indistinguishable from the moment you stopped playing.
+
 ### The DS has no clock file, and needs none
 
 Checked 2026-09-07 against the real Dropbox folder rather than reasoned about,
