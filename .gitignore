@@ -26,6 +26,10 @@ config.toml
 manifest.json
 logs/
 backups/
+
+# Battery saves pulled out of save states. Someone's actual save data;
+# never ship it and never commit it.
+recovered/
 inspect-report.*
 
 # RetroArch / Delta artifacts that may get dropped in here while testing

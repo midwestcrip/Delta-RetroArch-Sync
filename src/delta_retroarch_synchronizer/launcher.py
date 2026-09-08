@@ -722,7 +722,10 @@ class LauncherWindow:
             return
 
         try:
-            extracted = savestate.extract_battery_save(found.path.read_bytes())
+            extracted = savestate.extract_battery_save(
+                found.path.read_bytes(),
+                expected_size=savestate.delta_save_size(found.path),
+            )
         except (OSError, savestate.SaveStateError) as error:
             self._say(f"Could not read that save state: {error}", "error")
             messagebox.showerror(

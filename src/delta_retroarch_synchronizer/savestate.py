@@ -183,8 +183,15 @@ class ExtractedSave:
     save_type: str
     #: Which cart subclass the trailing bytes match, or ``None`` if unrecognised.
     cart_variant: str | None
-    #: ``(major, minor)`` of the state format.
+    #: ``(major, minor)`` of the state format. Formats with a single version
+    #: number report it as the major with a zero minor.
     version: tuple[int, int]
+    #: Which emulator's state this came out of.
+    core: str = "melonDS"
+    #: True when the length came from Delta's record rather than from the state
+    #: itself. Only melonDS states say how long their save is; the rest store a
+    #: fixed-size buffer, so the real length has to come from outside.
+    size_from_record: bool = False
 
     @property
     def size(self) -> int:
@@ -281,13 +288,16 @@ def _check_header(blob: bytes) -> tuple[int, int]:
     return major, minor
 
 
-def extract_battery_save(blob: bytes) -> ExtractedSave:
+def extract_melonds(blob: bytes) -> ExtractedSave:
     """Lift the battery save out of a melonDS save state.
 
     Raises :class:`SaveStateError` on anything it cannot read with certainty.
     Refusing is the safe outcome here: this is a last-resort recovery for a save
     that exists nowhere else, and a wrong answer that looks right is worse than
     no answer.
+
+    melonDS is the one format that states its own save length, so this needs
+    nothing from outside the file.
     """
     version = _check_header(blob)
     sections = read_sections(blob)
@@ -346,6 +356,200 @@ def extract_battery_save(blob: bytes) -> ExtractedSave:
     )
 
 
+def extract_battery_save(
+    blob: bytes, *, expected_size: int | None = None
+) -> ExtractedSave:
+    """Lift the battery save out of whichever emulator's state this is.
+
+    Every system Delta supports runs a different emulator, so a ``.svs`` is
+    whichever of their state formats applies. Dispatch is on the magic, because
+    that is the only thing the file itself is willing to say.
+
+    ``expected_size`` is the length Delta's record gives for this game's save.
+    melonDS states do not need it. The others store a fixed-size buffer with the
+    save as a prefix, so without it they refuse rather than guess.
+    """
+    if blob.startswith(MAGIC):
+        return extract_melonds(blob)
+    if blob.startswith(SNES9X_MAGIC):
+        return extract_snes9x(blob, expected_size)
+
+    # Not a format we read. Say which one it is when the magic identifies it,
+    # so the answer is "not supported yet" rather than "unreadable".
+    known = IDENTIFIED_FORMATS.get(blob[:4])
+    if known:
+        raise SaveStateError(
+            f"this is a {known} save state. Only Nintendo DS (melonDS) and "
+            "Super Nintendo (snes9x) states can be read so far."
+        )
+    elsewhere = find_magic(blob)
+    if elsewhere is not None:
+        raise SaveStateError(
+            f"this file does not start with {MAGIC.decode()}, but does contain "
+            f"it at offset {elsewhere:#x}. That would mean Delta wraps the "
+            "state rather than writing it bare, which contradicts what this "
+            "tool was built on -- worth reporting rather than working around."
+        )
+    raise SaveStateError(
+        f"not a save state this tool can read: it begins {blob[:4]!r}, which "
+        "matches no format known here."
+    )
+
+
+# ---------------------------------------------------------------------------
+# snes9x
+#
+# Read from snes9x's own ``snapshot.cpp``, then measured against a real Super
+# Mario World state synced from Delta.
+#
+# The file is text-framed. A 14-byte header, ``"#!s9xsnp:%04d\n"``, then a run
+# of blocks, each an 11-byte header followed by its payload::
+#
+#     0   3-character name
+#     3   ':'
+#     4   six decimal digits of length, or "------"
+#    10   ':'
+#
+# ``FreezeBlock`` writes the length with ``sprintf("%s:%06d:")`` when it fits in
+# six digits. When it does not, it writes ``"------"`` and packs the length as a
+# big-endian uint32 into bytes 6..9 of the same header, which ``CheckBlockName``
+# reads back. Both are handled below; the packed form is rare but a state
+# containing one would otherwise be walked into nonsense.
+#
+# **The block length is not the save length.** ``FreezeBlock(stream, "SRA",
+# Memory.SRAM, Memory.SRAM_SIZE)`` writes snes9x's whole fixed SRAM buffer --
+# ``SRAM_SIZE`` is a compile-time constant, 0x20000 in the build Delta ships and
+# 0x80000 in snes9x today. The cartridge's real SRAM size comes from the ROM
+# header at load time and is never written into the state.
+#
+# Measured on the real file: the ``SRA`` block was 131,072 bytes, of which the
+# first 2,048 were byte-for-byte Delta's Super Mario World save and the
+# remaining 129,024 were all 0x60 filler. So the save is a *prefix* of the
+# block, and nothing in the state says how long that prefix is.
+#
+# Which is why extraction needs the length from Delta's record, exactly as the
+# N64 conversion takes its byte count from the record rather than inferring it
+# from the ``.srm``. Guessing from the filler would work on this file and lose
+# data on a save that legitimately ends in a run of one byte. No length, no
+# extraction.
+# ---------------------------------------------------------------------------
+
+SNES9X_MAGIC = b"#!s9xsnp"
+#: ``"%s:%04d\n"`` -- magic, colon, four version digits, newline.
+SNES9X_HEADER_SIZE = 14
+#: Name, colon, six length characters, colon.
+SNES9X_BLOCK_HEADER_SIZE = 11
+#: The block holding the cartridge's battery-backed RAM.
+SNES9X_SRAM_BLOCK = b"SRA"
+
+
+@dataclass(frozen=True)
+class Block:
+    """One snes9x block.
+
+    Note the difference from :class:`Section`, which is melonDS's: there
+    ``length`` includes the header, here it does not. The two formats disagree
+    and conflating them is an easy 11 or 16 bytes of drift.
+    """
+
+    name: bytes
+    #: Offset of the block header.
+    start: int
+    #: Payload length, excluding the 11-byte header.
+    length: int
+
+    @property
+    def payload_start(self) -> int:
+        return self.start + SNES9X_BLOCK_HEADER_SIZE
+
+    @property
+    def end(self) -> int:
+        return self.payload_start + self.length
+
+
+def read_snes9x_blocks(blob: bytes) -> list[Block]:
+    """Walk a snes9x state's blocks the way ``CheckBlockName`` walks them."""
+    blocks: list[Block] = []
+    offset = SNES9X_HEADER_SIZE
+    while offset + SNES9X_BLOCK_HEADER_SIZE <= len(blob):
+        header = blob[offset : offset + SNES9X_BLOCK_HEADER_SIZE]
+        if header[3:4] != b":":
+            break
+        if header[4:5] == b"-":
+            length = int.from_bytes(header[6:10], "big")
+        else:
+            try:
+                length = int(header[4:10].decode("ascii"))
+            except (ValueError, UnicodeDecodeError):
+                break
+        if length <= 0:
+            break
+        end = offset + SNES9X_BLOCK_HEADER_SIZE + length
+        if end > len(blob):
+            raise SaveStateError(
+                f"block {header[:3]!r} at {offset:#x} claims {length} bytes but "
+                f"only {len(blob) - offset - SNES9X_BLOCK_HEADER_SIZE} remain. "
+                "The state is truncated."
+            )
+        blocks.append(Block(name=header[:3], start=offset, length=length))
+        offset = end
+    return blocks
+
+
+def extract_snes9x(blob: bytes, expected_size: int | None) -> ExtractedSave:
+    """Lift the battery save out of a snes9x state.
+
+    ``expected_size`` is required and comes from Delta's record. See the note
+    above: the state stores a fixed buffer and never says how much of it is the
+    cartridge's.
+    """
+    if len(blob) < SNES9X_HEADER_SIZE or not blob.startswith(SNES9X_MAGIC):
+        raise SaveStateError("not a snes9x save state.")
+
+    try:
+        version = int(blob[9:13].decode("ascii"))
+    except (ValueError, UnicodeDecodeError):
+        raise SaveStateError(
+            f"unreadable snes9x snapshot version in {blob[:14]!r}."
+        ) from None
+
+    blocks = read_snes9x_blocks(blob)
+    sram = next((b for b in blocks if b.name == SNES9X_SRAM_BLOCK), None)
+    if sram is None:
+        found = ", ".join(sorted({b.name.decode("latin-1") for b in blocks}))
+        raise SaveStateError(
+            f"no {SNES9X_SRAM_BLOCK.decode()} block in the state. Blocks "
+            f"present: {found or 'none'}."
+        )
+
+    if expected_size is None:
+        raise SaveStateError(
+            "a snes9x state does not record how large the cartridge's save is "
+            f"-- its {SNES9X_SRAM_BLOCK.decode()} block is a fixed "
+            f"{sram.length:,}-byte buffer whose tail is filler. The length has "
+            "to come from Delta's record for this game, so this only works on "
+            "a state still sitting in Delta's synced folder. Refusing rather "
+            "than handing back the whole buffer."
+        )
+
+    if expected_size <= 0 or expected_size > sram.length:
+        raise SaveStateError(
+            f"Delta's record says the save is {expected_size:,} bytes, which "
+            f"does not fit in the {sram.length:,}-byte "
+            f"{SNES9X_SRAM_BLOCK.decode()} block. Refusing."
+        )
+
+    start = sram.payload_start
+    return ExtractedSave(
+        data=blob[start : start + expected_size],
+        save_type=f"cartridge SRAM, {expected_size:,} B",
+        cart_variant=None,
+        version=(version, 0),
+        core="snes9x",
+        size_from_record=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Checking an extraction against Delta's own copy
 #
@@ -364,6 +568,11 @@ def extract_battery_save(blob: bytes) -> ExtractedSave:
 #: The file identifier Delta attaches the state itself under, from
 #: ``SaveState.syncableFiles``. The record is the same name without it.
 STATE_FILE_SUFFIX = "-saveState"
+
+#: How much of each state the listing reads to identify it. A DS state is ~20 MB
+#: and there can be many, so this must stay small; sixteen bytes clears the
+#: longest magic with room to spare.
+MAGIC_PEEK = 16
 
 
 @dataclass(frozen=True)
@@ -450,20 +659,23 @@ def suggested_output(state_path: Path, fallback_dir: Path) -> Path:
                 if game is not None and game.name:
                     name = game.name
         stem = name or state_path.name[: -len(STATE_FILE_SUFFIX)]
-        safe = "".join(c for c in stem if c not in '<>:"/\|?*').strip() or "recovered"
+        safe = "".join(c for c in stem if c not in r'<>:"/\|?*').strip() or "recovered"
         return fallback_dir / f"{safe}.sav"
 
     return state_path.with_suffix(".sav")
 
 
-def compare_with_delta(state_path: Path, extracted: bytes) -> DeltaComparison | None:
-    """Compare an extracted save against Delta's battery save for the same game.
+def delta_battery_save(state_path: Path) -> Path | None:
+    """Delta's own battery save for the game this state belongs to.
 
-    Only possible when the state is still sitting in Delta's synced folder,
-    because the link runs through the records: the ``SaveState`` record names
-    its game, and the game's identifier names the ``GameSave`` file. Returns
-    ``None`` whenever any link in that chain is missing, which is the normal
-    case for a state that was copied somewhere else first.
+    The link runs through the records: the ``SaveState`` record names its game,
+    and the game's identifier names the ``GameSave`` file. ``None`` whenever any
+    link is missing, which is the normal case for a state copied out of Delta's
+    folder first.
+
+    Two callers want this. The cross-check compares against it, and every format
+    except melonDS needs its *length* -- those states store a fixed-size buffer
+    and never say how much of it is the cartridge's.
     """
     from . import harmony
 
@@ -485,7 +697,30 @@ def compare_with_delta(state_path: Path, extracted: bytes) -> DeltaComparison | 
         return None
 
     battery = folder / f"GameSave-{game_id}-gameSave"
-    if not battery.is_file():
+    return battery if battery.is_file() else None
+
+
+def delta_save_size(state_path: Path) -> int | None:
+    """How many bytes Delta holds for this game's battery save, if it can say."""
+    battery = delta_battery_save(state_path)
+    if battery is None:
+        return None
+    try:
+        return battery.stat().st_size
+    except OSError:
+        return None
+
+
+def compare_with_delta(state_path: Path, extracted: bytes) -> DeltaComparison | None:
+    """Compare an extracted save against Delta's battery save for the same game.
+
+    Returns ``None`` when there is nothing to compare against -- see
+    :func:`delta_battery_save`.
+    """
+    from . import harmony
+
+    battery = delta_battery_save(state_path)
+    if battery is None:
         return None
 
     try:
@@ -493,7 +728,14 @@ def compare_with_delta(state_path: Path, extracted: bytes) -> DeltaComparison | 
     except OSError:
         return None
 
-    game_record = harmony.parse_record(folder / f"Game-{game_id}")
+    folder = state_path.parent
+    record = harmony.parse_record(
+        folder / state_path.name[: -len(STATE_FILE_SUFFIX)]
+    )
+    game_id = record.related_identifier("game") if record is not None else None
+    game_record = (
+        harmony.parse_record(folder / f"Game-{game_id}") if game_id else None
+    )
     game_name = game_record.name if game_record is not None else None
 
     differing: int | None = None
@@ -535,19 +777,31 @@ class FoundState:
     #: What the user called the slot in Delta.
     slot_name: str | None
     size: int
-    #: The first four bytes. ``MELN`` means melonDS and therefore readable.
+    #: The first bytes of the file. Long enough to tell the formats apart --
+    #: melonDS's magic is four bytes, snes9x's is eight.
     magic: bytes
 
     @property
+    def format_name(self) -> str | None:
+        """Which emulator's format this is, when the magic identifies one."""
+        for prefix, name in READABLE_FORMATS.items():
+            if self.magic.startswith(prefix):
+                return name
+        for prefix, name in IDENTIFIED_FORMATS.items():
+            if self.magic.startswith(prefix):
+                return name
+        return None
+
+    @property
     def recoverable(self) -> bool:
-        return self.magic == MAGIC
+        return any(self.magic.startswith(p) for p in READABLE_FORMATS)
 
     def describe_format(self) -> str:
         """What this state is, in the terms someone reading a list needs."""
         if self.recoverable:
-            return "melonDS - can recover"
+            return f"{self.format_name} - can recover"
         printable = "".join(
-            chr(b) if 0x20 <= b < 0x7F else "." for b in self.magic
+            chr(b) if 0x20 <= b < 0x7F else "." for b in self.magic[:4]
         )
         core = self.delta_core or "another core"
         return f"{core} - not readable ({printable})"
@@ -588,7 +842,9 @@ def find_states(folder: Path) -> list[FoundState]:
 
         try:
             with path.open("rb") as handle:
-                magic = handle.read(4)
+                # Enough to tell every known format apart without reading a
+                # state that can be 20 MB. snes9x's magic alone is eight bytes.
+                magic = handle.read(MAGIC_PEEK)
             size = path.stat().st_size
         except OSError:
             continue
@@ -606,3 +862,27 @@ def find_states(folder: Path) -> list[FoundState]:
         )
 
     return sorted(found, key=lambda s: ((s.game_name or "").lower(), s.path.name))
+
+
+# ---------------------------------------------------------------------------
+# The format registries
+#
+# At the bottom because they name every format in this module and so have to
+# follow all of them. Nothing reads them at import time -- the dispatcher and
+# the listing both look them up when called.
+# ---------------------------------------------------------------------------
+
+#: Formats this tool can actually extract from, by magic prefix. The prefixes
+#: are mutually exclusive, so lookup order does not matter.
+READABLE_FORMATS: dict[bytes, str] = {
+    MAGIC: "melonDS",
+    SNES9X_MAGIC: "snes9x",
+}
+
+#: Magic bytes measured on real Delta save states, 2026-09-08, one manual state
+#: per system. Used to answer "not supported yet" rather than "unreadable".
+IDENTIFIED_FORMATS: dict[bytes, str] = {
+    b"NST\x1a": "Nintendo Entertainment System (nestopia)",
+    b"\x1f\x8b\x08\x00": "gzip-compressed (mupen64plus or visualboyadvance-m)",
+    b"\x00\x01\x00\x00": "Game Boy (gambatte)",
+}

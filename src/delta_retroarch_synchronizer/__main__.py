@@ -507,7 +507,11 @@ def run_extract_save_command(
         return 1
 
     try:
-        extracted = savestate.extract_battery_save(blob)
+        # Only melonDS states record their own save length. The rest keep a
+        # fixed-size buffer, so the length has to come from Delta's record.
+        extracted = savestate.extract_battery_save(
+            blob, expected_size=savestate.delta_save_size(state_path)
+        )
     except savestate.SaveStateError as error:
         print(f"Cannot extract a save from {state_path.name}:\n  {error}")
         return 1
@@ -533,11 +537,14 @@ def run_extract_save_command(
         print(f"Could not write {target}: {error}")
         return 1
 
-    variant = extracted.cart_variant or "an unrecognised cart type"
     print(f"\nRecovered {extracted.size:,} B from {state_path.name}")
+    print(f"  emulator:    {extracted.core}")
     print(f"  save type:   {extracted.save_type}")
-    print(f"  cartridge:   {variant}")
+    if extracted.cart_variant is not None:
+        print(f"  cartridge:   {extracted.cart_variant}")
     print(f"  state format: version {extracted.version[0]}.{extracted.version[1]}")
+    if extracted.size_from_record:
+        print("  length:      from Delta's record — the state does not say")
     print(f"  written to:  {target}")
 
     # Only possible when the state is still in Delta's synced folder, where the

@@ -53,6 +53,7 @@ EXCLUDE_NAMES = {
     ".dropbox-auth-pending.json",
     "manifest.json",
     "backups",
+    "recovered",
     "__pycache__",
     ".pytest_cache",
 }

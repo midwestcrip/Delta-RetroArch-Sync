@@ -252,8 +252,21 @@ class DecoySectionTests(unittest.TestCase):
 class RefusalTests(unittest.TestCase):
     def test_a_file_that_is_not_a_state_is_refused(self) -> None:
         with self.assertRaises(savestate.SaveStateError) as caught:
-            savestate.extract_battery_save(b"\x00" * 4096)
-        self.assertIn("not a melonDS save state", str(caught.exception))
+            savestate.extract_battery_save(b"\xAB" * 4096)
+        self.assertIn("matches no format known here", str(caught.exception))
+
+    def test_a_format_we_know_but_cannot_read_is_named(self) -> None:
+        """"Not supported yet" is a different answer from "unreadable", and the
+        magics for all six were measured, so the message can say which."""
+        for magic, expected in (
+            (b"NST\x1a", "nestopia"),
+            (b"\x1f\x8b\x08\x00", "gzip"),
+            (b"\x00\x01\x00\x00", "gambatte"),
+        ):
+            with self.subTest(magic=magic):
+                with self.assertRaises(savestate.SaveStateError) as caught:
+                    savestate.extract_battery_save(magic + b"\x00" * 4096)
+                self.assertIn(expected, str(caught.exception))
 
     def test_a_wrapped_state_names_the_offset_it_found(self) -> None:
         """If Delta ever does wrap the state, that overturns a documented
