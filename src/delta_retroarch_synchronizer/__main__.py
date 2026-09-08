@@ -486,7 +486,7 @@ def run_shortcuts_command(*, remove: bool) -> int:
 
 
 def run_extract_save_command(
-    source: str, destination: str | None, force: bool
+    source: str, destination: str | None, force: bool, size: int | None = None
 ) -> int:
     """Lift the battery save out of a Delta save state.
 
@@ -510,7 +510,7 @@ def run_extract_save_command(
         # Only melonDS states record their own save length. The rest keep a
         # fixed-size buffer, so the length has to come from Delta's record.
         extracted = savestate.extract_battery_save(
-            blob, expected_size=savestate.delta_save_size(state_path)
+            blob, expected_size=size or savestate.delta_save_size(state_path)
         )
     except savestate.SaveStateError as error:
         print(f"Cannot extract a save from {state_path.name}:\n  {error}")
@@ -542,7 +542,10 @@ def run_extract_save_command(
     print(f"  save type:   {extracted.save_type}")
     if extracted.cart_variant is not None:
         print(f"  cartridge:   {extracted.cart_variant}")
-    print(f"  state format: version {extracted.version[0]}.{extracted.version[1]}")
+    if extracted.version is not None:
+        print(
+            f"  state format: version {extracted.version[0]}.{extracted.version[1]}"
+        )
     if extracted.size_from_record:
         print("  length:      from Delta's record — the state does not say")
     print(f"  written to:  {target}")
@@ -636,6 +639,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Overwrite the output if it already exists.",
     )
+    extract_parser.add_argument(
+        "--size",
+        type=int,
+        help=(
+            "How many bytes the save is. Only melonDS states say this "
+            "themselves; the others store a fixed buffer, so a state outside "
+            "Delta's folder needs the length given here."
+        ),
+    )
     auth_parser = subparsers.add_parser(
         "auth", help="Authorise Dropbox once, so pushing can read file revisions."
     )
@@ -671,7 +683,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "shortcuts":
         return run_shortcuts_command(remove=args.remove)
     if args.command == "extract-save":
-        return run_extract_save_command(args.state, args.output, args.force)
+        return run_extract_save_command(
+            args.state, args.output, args.force, args.size
+        )
     if args.command == "auth":
         return run_auth_command(args.app_key, args.code)
 

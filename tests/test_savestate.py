@@ -259,7 +259,6 @@ class RefusalTests(unittest.TestCase):
         """"Not supported yet" is a different answer from "unreadable", and the
         magics for all six were measured, so the message can say which."""
         for magic, expected in (
-            (b"NST\x1a", "nestopia"),
             (b"\x1f\x8b\x08\x00", "gzip"),
             (b"\x00\x01\x00\x00", "gambatte"),
         ):

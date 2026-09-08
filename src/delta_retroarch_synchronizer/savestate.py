@@ -183,9 +183,10 @@ class ExtractedSave:
     save_type: str
     #: Which cart subclass the trailing bytes match, or ``None`` if unrecognised.
     cart_variant: str | None
-    #: ``(major, minor)`` of the state format. Formats with a single version
-    #: number report it as the major with a zero minor.
-    version: tuple[int, int]
+    #: ``(major, minor)`` of the state format, when it has one. Formats with a
+    #: single version number report it as the major with a zero minor; nestopia
+    #: has no version field at all, so it reports ``None``.
+    version: tuple[int, int] | None
     #: Which emulator's state this came out of.
     core: str = "melonDS"
     #: True when the length came from Delta's record rather than from the state
@@ -373,14 +374,15 @@ def extract_battery_save(
         return extract_melonds(blob)
     if blob.startswith(SNES9X_MAGIC):
         return extract_snes9x(blob, expected_size)
+    if blob.startswith(NESTOPIA_MAGIC):
+        return extract_nestopia(blob, expected_size)
 
     # Not a format we read. Say which one it is when the magic identifies it,
     # so the answer is "not supported yet" rather than "unreadable".
     known = IDENTIFIED_FORMATS.get(blob[:4])
     if known:
         raise SaveStateError(
-            f"this is a {known} save state. Only Nintendo DS (melonDS) and "
-            "Super Nintendo (snes9x) states can be read so far."
+            f"this is a {known} save state, which this tool cannot read yet."
         )
     elsewhere = find_magic(blob)
     if elsewhere is not None:
@@ -546,6 +548,178 @@ def extract_snes9x(blob: bytes, expected_size: int | None) -> ExtractedSave:
         cart_variant=None,
         version=(version, 0),
         core="snes9x",
+        size_from_record=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# nestopia
+#
+# Read from nestopia's ``NstState.cpp`` and ``board/NstBoard.cpp``, then
+# measured against a real Kirby's Adventure state synced from Delta.
+#
+# An 8-byte file header -- ``NST\x1a`` and a version word -- then a tree of
+# chunks. ``Saver::Begin`` writes a 4-byte id and a 4-byte little-endian length;
+# ``Saver::End`` seeks back and fills the length in, counting only the payload.
+# Chunks nest, and nothing in a chunk header says whether it is a container:
+# nestopia's loader knows by context. So containers are found by trying to parse
+# a payload as a chunk sequence and requiring it to consume the payload exactly,
+# which random data essentially never does.
+#
+# The real file's tree, for orientation::
+#
+#     NFO  CPU[REG RAM FRM CLK]  APU[...]  PPU[...]  IMG[MPR[WRM PRG CHR]]
+#
+# The save is ``WRM``, written by ``Board::SaveState`` as::
+#
+#     state.Begin( AsciiId<'W','R','M'>::V ).Compress( wrk.Source().Mem(), size ).End();
+#
+# **``Compress`` writes a flag byte first**: 0 for stored, 1 for zlib. The build
+# Delta ships wrote 0, but the other branch is live whenever zlib is available,
+# and nestopia's ``Zlib::Compress`` uses ``compress2``, so it is zlib-wrapped and
+# ``zlib.decompress`` reads it directly.
+#
+# One caveat worth stating. ``WRM`` holds ``board.GetWram()``, the whole work
+# RAM, while the battery-backed part is ``GetSavableWram()``, which for some
+# boards is smaller. ``NstCartridge.cpp`` enumerates savable before non-savable
+# and marks only the first as the battery region, so the saved part is the
+# prefix -- and on the measured file the two were the same 8,192 bytes anyway.
+# The length still comes from Delta's record rather than being assumed, and the
+# cross-check would say so loudly if the prefix assumption ever failed.
+# ---------------------------------------------------------------------------
+
+NESTOPIA_MAGIC = b"NST\x1a"
+#: The whole file is one outer chunk, so the "header" is that chunk's own
+#: 8-byte header: the id ``NST\x1a`` and its payload length. There is no version
+#: field -- ``Machine::SaveState`` opens with
+#: ``saver.Begin( AsciiId<'N','S','T'>::V | 0x1A << 24 )`` and nothing else.
+#: Reading those four bytes as a version was the first thing this got wrong;
+#: they are a length, and checking it against the file size is free.
+NESTOPIA_HEADER_SIZE = 8
+#: 4-byte id, 4-byte little-endian payload length.
+NESTOPIA_CHUNK_HEADER_SIZE = 8
+#: ``AsciiId<'W','R','M'>`` -- the board's work RAM, which is the battery save.
+NESTOPIA_SRAM_CHUNK = b"WRM\x00"
+
+#: The flag byte ``State::Saver::Compress`` writes ahead of the data.
+NESTOPIA_STORED = 0
+NESTOPIA_ZLIB = 1
+
+
+def _nestopia_chunks(buf: bytes) -> list[tuple[bytes, int, int]] | None:
+    """Parse ``buf`` as a sequence of chunks, or ``None`` if it is not one.
+
+    Requires the chunks to tile the buffer exactly. That exactness is what makes
+    it safe to use for "is this a container?", because a payload of arbitrary
+    bytes that happens to start with a plausible header will almost never also
+    end on the buffer boundary.
+    """
+    chunks: list[tuple[bytes, int, int]] = []
+    offset = 0
+    while offset < len(buf):
+        if offset + NESTOPIA_CHUNK_HEADER_SIZE > len(buf):
+            return None
+        ident = buf[offset : offset + 4]
+        # Ids are ASCII, usually three characters padded with a zero byte.
+        if not all(c == 0 or 0x20 <= c < 0x7F for c in ident):
+            return None
+        length = int.from_bytes(buf[offset + 4 : offset + 8], "little")
+        end = offset + NESTOPIA_CHUNK_HEADER_SIZE + length
+        if end > len(buf):
+            return None
+        chunks.append((ident, offset + NESTOPIA_CHUNK_HEADER_SIZE, length))
+        offset = end
+    return chunks or None
+
+
+def find_nestopia_chunk(
+    buf: bytes, wanted: bytes, *, depth: int = 0
+) -> tuple[int, int] | None:
+    """Depth-first search for a chunk id, returning ``(start, length)``.
+
+    Descends only into payloads that parse exactly as chunk sequences, and stops
+    at a sane depth so a pathological file cannot recurse forever.
+    """
+    if depth > 8:
+        return None
+    parsed = _nestopia_chunks(buf)
+    if parsed is None:
+        return None
+    for ident, start, length in parsed:
+        if ident == wanted:
+            return start, length
+    for _ident, start, length in parsed:
+        found = find_nestopia_chunk(
+            buf[start : start + length], wanted, depth=depth + 1
+        )
+        if found is not None:
+            inner_start, inner_length = found
+            return start + inner_start, inner_length
+    return None
+
+
+def extract_nestopia(blob: bytes, expected_size: int | None) -> ExtractedSave:
+    """Lift the battery save out of a nestopia state."""
+    if len(blob) < NESTOPIA_HEADER_SIZE or not blob.startswith(NESTOPIA_MAGIC):
+        raise SaveStateError("not a nestopia save state.")
+
+    declared = int.from_bytes(blob[4:8], "little")
+    if declared + NESTOPIA_HEADER_SIZE != len(blob):
+        raise SaveStateError(
+            f"the outer chunk says the state is "
+            f"{declared + NESTOPIA_HEADER_SIZE:,} bytes but the file is "
+            f"{len(blob):,}. The state is truncated or damaged."
+        )
+
+    found = find_nestopia_chunk(blob[NESTOPIA_HEADER_SIZE:], NESTOPIA_SRAM_CHUNK)
+    if found is None:
+        raise SaveStateError(
+            "no WRM chunk in the state. nestopia writes one only when the board "
+            "has work RAM, so this cartridge has no battery save to recover."
+        )
+    start, length = found
+    start += NESTOPIA_HEADER_SIZE
+    if length < 1:
+        raise SaveStateError("the WRM chunk is empty.")
+
+    flag = blob[start]
+    payload = blob[start + 1 : start + length]
+    if flag == NESTOPIA_ZLIB:
+        import zlib
+
+        try:
+            payload = zlib.decompress(payload)
+        except zlib.error as error:
+            raise SaveStateError(
+                f"the WRM chunk says it is zlib-compressed but will not "
+                f"decompress: {error}"
+            ) from None
+    elif flag != NESTOPIA_STORED:
+        raise SaveStateError(
+            f"the WRM chunk's compression flag is {flag}, which is neither "
+            "stored (0) nor zlib (1). Refusing rather than guessing."
+        )
+
+    if expected_size is None:
+        raise SaveStateError(
+            f"a nestopia state does not record how much of its work RAM is "
+            f"battery-backed -- the WRM chunk here holds {len(payload):,} bytes "
+            "and the saved part is a prefix of it. Pass the length with --size, "
+            "or run this on a state still in Delta's synced folder so the "
+            "record can supply it."
+        )
+    if expected_size <= 0 or expected_size > len(payload):
+        raise SaveStateError(
+            f"the save is said to be {expected_size:,} bytes but the WRM chunk "
+            f"holds {len(payload):,}. Refusing."
+        )
+
+    return ExtractedSave(
+        data=payload[:expected_size],
+        save_type=f"battery-backed work RAM, {expected_size:,} B",
+        cart_variant=None,
+        version=None,
+        core="nestopia",
         size_from_record=True,
     )
 
@@ -877,12 +1051,12 @@ def find_states(folder: Path) -> list[FoundState]:
 READABLE_FORMATS: dict[bytes, str] = {
     MAGIC: "melonDS",
     SNES9X_MAGIC: "snes9x",
+    NESTOPIA_MAGIC: "nestopia",
 }
 
 #: Magic bytes measured on real Delta save states, 2026-09-08, one manual state
 #: per system. Used to answer "not supported yet" rather than "unreadable".
 IDENTIFIED_FORMATS: dict[bytes, str] = {
-    b"NST\x1a": "Nintendo Entertainment System (nestopia)",
     b"\x1f\x8b\x08\x00": "gzip-compressed (mupen64plus or visualboyadvance-m)",
     b"\x00\x01\x00\x00": "Game Boy (gambatte)",
 }
