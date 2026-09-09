@@ -231,8 +231,20 @@ whatever the side you want it on expects.
 **The launcher has a Save states tab**, which is the easier way to do this: it
 lists every save state Delta has synced — game, slot, system, and whether it can
 be read — so you pick one from a list instead of typing a path with a UUID in
-it. Non-DS states are listed too, greyed out with the name of the emulator that
-wrote them.
+it. Each row names the emulator that wrote the state, including for the states
+that cannot be read.
+
+**Install into RetroArch does the last step for you.** Recovering to a file
+leaves you to copy it over RetroArch's own save in Explorer, and that was the
+one step in the whole flow with no backup behind it — performed on the file
+holding the progress you are trying to rescue. The button writes it for you and
+copies what it replaces into the rolling backups first, so it comes back from
+the Backups tab like any other restore point. Before writing it shows the exact
+file and both sizes, and it says whether that file was *found* or worked out
+from RetroArch's settings — a worked-out path is only right if the ROM is named
+the way this tool names it. It refuses outright when RetroArch is running,
+because RetroArch writes the loaded game's save when it closes and would undo
+the install without saying anything.
 
 **It checks its own work when it can.** A save state that synced from Delta sits
 in the same folder as the record naming its game, and that game's battery save is
@@ -254,12 +266,24 @@ Delta's own battery save for that game:
 | Nintendo DS | melonDS | Pokémon Platinum, 524,288 B |
 | Nintendo 64 | mupen64plus | **nothing to recover** — see below |
 
+Installing was checked against the same five on 2026-09-09, against a copy of
+this machine's real RetroArch save folder: every game's target was *found*
+rather than constructed, and the save RetroArch already held was byte-for-byte
+what the state produced. That is a third copy agreeing — state, Delta's record,
+and RetroArch's own file.
+
 **N64 is not a gap, it is an absence.** A mupen64plus save state contains no
 battery save at all: it stores the flash controller's registers and none of the
 storage behind them, and keeps the cartridge's save in separate `.eep`/`.sra`/
 `.fla`/`.mpk` files. The words *eeprom*, *mempak* and *sram* do not appear in
 mupen64plus's save-state code. Nothing can be added later to change that, and
 the tool says so rather than pretending it is unfinished work.
+
+Installing refuses N64 for a *second*, independent reason: RetroArch keeps the
+cartridge save and all four Controller Paks in one combined `.srm`, so writing a
+bare cartridge save over it would erase the paks. That guard is unreachable
+today — there is no N64 save to recover in the first place — and it is there
+because the day anything makes it reachable, the damage would be silent.
 
 Two of the formats — melonDS and gambatte — record how big their save is, so
 they work on a state copied anywhere. The other three store a fixed-size buffer

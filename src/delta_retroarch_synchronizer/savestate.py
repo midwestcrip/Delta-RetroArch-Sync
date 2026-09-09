@@ -96,6 +96,10 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover -- imported for types only
+    from . import systems as systems_module
 
 #: melonDS's savestate magic, at offset 0 of an unwrapped state.
 MAGIC = b"MELN"
@@ -1308,6 +1312,14 @@ class FoundState:
     #: The first bytes of the file. Long enough to tell the formats apart --
     #: melonDS's magic is four bytes, snes9x's is eight.
     magic: bytes
+    #: SHA-1 of the ROM, which is how Delta identifies the game. Carried so a
+    #: row can be joined back to the game's entry without matching on the
+    #: display name, which two games can share.
+    game_identifier: str | None = None
+    #: The system's key rather than its display name, so a caller can reach the
+    #: real ``System`` -- its RetroArch extension and whether it is converted --
+    #: without parsing the label back.
+    system_key: str | None = None
 
     @property
     def format_name(self) -> str | None:
@@ -1378,8 +1390,10 @@ def find_states(folder: Path) -> list[FoundState]:
         record = harmony.parse_record(folder / path.name[: -len(STATE_FILE_SUFFIX)])
         game_name: str | None = None
         system_name: str | None = None
+        system_key: str | None = None
         core_name: str | None = None
         slot_name: str | None = None
+        game_id: str | None = None
         if record is not None:
             slot_name = record.name
             game_id = record.related_identifier("game")
@@ -1390,6 +1404,7 @@ def find_states(folder: Path) -> list[FoundState]:
                     system = systems.for_delta_type(str(game.fields.get("type", "")))
                     if system is not None:
                         system_name = system.name
+                        system_key = system.key
                         core_name = system.delta_core
 
         try:
@@ -1410,10 +1425,199 @@ def find_states(folder: Path) -> list[FoundState]:
                 slot_name=slot_name,
                 size=size,
                 magic=magic,
+                game_identifier=game_id,
+                system_key=system_key,
             )
         )
 
     return sorted(found, key=lambda s: ((s.game_name or "").lower(), s.path.name))
+
+
+# ---------------------------------------------------------------------------
+# Putting a recovered save where RetroArch will load it
+#
+# Recovery used to stop at a file in ``recovered/``, leaving the last step --
+# copying it over RetroArch's own save -- to be done by hand in Explorer. That
+# was the only step in the flow with nothing behind it: no backup, no undo, and
+# it lands on the file holding the progress being rescued.
+#
+# So the tool does it, and takes the same rolling backup every other write in
+# this program takes. The backup goes to ``sync.backup`` rather than a copy of
+# its own, which means what it replaced appears in the Backups tab as an
+# ordinary restore point and goes back with one button.
+# ---------------------------------------------------------------------------
+
+
+class InstallError(Exception):
+    """Refusing to install a recovered save, with the reason."""
+
+
+@dataclass(frozen=True)
+class InstallPlan:
+    """Where a recovered save would go, and what is sitting there now."""
+
+    target: Path
+    #: Size of the file being replaced, or ``None`` when nothing is there.
+    existing_size: int | None
+    #: True when the target is a file that was *found*. A found target is
+    #: certain -- it is the file RetroArch is using. A constructed one is only
+    #: right if the ROM is named the way this tool names it, which is worth
+    #: saying out loud before writing.
+    found: bool
+
+    @property
+    def replaces_a_save(self) -> bool:
+        return self.existing_size is not None
+
+    def size_matches(self, size: int) -> bool:
+        """Whether the save being installed is the size of the one it replaces.
+
+        Not a refusal. A mismatch is worth showing -- it usually means the name
+        collided with a different game -- but a core that pads its ``.srm`` is
+        legitimate, and there is a backup either way.
+        """
+        return self.existing_size is None or self.existing_size == size
+
+
+@dataclass(frozen=True)
+class InstallResult:
+    target: Path
+    #: The backup taken of what was replaced, when there was anything.
+    backup: Path | None
+    size: int
+
+    def describe(self) -> str:
+        if self.backup is None:
+            return f"installed {self.size:,} B to {self.target} (nothing was there)"
+        return (
+            f"installed {self.size:,} B to {self.target}; the save it replaced "
+            f"is backed up as {self.backup.name}"
+        )
+
+
+def find_retroarch_saves(save_dir: Path, filename: str) -> list[Path]:
+    """Every file under RetroArch's save folder with this name.
+
+    Searched rather than reconstructed, for the reason ``restore`` gives: the
+    path depends on which core RetroArch picked and whether it sorts saves into
+    folders, and both can have changed since -- while the file itself, if it is
+    there, is unambiguous.
+
+    All of them, not the first. Two is not exotic: turning
+    ``sort_savefiles_enable`` on and then off leaves a copy loose in the folder
+    *and* one inside a core's subfolder, and only one of them is the file
+    RetroArch reads. Installing into the wrong one looks like it worked and
+    changes nothing, which is the worst outcome available here.
+    """
+    if not save_dir.is_dir():
+        return []
+    lowered = filename.lower()
+    return sorted(
+        path
+        for path in save_dir.rglob("*")
+        if path.is_file() and path.name.lower() == lowered
+    )
+
+
+def plan_install(
+    save_dir: Path,
+    game_name: str,
+    system: "systems_module.System | None",
+    *,
+    core_name: str = "",
+    sorted_by_core: bool = False,
+) -> InstallPlan:
+    """Work out which file a recovered save would replace.
+
+    Takes the system rather than a game entry so this stays testable without
+    Delta's folder: everything it needs is the extension and whether the system
+    is converted.
+    """
+    from . import naming
+
+    if system is None:
+        raise InstallError(
+            "Delta does not say what system this game is, so there is no way "
+            "to know what RetroArch would call its save."
+        )
+
+    if system.converted:
+        # N64 has no recoverable save state, so this is unreachable today. It
+        # is here because the day something makes it reachable, the failure is
+        # silent and total: RetroArch keeps the cartridge save and the four
+        # Controller Paks in one combined .srm, and a bare cartridge save
+        # written over it erases every pak in the file.
+        raise InstallError(
+            f"{system.name} saves cannot be installed this way. RetroArch keeps "
+            f"the cartridge save and the Controller Paks together in one .srm, "
+            f"so writing a bare cartridge save over it would erase the paks. "
+            f"(No {system.delta_core} save state holds a battery save to "
+            f"recover in any case.)"
+        )
+
+    filename = naming.save_filename(game_name, system.retroarch_save_ext)
+    matches = find_retroarch_saves(save_dir, filename)
+
+    if len(matches) > 1:
+        listed = "\n".join(f"    {path}" for path in matches)
+        raise InstallError(
+            f"RetroArch has more than one {filename}, and only one of them is "
+            f"the file it loads:\n{listed}\n"
+            f"Move or delete the ones you do not want, then try again."
+        )
+
+    if matches:
+        target = matches[0]
+        try:
+            existing = target.stat().st_size
+        except OSError as error:
+            raise InstallError(f"cannot read {target}: {error}") from error
+        return InstallPlan(target=target, existing_size=existing, found=True)
+
+    folder = save_dir / core_name if (sorted_by_core and core_name) else save_dir
+    return InstallPlan(target=folder / filename, existing_size=None, found=False)
+
+
+def install_save(data: bytes, plan: InstallPlan, backup_dir: Path) -> InstallResult:
+    """Write a recovered save into RetroArch, backing up what it replaces.
+
+    Written beside the target and moved into place, like every other save this
+    tool writes: a crash halfway through a direct write would replace a good
+    save with a truncated one, which is precisely the situation this feature
+    exists to get someone out of.
+    """
+    from . import sync
+
+    if not data:
+        raise InstallError("nothing to install -- the recovered save is empty")
+
+    saved = sync.backup(plan.target, backup_dir)
+
+    try:
+        plan.target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise InstallError(f"cannot create {plan.target.parent}: {error}") from error
+
+    temporary = plan.target.with_name(plan.target.name + ".partial")
+    try:
+        temporary.write_bytes(data)
+        written = temporary.stat().st_size
+        if written != len(data):
+            raise InstallError(
+                f"wrote {written} bytes of an expected {len(data)}; "
+                f"{plan.target.name} has not been touched"
+            )
+        temporary.replace(plan.target)
+    except OSError as error:
+        raise InstallError(f"cannot write {plan.target}: {error}") from error
+    finally:
+        if temporary.exists():
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+
+    return InstallResult(target=plan.target, backup=saved, size=len(data))
 
 
 # ---------------------------------------------------------------------------

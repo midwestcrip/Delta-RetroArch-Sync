@@ -584,9 +584,10 @@ class LauncherWindow:
             text=(
                 "Save states do not sync between Delta and RetroArch, but the "
                 "battery save inside one can be pulled out — useful when a "
-                "state is the only copy of your progress left. Only Nintendo "
-                "DS states can be read; the other systems are listed so you "
-                "can see what is there."
+                "state is the only copy of your progress left. Every system "
+                "but N64 can be read, and an N64 state genuinely holds no "
+                "battery save to read. Recover writes it to a file you pick; "
+                "Install puts it into RetroArch, backing up what it replaces."
             ),
             style="Muted.TLabel",
             wraplength=display.px(620),
@@ -633,6 +634,24 @@ class LauncherWindow:
             "Nothing else is touched — not Delta's folder, not RetroArch's "
             "saves, not the manifest. When the state came from Delta, the "
             "result is checked against Delta's own save for that game.",
+        )
+
+        install_button = ttk.Button(
+            actions, text="Install into RetroArch…", command=self.on_install_state
+        )
+        install_button.grid(row=0, column=3, padx=4)
+        self.install_confirmation = Confirmation(install_button)
+        Tooltip(
+            install_button,
+            "The same save, written straight over RetroArch's own save for "
+            "that game.\n\n"
+            "What it replaces is copied into the rolling backups first, so it "
+            "is one button away on the Backups tab. Shows you the exact file "
+            "and both sizes before writing anything, and refuses while "
+            "RetroArch is running — RetroArch writes the save when it closes, "
+            "which would undo this.\n\n"
+            "Delta's folder is not touched. The next sync will carry the new "
+            "save back to Delta, or report a conflict if Delta moved too.",
         )
 
         self.on_refresh_states()
@@ -694,12 +713,15 @@ class LauncherWindow:
         except (ValueError, IndexError, AttributeError):
             return None
 
-    def on_recover_state(self) -> None:
-        """Extract the selected state's battery save to a file the user picks.
+    def _extract_selected_state(
+        self,
+    ) -> "tuple[savestate.FoundState, savestate.ExtractedSave] | None":
+        """The selected state's battery save, or ``None`` having said why not.
 
-        Deliberately not on the worker thread: this reads one file and writes
-        one file, touching neither side of the sync, so there is nothing for it
-        to race with and nothing to leave half-done.
+        Shared by both buttons on this tab. Everything up to holding the bytes
+        is identical whether they are going to a file of the user's choosing or
+        into RetroArch, and the three refusals below are the ones worth
+        explaining rather than repeating.
         """
         found = self._selected_state()
         if found is None:
@@ -707,7 +729,7 @@ class LauncherWindow:
                 WINDOW_TITLE, "Pick a save state from the list first.",
                 parent=self.root,
             )
-            return
+            return None
 
         if not found.recoverable and (
             found.delta_core in savestate.CORES_WITHOUT_SAVES_IN_STATES
@@ -721,19 +743,20 @@ class LauncherWindow:
                 "added later.",
                 parent=self.root,
             )
-            return
+            return None
 
         if not found.recoverable:
             core = found.delta_core or "that system's emulator"
+            readable = ", ".join(sorted(savestate.READABLE_CORES))
             messagebox.showinfo(
                 WINDOW_TITLE,
-                f"That state is in {core}'s own save state format, not "
-                f"melonDS's.\n\nOnly Nintendo DS states can be read at the "
-                f"moment — every emulator writes its own, and each one is a "
-                f"separate piece of work to support.",
+                f"That state is in {core}'s own save state format, and this "
+                f"tool cannot read that one.\n\nThe formats it can read are: "
+                f"{readable}. Every emulator writes its own, so each is a "
+                f"separate piece of work.",
                 parent=self.root,
             )
-            return
+            return None
 
         try:
             extracted = savestate.extract_battery_save(
@@ -747,7 +770,21 @@ class LauncherWindow:
                 f"Could not read that save state.\n\n{error}",
                 parent=self.root,
             )
+            return None
+
+        return found, extracted
+
+    def on_recover_state(self) -> None:
+        """Extract the selected state's battery save to a file the user picks.
+
+        Deliberately not on the worker thread: this reads one file and writes
+        one file, touching neither side of the sync, so there is nothing for it
+        to race with and nothing to leave half-done.
+        """
+        pair = self._extract_selected_state()
+        if pair is None:
             return
+        found, extracted = pair
 
         suggested = savestate.suggested_output(
             found.path, _state_dir() / RECOVERED_DIRNAME
@@ -809,6 +846,154 @@ class LauncherWindow:
                 f"{comparison.describe()}\n\nThe Sync tab has the details.",
                 parent=self.root,
             )
+
+    def on_install_state(self) -> None:
+        """Put the recovered save straight into RetroArch, backing up first.
+
+        The manual alternative -- recover to a file, then copy it over
+        RetroArch's save in Explorer -- was the one step in this flow with no
+        backup behind it, performed on the file holding the progress being
+        rescued. Here the previous save goes into the rolling backups first, so
+        it is one button away on the Backups tab.
+        """
+        pair = self._extract_selected_state()
+        if pair is None:
+            return
+        found, extracted = pair
+
+        # Before anything is written: RetroArch dumps the loaded game's SRAM
+        # when it closes, so a save installed underneath a running copy is
+        # overwritten the moment the user quits -- silently, and looking for
+        # all the world like the recovery failed.
+        exe = self.config.retroarch_exe
+        if exe is not None and processes.find_by_name(exe.name):
+            messagebox.showwarning(
+                WINDOW_TITLE,
+                "RetroArch is running, so this would not stick.\n\nIt writes "
+                "the loaded game's save when it closes, straight over anything "
+                "installed underneath it. Close RetroArch and try again.",
+                parent=self.root,
+            )
+            return
+
+        prepared = self._prepare()
+        if prepared is None:
+            messagebox.showerror(
+                WINDOW_TITLE,
+                "RetroArch's settings could not be read, so there is no way to "
+                "know where it keeps its saves.\n\nThe Sync tab has the "
+                "details. Recover save… still writes to a file you pick.",
+                parent=self.root,
+            )
+            return
+        paths, entries, installed, sorted_by_core, _cheat_dir, _playlist_dir = prepared
+
+        entry = next(
+            (e for e in entries if e.identifier == found.game_identifier), None
+        )
+        if entry is None or entry.system is None:
+            messagebox.showerror(
+                WINDOW_TITLE,
+                "That save state's game is not among the games Delta has "
+                "synced, so there is nothing to say what RetroArch would call "
+                "its save.",
+                parent=self.root,
+            )
+            return
+
+        core = next(
+            (name for name in entry.system.retroarch_cores if name in installed), ""
+        )
+
+        try:
+            plan = savestate.plan_install(
+                paths.save_dir,
+                entry.name,
+                entry.system,
+                core_name=core,
+                sorted_by_core=sorted_by_core,
+            )
+        except savestate.InstallError as error:
+            self._say(f"Cannot install that save: {error}", "error")
+            messagebox.showerror(WINDOW_TITLE, str(error), parent=self.root)
+            return
+
+        if not self._confirm_install(found, extracted, plan):
+            return
+
+        try:
+            result = savestate.install_save(
+                extracted.data, plan, paths.backup_dir
+            )
+        except savestate.InstallError as error:
+            self._say(f"Could not install that save: {error}", "error")
+            messagebox.showerror(WINDOW_TITLE, str(error), parent=self.root)
+            return
+
+        self._say(result.describe(), "heading")
+        if result.backup is not None:
+            self._say(
+                "  The save it replaced is on the Backups tab if you want it "
+                "back.",
+                "muted",
+            )
+        self._say(
+            f"  {restore.RESTORE_IS_A_CHANGE.capitalize()}.", "muted"
+        )
+        self.install_confirmation.show("Installed")
+
+    def _confirm_install(
+        self,
+        found: "savestate.FoundState",
+        extracted: "savestate.ExtractedSave",
+        plan: "savestate.InstallPlan",
+    ) -> bool:
+        """Ask before overwriting, showing what is actually about to happen.
+
+        Spelled out rather than summarised, because the two things that make
+        this go wrong are both visible here and nowhere else: a target that was
+        worked out rather than found, and a size that does not match what is
+        already there.
+        """
+        label = found.game_name or found.path.name
+        lines = [
+            f"Install the battery save recovered from {label} into RetroArch?",
+            "",
+            f"    From : {found.slot_name or 'save state'} "
+            f"({extracted.core}, {extracted.size:,} B)",
+            f"    To   : {plan.target}",
+        ]
+
+        if plan.replaces_a_save:
+            assert plan.existing_size is not None
+            lines.append(
+                f"    Now  : {plan.existing_size:,} B, which will be backed up "
+                f"first"
+            )
+            if not plan.size_matches(extracted.size):
+                lines += [
+                    "",
+                    "The save already there is a different size. That usually "
+                    "means the name matched a different game, so check the path "
+                    "above before going ahead.",
+                ]
+        else:
+            lines.append("    Now  : nothing — RetroArch has no save for it yet")
+
+        if not plan.found:
+            lines += [
+                "",
+                "No existing save was found, so this path is where RetroArch "
+                "would look if the ROM is named the way this tool names it. If "
+                "you added the ROM yourself under a different name, RetroArch "
+                "will not read this file.",
+            ]
+
+        return bool(
+            messagebox.askyesno(
+                WINDOW_TITLE, "\n".join(lines), parent=self.root, default="no"
+            )
+        )
 
     def _build_settings_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)

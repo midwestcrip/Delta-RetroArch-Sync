@@ -143,6 +143,20 @@ class DeltaFolderTests(unittest.TestCase):
             "melonDS", by_game["Pokemon: Platinum Version"].describe_format()
         )
 
+    def test_each_row_carries_the_game_id_and_system_key_for_installing(
+        self,
+    ) -> None:
+        """Both exist for the install path. The identifier joins the row to
+        Delta's game entry -- matching on the display name instead would pick
+        the wrong one for two games sharing a name -- and the key reaches the
+        real ``System``, which is what says the RetroArch extension and whether
+        the system needs converting."""
+        by_game = {s.game_name: s for s in savestate.find_states(self.folder)}
+        ds = by_game["Pokemon: Platinum Version"]
+        gba = by_game["Pokemon: Fire Red Version"]
+        self.assertEqual((ds.game_identifier, ds.system_key), (DS_SHA1, "ds"))
+        self.assertEqual((gba.game_identifier, gba.system_key), (GBA_SHA1, "gba"))
+
     def test_the_slot_name_the_user_typed_is_carried_through(self) -> None:
         by_game = {s.game_name: s for s in savestate.find_states(self.folder)}
         self.assertEqual(by_game["Pokemon: Platinum Version"].slot_name, "Slot 1")

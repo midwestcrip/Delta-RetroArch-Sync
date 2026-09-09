@@ -726,6 +726,49 @@ Paper Mario's begins `iraMtS o yro`, which is "Mario Story" in four-byte groups.
 Both sides use the same convention so `n64.py` is unaffected, but it is worth
 having written down.
 
+### Installing a recovered save, 2026-09-09
+
+Recovery originally stopped at a file in `recovered/`, leaving the copy over
+RetroArch's own save to be done in Explorer. That was the only step in the flow
+with no backup behind it, and it lands on the file holding the progress being
+rescued — so the tool does it now, taking the same rolling backup every other
+write takes. It goes through `sync.backup`, which means the replaced save
+appears on the existing Backups tab as an ordinary restore point and needed no
+new restore code at all.
+
+**The target is found, not computed, whenever RetroArch already has that save.**
+Computing it means knowing which core RetroArch picked and whether
+`sort_savefiles_enable` is on, and both can have changed since the file was
+written — this is the same reasoning `restore.find_retroarch_target` already
+uses. A path is only constructed when nothing was found, and the confirmation
+says so, because a constructed path is right only if the ROM is named the way
+this tool names it.
+
+**Two same-named files is the case worth refusing.** Turning
+`sort_savefiles_enable` on and then off leaves a copy loose in the save folder
+*and* one inside a core's subfolder, and only one of them is the file RetroArch
+reads. Writing into the wrong one looks exactly like success and changes
+nothing, which is the worst outcome available, so the search returns every match
+and more than one is a refusal naming both paths.
+
+**Installing is refused while RetroArch is running**, which the recover-to-file
+path never had to care about. RetroArch writes the loaded game's SRAM when it
+closes, straight over anything installed underneath it — silently, and looking
+exactly like the recovery having failed.
+
+**N64 is refused for a second, independent reason.** RetroArch keeps the
+cartridge save and four Controller Paks in one combined `.srm`, so a bare
+cartridge save written over it erases the paks. Unreachable today, since no N64
+state holds a save to recover, and asserted anyway: the day something makes it
+reachable, the damage is silent and total.
+
+Checked on 2026-09-09 against a copy of this machine's real RetroArch save
+folder, all five recoverable games: every target was **found** rather than
+constructed, each inside its core's subfolder (`sort_savefiles_enable` is on
+here), and in every case the save RetroArch already held was **byte-for-byte
+what the state produced**. Three independent copies agreeing — the save state,
+Delta's `GameSave` record, and RetroArch's own file.
+
 ## Push: what actually failed
 
 Tested for real on 2026-09-05. The write itself was correct — the save landed
