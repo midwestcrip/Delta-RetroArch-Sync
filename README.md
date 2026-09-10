@@ -536,8 +536,13 @@ python -m pytest tests -q
 
 As of v0.3.0 the suite reports 630 passed tests and 702 passed subtests on
 Windows. Pytest is a development-only dependency; neither application imports
-it at runtime. Use the pytest command above rather than `unittest` discovery:
-some test modules use pytest fixtures and markers directly.
+it at runtime.
+
+`python -m unittest discover -s tests` still runs and still passes, but **use
+pytest**: unittest collects only the `TestCase` classes, which is 458 of the
+630, and it reports that as success. The 172 it skips are written as plain
+pytest functions, and silently covering less is a worse failure than refusing
+to run.
 
 The suite runs against a synthetic Delta folder built from the layout documented
 in `docs/research.md`. Where real data has since been available it has been
