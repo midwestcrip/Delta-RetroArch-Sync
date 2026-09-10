@@ -472,6 +472,62 @@ the same repository** — which confines the dependency to the people who want t
 feature and leaves the main tool standard-library-only. Do not add
 pymobiledevice3 to the main tool.
 
+### Building it, 2026-09-09
+
+Built as agreed: a second executable in this repository, plus the discovery and
+protocol that lets the main program notice it. Four findings are worth keeping,
+three of them bugs that a phone would not have revealed any sooner.
+
+**A process, not an importable plugin.** The obvious design — a folder added to
+`sys.path` — cannot work. The main program is frozen around one embedded
+CPython, and `pymobiledevice3` brings compiled wheels (`cryptography`) that load
+only against exactly that interpreter's version and ABI. An importable add-on
+moves the dependency problem from build time to run time, where it breaks the
+program it was meant to extend. A process boundary also means a USB stall
+waiting on a trust dialog cannot freeze the launcher's event loop.
+
+**One executable does both jobs, and that was measured.** The add-on opens a
+window when double-clicked and speaks JSON Lines when driven with `--json`. That
+needs a windowed PyInstaller build to write to a stdout its parent hands it,
+which is widely said not to work. A throwaway `--windowed` build that printed
+JSON was read back through a pipe successfully, so the two-executable design
+(console for the protocol, windowed for the window) was not needed.
+
+**`subprocess` needs a valid stdin even when you only want stdout.** Redirecting
+any of the three standard handles makes Windows require all three, and a
+windowed build has no console — so the inherited stdin is invalid and the call
+dies with `[WinError 6] The handle is invalid` before the add-on starts. It
+would have shipped as "add-ons work from source and never in the packaged app".
+Found because pytest replaces stdin the same way a windowed build does.
+`stdin=subprocess.DEVNULL` fixes it, and is the right contract anyway.
+
+**A timeout that kills only the named process is not a timeout.** `Popen.kill`
+on Windows leaves grandchildren holding the pipes open, so the read after the
+timeout blocks for as long as they live: a one-second timeout against a
+thirty-second sleep returned after the full thirty, with the correct error
+message and a window that would have been frozen for half a minute. Killing the
+tree (`taskkill /F /T`) fixes it, and the test times the call rather than
+checking the text.
+
+**pymobiledevice3 11.x is async throughout, and does not look it.** Its AFC
+methods carry a `@path_to_str()` decorator, so `inspect.iscoroutinefunction`
+reports them as ordinary functions. Calling them as such fails with
+`'coroutine' object is not iterable`. The real shapes: `usbmux.list_devices`,
+`lockdown.create_using_usbmux`, `InstallationProxyService.get_apps` and every
+AFC call are coroutines, and the container is vended by
+`HouseArrestService.create(lockdown, bundle_id, documents_only=True)` rather
+than by a constructor argument. Found by installing the library and running
+`probe` with nothing plugged in.
+
+**What is still gated on the cable**, and deliberately not guessed at: whether
+`house_arrest` opens Delta's container on a real device, what Delta's bundle
+identifier actually is (matched against the installed-app list rather than
+hard-coded, because App Store, AltStore and sideloaded builds differ), and
+**what the pak files are named**. That last one decides nothing structural — the
+reader tells the one-file-of-four shape from the four-separate-files shape by
+**size**, since a pak is 32,768 bytes on every build, and refuses anything that
+is neither rather than guessing.
+
 **A cheaper prize sits next to it.** Standalone mupen64plus (and Project64)
 write **separate** `.eep` / `.sra` / `.fla` / `.mpk1-4` files — which is exactly
 the shape Delta stores. Only RetroArch's core packs them into one 296,960-byte

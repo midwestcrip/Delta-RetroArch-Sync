@@ -292,6 +292,47 @@ from Delta's record (automatic, when the state is still in Delta's folder) or
 from `--size`. They refuse rather than guess, because guessing means handing
 back a plausible-looking wrong file.
 
+### Controller Paks (Nintendo 64)
+
+Delta does not sync Controller Pak data — ghosts, extra save slots, anything a
+game writes to a pak. `GameSave.syncableFiles` declares `gameSave` and, for Game
+Boy Color only, `gameTimeSave`; there is no mempak entry, so the `.mpk` files
+mupen64plus writes on the phone never reach Dropbox and nothing here can see
+them. The cartridge save travels normally.
+
+The feature is split in two, and **the half that needs nothing is built into the
+main program**:
+
+| | Needs | Where it lives |
+| --- | --- | --- |
+| Merging pak files into RetroArch's save | nothing | **Controller Paks** tab |
+| Getting them off the phone | a cable, iTunes/Apple Devices, `pymobiledevice3` | separate download |
+
+So you do not need the add-on at all. Delta sets `UIFileSharingEnabled`, which
+means **On My iPhone → Delta → Cores → Mupen64Plus → Saves** is browsable in the
+Files app and in Explorer — copy that folder off yourself and press *Merge from
+a folder…*. The add-on only automates the copying.
+
+**Merging is careful in two specific ways.** RetroArch's save is backed up
+first, so it comes back off the Backups tab like any other write. And **a blank
+pak never overwrites one that has notes on it** — an empty Controller Pak 2 on
+the phone and a season of Mario Kart 64 ghosts in slot 2 on the PC is the
+ordinary case, not the exotic one, and a straight copy would erase them. The tab
+tells you which slots it will write, which it is keeping, and why.
+
+Only the pak regions are ever touched. `n64.py` writes the cartridge save and
+refuses to touch the paks; the pak code writes the paks and touches nothing
+else, so every byte of the 296,960 has exactly one owner.
+
+The add-on is its own program: double-click it for its own window, or let the
+main program find it. It looks for `addon.json` beside itself or in an
+`addons/` folder, and runs the add-on as a **separate process**, reading JSON
+back — never importing it, because a frozen build cannot load another build's
+compiled wheels and a USB stall must not be able to freeze the launcher.
+
+Build it with `python tools/build_release.py --addon` (needs
+`pip install pymobiledevice3`; the build says so loudly if it is missing).
+
 If automatic discovery gets a path wrong, copy `config.example.toml` to
 `config.toml` and override it. `config.toml` is gitignored, because this
 repository is public and that file holds machine-specific absolute paths.

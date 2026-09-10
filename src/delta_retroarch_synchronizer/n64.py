@@ -210,6 +210,37 @@ def has_controller_pak_data(srm: bytes) -> bool:
     return any(not controller_pak_is_empty(pak) for pak in controller_paks(srm))
 
 
+def with_controller_paks(srm: bytes, paks: dict[int, bytes]) -> bytes:
+    """A combined save with some of its Controller Paks replaced.
+
+    The exact mirror of :func:`to_retroarch`, and deliberately so. That function
+    writes the cartridge save and refuses to touch the pak regions, because
+    Delta has nothing to put there; this one writes *only* the pak regions and
+    touches nothing else, because the Controller Pak add-on has nothing to say
+    about the cartridge save. Between them every byte of the file has exactly
+    one owner, which is the property that keeps either of them from quietly
+    eating the other's data.
+
+    Slots absent from ``paks`` are left exactly as they were.
+    """
+    if len(srm) != SRM_SIZE:
+        raise ValueError(
+            f"a combined save is {SRM_SIZE} bytes; this one is {len(srm)}"
+        )
+
+    data = bytearray(srm)
+    for slot, pak in paks.items():
+        if not 0 <= slot < PAK_COUNT:
+            raise ValueError(f"there is no Controller Pak {slot + 1}")
+        if len(pak) != PAK_SIZE:
+            raise ValueError(
+                f"Controller Pak {slot + 1} is {len(pak)} bytes, not {PAK_SIZE}"
+            )
+        start = PAKS_START + slot * PAK_SIZE
+        data[start : start + PAK_SIZE] = pak
+    return bytes(data)
+
+
 def blank_srm() -> bytes:
     """An empty combined save, with all four Controller Paks formatted."""
     data = bytearray([EMPTY]) * SRM_SIZE

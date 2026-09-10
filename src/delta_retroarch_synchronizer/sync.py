@@ -354,6 +354,30 @@ def retroarch_save_path(
     return folder / naming.save_filename(entry.name, entry.system.retroarch_save_ext)
 
 
+def find_saves(save_dir: Path, filename: str) -> list[Path]:
+    """Every file under RetroArch's save folder with this name.
+
+    The companion to :func:`retroarch_save_path`, and preferred over it when
+    the file already exists: that function computes where a save *would* go,
+    which needs the core RetroArch picked and whether it sorts saves into
+    folders, and both can have changed since the file was written. The file
+    itself is unambiguous.
+
+    All of them, not the first. Turning ``sort_savefiles_enable`` on and then
+    off leaves a copy loose in the folder *and* one inside a core's subfolder,
+    and only one of them is the file RetroArch reads -- so a caller about to
+    write needs to know there is a choice rather than being handed one.
+    """
+    if not save_dir.is_dir():
+        return []
+    lowered = filename.lower()
+    return sorted(
+        path
+        for path in save_dir.rglob("*")
+        if path.is_file() and path.name.lower() == lowered
+    )
+
+
 def sync_rom(
     entry: inspect_module.GameEntry, rom_dir: Path, *, dry_run: bool = False
 ) -> Outcome | None:

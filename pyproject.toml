@@ -7,10 +7,21 @@ name = "delta-retroarch-synchronizer"
 version = "0.2.1"
 description = "Sync battery saves, ROMs and cheats between Delta (iOS) and RetroArch (Windows)."
 requires-python = ">=3.11"
+
+# Empty, and it stays empty. The Controller Pak add-on needs pymobiledevice3;
+# it is a *separate executable* precisely so that dependency never lands on
+# anyone who does not want Controller Pak support. See the optional group.
 dependencies = []
+
+[project.optional-dependencies]
+# Only for building the Controller Pak add-on (tools/build_release.py --addon).
+# The main program neither imports this nor runs anything that does -- it talks
+# to the add-on over a pipe.
+controller-pak = ["pymobiledevice3>=11"]
 
 [project.scripts]
 delta-retroarch-synchronizer = "delta_retroarch_synchronizer.__main__:main"
+delta-retroarch-controller-pak = "delta_retroarch_controller_pak.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

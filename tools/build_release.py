@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
 NAME = "Delta-RetroArch Synchronizer"
+
+#: The optional second download. Its own executable so its dependency --
+#: pymobiledevice3, and Apple's usbmux service behind it -- never reaches
+#: anyone who does not want Controller Pak support.
+ADDON_NAME = "Delta-RetroArch Controller Pak"
 
 #: Files a source download needs. Deliberately a list rather than "everything
 #: except gitignored": a release should never accidentally carry someone's
@@ -43,6 +49,7 @@ SOURCE_INCLUDES = [
     "pyproject.toml",
     "config.example.toml",
     "launch_gui.pyw",
+    "launch_controller_pak.pyw",
     "Delta-RetroArch Synchronizer.bat",
 ]
 
@@ -173,6 +180,110 @@ def build_exe(onefile: bool = False) -> Path | None:
     return folder if (folder / f"{NAME}.exe").is_file() else None
 
 
+def build_addon() -> Path | None:
+    """Build the Controller Pak add-on: the optional separate download.
+
+    A second executable rather than a feature of the first, because reaching
+    Delta's Controller Pak files needs ``pymobiledevice3``, Apple's usbmux
+    service, a cable and a trust pairing -- and the main program's dependency
+    list is the standard library. Shipping it separately puts that cost on the
+    people who want the feature and nobody else.
+
+    **One executable, windowed, doing both jobs.** It opens a window when
+    double-clicked and speaks JSON Lines when the main program runs it with
+    ``--json``. That works because a windowed PyInstaller build still writes to
+    a stdout its parent hands it -- measured on 2026-09-09 with a throwaway
+    build, not assumed. Had it been false this would be two executables, a
+    console one for the protocol and a windowed one for the window.
+
+    ``--collect-all`` rather than ``--hidden-import``: pymobiledevice3 is
+    imported lazily inside functions so nothing static finds it, and it carries
+    data files besides.
+    """
+    work = ROOT / "build-addon"
+    icon = ROOT / "assets" / "synchronizer.ico"
+    separator = ";" if sys.platform == "win32" else ":"
+
+    try:
+        import pymobiledevice3  # noqa: F401
+
+        has_library = True
+    except ImportError:
+        has_library = False
+
+    if not has_library:
+        print("  *** pymobiledevice3 is not installed in this environment.")
+        print("  *** The add-on will build, and will report it is missing when")
+        print("  *** asked to talk to a phone -- which makes it useless as a")
+        print("  *** release. Install it before building one to ship:")
+        print("  ***     pip install pymobiledevice3")
+
+    command = [
+        sys.executable, "-m", "PyInstaller",
+        "--noconfirm",
+        "--clean",
+        "--onedir",
+        "--noupx",
+        "--windowed",
+        "--name", ADDON_NAME,
+        "--icon", str(icon),
+        "--add-data", f"{icon}{separator}assets",
+        "--paths", str(ROOT / "src"),
+        "--distpath", str(DIST),
+        "--workpath", str(work),
+        "--specpath", str(work),
+    ]
+    if has_library:
+        command += ["--collect-all", "pymobiledevice3"]
+    command.append(str(ROOT / "launch_controller_pak.pyw"))
+
+    print("Building the Controller Pak add-on...")
+    result = subprocess.run(command, cwd=ROOT)
+    if result.returncode != 0:
+        print(f"PyInstaller failed (exit {result.returncode}).")
+        return None
+
+    folder = DIST / ADDON_NAME
+    if not (folder / f"{ADDON_NAME}.exe").is_file():
+        return None
+
+    write_addon_manifest(folder)
+    return folder
+
+
+def write_addon_manifest(folder: Path) -> Path:
+    """The file that makes the main program notice this download.
+
+    ``executable`` is deliberately a bare filename. The main program refuses a
+    manifest naming a path, because a manifest is a text file on disk that says
+    which program to run and there is no reason for it to be able to point
+    outside its own folder.
+
+    ``protocol`` is read from the add-on's own source, so the number in the
+    shipped manifest cannot drift from the number the program answers with.
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    from delta_retroarch_controller_pak import PROTOCOL, __version__
+
+    manifest = folder / "addon.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "addon": "controller-pak",
+                "name": "Controller Pak",
+                "version": __version__,
+                "protocol": PROTOCOL,
+                "executable": f"{ADDON_NAME}.exe",
+                "provides": ["controller-pak"],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return manifest
+
+
 def zip_folder(folder: Path) -> Path:
     """Zip a one-directory build so it remains a single download."""
     target = DIST / f"{folder.name}.zip"
@@ -214,13 +325,18 @@ def main() -> int:
     parser.add_argument("--exe", action="store_true", help="build only the executable")
     parser.add_argument("--zip", action="store_true", help="build only the source zip")
     parser.add_argument(
+        "--addon",
+        action="store_true",
+        help="build only the Controller Pak add-on (the separate download)",
+    )
+    parser.add_argument(
         "--onefile",
         action="store_true",
         help="single self-extracting exe; convenient, but slower to start",
     )
     args = parser.parse_args()
 
-    both = not (args.exe or args.zip)
+    both = not (args.exe or args.zip or args.addon)
     DIST.mkdir(parents=True, exist_ok=True)
     built: list[Path] = []
 
@@ -237,6 +353,15 @@ def main() -> int:
             built.append(zip_folder(exe))
         else:
             built.append(exe)
+
+    if both or args.addon:
+        addon = build_addon()
+        if addon is None:
+            print("\nAdd-on build failed. The other downloads are unaffected.")
+            if not both:
+                return 1
+        else:
+            built.append(zip_folder(addon))
 
     print()
     for path in built:

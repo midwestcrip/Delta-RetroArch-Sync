@@ -33,8 +33,8 @@ from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 from typing import Any
 
 from . import config as config_module
-from . import delta_writer, discovery, display, dropbox_api, guide, health, paths
-from . import processes, restore, savestate
+from . import delta_writer, discovery, display, dropbox_api, guide, health, naming, paths
+from . import addons, n64, paks, processes, restore, savestate
 from . import tray as tray_module
 from . import shortcut as shortcut_module
 from . import theme
@@ -449,15 +449,18 @@ class LauncherWindow:
         sync_tab = ttk.Frame(notebook, padding=display.px(8))
         backups_tab = ttk.Frame(notebook, padding=display.px(8))
         states_tab = ttk.Frame(notebook, padding=display.px(8))
+        paks_tab = ttk.Frame(notebook, padding=display.px(8))
         settings_tab = ttk.Frame(notebook, padding=display.px(8))
         notebook.add(sync_tab, text="   Sync   ")
         notebook.add(backups_tab, text="   Backups   ")
         notebook.add(states_tab, text="   Save states   ")
+        notebook.add(paks_tab, text="   Controller Paks   ")
         notebook.add(settings_tab, text="   Settings   ")
 
         self._build_sync_tab(sync_tab)
         self._build_backups_tab(backups_tab)
         self._build_states_tab(states_tab)
+        self._build_paks_tab(paks_tab)
         self._build_settings_tab(settings_tab)
 
         self.play_button = ttk.Button(
@@ -994,6 +997,315 @@ class LauncherWindow:
                 WINDOW_TITLE, "\n".join(lines), parent=self.root, default="no"
             )
         )
+
+    # ------------------------------------------------------------------
+    # Controller Paks
+    #
+    # The one thing Delta will not sync. ``GameSave.syncableFiles`` has no
+    # mempak entry, so the .mpk files on the phone never reach Dropbox and
+    # nothing this program can read will ever contain them.
+    #
+    # The tab is useful with or without the add-on, which is the point of
+    # splitting the feature in two. Getting the files off the phone needs a
+    # cable and a third-party library, and that is the add-on's job. Merging
+    # them into RetroArch's save needs nothing, and is this program's -- so
+    # someone who copied the folder off by hand in Explorer (Delta sets
+    # UIFileSharingEnabled, so they can) gets the whole feature with no
+    # download at all.
+    # ------------------------------------------------------------------
+
+    def _build_paks_tab(self, parent: ttk.Frame) -> None:
+        parent.rowconfigure(2, weight=1)
+        parent.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            parent,
+            text=(
+                "Delta does not sync Nintendo 64 Controller Paks — ghosts, "
+                "extra save slots, anything a game writes to a pak. They only "
+                "exist on the phone. This merges them into RetroArch's save, "
+                "backing it up first, and never lets a blank pak overwrite one "
+                "that has notes on it."
+            ),
+            style="Muted.TLabel",
+            wraplength=display.px(620),
+            justify="left",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        self.pak_status = ttk.Label(parent, text="", style="Muted.TLabel",
+                                    wraplength=display.px(620), justify="left")
+        self.pak_status.grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        columns = ("game", "save", "paks")
+        self.pak_list = ttk.Treeview(
+            parent, columns=columns, show="headings", height=8, selectmode="browse"
+        )
+        for key, title, anchor in (
+            ("game", "Nintendo 64 game", "w"),
+            ("save", "RetroArch save", "w"),
+            ("paks", "Controller Paks", "w"),
+        ):
+            self.pak_list.heading(key, text=title)
+            self.pak_list.column(key, anchor=anchor, stretch=(key == "game"))
+        self.pak_list.grid(row=2, column=0, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(
+            parent, orient="vertical", command=self.pak_list.yview
+        )
+        scrollbar.grid(row=2, column=1, sticky="ns")
+        self.pak_list.configure(yscrollcommand=scrollbar.set)
+
+        actions = ttk.Frame(parent)
+        actions.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        actions.columnconfigure(0, weight=1)
+
+        ttk.Button(actions, text="Refresh", command=self.on_refresh_paks).grid(
+            row=0, column=1, padx=4
+        )
+
+        check_button = ttk.Button(
+            actions, text="Check the phone", command=self.on_check_paks
+        )
+        check_button.grid(row=0, column=2, padx=4)
+        Tooltip(
+            check_button,
+            "Asks the Controller Pak add-on what it can see: whether Apple's "
+            "device service is running, whether a phone is connected, and "
+            "which pak files are on it.\n\n"
+            "Needs the separate Controller Pak download. Nothing is written.",
+        )
+
+        folder_button = ttk.Button(
+            actions, text="Merge from a folder…", command=self.on_merge_paks
+        )
+        folder_button.grid(row=0, column=3, padx=4)
+        self.pak_confirmation = Confirmation(folder_button)
+        Tooltip(
+            folder_button,
+            "Merges Controller Pak files from a folder into the selected "
+            "game's RetroArch save.\n\n"
+            "Works with no add-on at all: copy Delta → Cores → Mupen64Plus → "
+            "Saves off the phone in Explorer and point this at it. The add-on "
+            "just does that copying for you.\n\n"
+            "RetroArch's save is backed up first, and a blank pak never "
+            "overwrites one with saved notes.",
+        )
+
+        self.on_refresh_paks()
+
+    def _pak_addon(self) -> "addons.Addon | None":
+        return addons.find("controller-pak", addons.search_roots(_state_dir()))
+
+    def on_refresh_paks(self) -> None:
+        """List the N64 games, and say whether the add-on is installed."""
+        self.config = self._current_config()
+        self.pak_games: list[tuple[inspect_module.GameEntry, Path | None]] = []
+        self.pak_list.delete(*self.pak_list.get_children())
+
+        addon = self._pak_addon()
+        if addon is None:
+            self.pak_status.configure(
+                text=(
+                    "The Controller Pak add-on is not installed — that is the "
+                    "separate download that talks to the phone over USB. "
+                    "Merging from a folder works without it."
+                )
+            )
+        else:
+            self.pak_status.configure(text=f"Add-on: {addon.describe()}")
+
+        prepared = self._prepare()
+        if prepared is None:
+            self.pak_list.insert(
+                "", "end", values=("Delta or RetroArch not found", "", "")
+            )
+            return
+        paths, entries, installed, sorted_by_core, _cheats, _playlists = prepared
+
+        n64_games = [
+            entry
+            for entry in entries
+            if entry.system is not None and entry.system.converted
+        ]
+        if not n64_games:
+            self.pak_list.insert(
+                "", "end", values=("No Nintendo 64 games in Delta", "", "")
+            )
+            return
+
+        for index, entry in enumerate(n64_games):
+            assert entry.system is not None
+            filename = naming.save_filename(
+                entry.name, entry.system.retroarch_save_ext
+            )
+            matches = sync_module.find_saves(paths.save_dir, filename)
+            target = matches[0] if len(matches) == 1 else None
+
+            if len(matches) > 1:
+                where, state = "more than one — see the log", ""
+            elif target is None:
+                core = next(
+                    (n for n in entry.system.retroarch_cores if n in installed), ""
+                )
+                target = sync_module.retroarch_save_path(
+                    paths.save_dir, entry, core, sorted_by_core
+                )
+                where, state = "none yet", "would be created"
+            else:
+                where = str(target.parent.name or target.parent)
+                try:
+                    data = target.read_bytes()
+                except OSError:
+                    data = b""
+                if len(data) != n64.SRM_SIZE:
+                    state = "not a Mupen64Plus-Next save"
+                else:
+                    used = [
+                        str(slot + 1)
+                        for slot, pak in enumerate(n64.controller_paks(data))
+                        if not n64.controller_pak_is_empty(pak)
+                    ]
+                    state = f"data in {', '.join(used)}" if used else "all blank"
+
+            self.pak_games.append((entry, target))
+            self.pak_list.insert(
+                "", "end", iid=str(index), values=(entry.name, where, state)
+            )
+
+    def _selected_pak_game(self):
+        selection = self.pak_list.selection()
+        if not selection:
+            return None
+        try:
+            return self.pak_games[int(selection[0])]
+        except (ValueError, IndexError, AttributeError):
+            return None
+
+    def on_check_paks(self) -> None:
+        """Ask the add-on what it can see. Reads nothing of ours."""
+        addon = self._pak_addon()
+        if addon is None:
+            messagebox.showinfo(
+                WINDOW_TITLE,
+                "The Controller Pak add-on is not installed.\n\nIt is a "
+                "separate download because it needs a USB cable, a trust "
+                "pairing and Apple's device service — none of which the rest "
+                "of this program requires.\n\nYou can still use "
+                "“Merge from a folder”: copy Delta → Cores "
+                "→ Mupen64Plus → Saves off the phone yourself.",
+                parent=self.root,
+            )
+            return
+
+        self._say("")
+        self._say("--- Controller Pak add-on ---", "heading")
+        reply = addons.run(addon, ["probe"], timeout=60.0)
+        for line in reply.progress():
+            self._say(f"  {line}", "muted")
+
+        if not reply.ok:
+            self._say(f"  {reply.error}", "error")
+            return
+
+        for check in reply.result.get("checks", []):
+            level = "ok" if check.get("ok") else "warn"
+            self._say(f"  {check.get('check')}: {check.get('detail')}", level)
+
+        if not reply.result.get("ready"):
+            self._say(
+                "  Not ready yet — the lines above say what is missing.", "muted"
+            )
+            return
+
+        listing = addons.run(addon, ["list"], timeout=60.0)
+        if not listing.ok:
+            self._say(f"  {listing.error}", "error")
+            return
+        files = listing.result.get("files", [])
+        if not files:
+            self._say(
+                "  No files where Delta keeps them. Delta writes Controller "
+                "Pak files only once an N64 game has been played.",
+                "warn",
+            )
+            return
+        self._say("  On the phone:")
+        for item in files:
+            self._say(f"    {item.get('name')}  ({item.get('size', 0):,} B)")
+
+    def on_merge_paks(self) -> None:
+        """Read pak files from a folder and merge them into RetroArch's save."""
+        selected = self._selected_pak_game()
+        if selected is None:
+            messagebox.showinfo(
+                WINDOW_TITLE,
+                "Pick the Nintendo 64 game to merge into, from the list.",
+                parent=self.root,
+            )
+            return
+        entry, target = selected
+        if target is None:
+            messagebox.showerror(
+                WINDOW_TITLE,
+                f"RetroArch has more than one save named for {entry.name}, and "
+                f"only one of them is the file it loads. Move or delete the "
+                f"others first.",
+                parent=self.root,
+            )
+            return
+
+        chosen = filedialog.askdirectory(
+            parent=self.root,
+            title="Folder holding the .mpk files (Delta/Cores/Mupen64Plus/Saves)",
+        )
+        if not chosen:
+            return
+
+        try:
+            found = paks.read_folder(Path(chosen))
+            plan = paks.plan_install(found, target)
+        except paks.PakError as error:
+            self._say(f"Cannot merge those Controller Paks: {error}", "error")
+            messagebox.showerror(WINDOW_TITLE, str(error), parent=self.root)
+            return
+
+        if not plan.changes_anything:
+            messagebox.showinfo(
+                WINDOW_TITLE,
+                f"Nothing to merge for {entry.name}.\n\n{plan.describe()}",
+                parent=self.root,
+            )
+            return
+
+        if not messagebox.askyesno(
+            WINDOW_TITLE,
+            f"Merge Controller Pak data into {entry.name}?\n\n"
+            f"{plan.describe()}\n\n"
+            f"RetroArch's save is backed up first. The cartridge save inside "
+            f"it is not touched.",
+            parent=self.root,
+            default="no",
+        ):
+            return
+
+        prepared = self._prepare()
+        if prepared is None:
+            return
+        try:
+            said = paks.install(plan, prepared[0].backup_dir)
+        except (paks.PakError, OSError) as error:
+            self._say(f"Could not merge those Controller Paks: {error}", "error")
+            messagebox.showerror(WINDOW_TITLE, str(error), parent=self.root)
+            return
+
+        self._say(said, "heading")
+        for pak in plan.protecting:
+            self._say(
+                f"  Kept this PC's {pak.label} — the folder's copy is blank.",
+                "muted",
+            )
+        self.pak_confirmation.show("Merged")
+        self.on_refresh_paks()
 
     def _build_settings_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)

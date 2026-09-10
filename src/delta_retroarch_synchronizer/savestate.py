@@ -1498,25 +1498,13 @@ class InstallResult:
 def find_retroarch_saves(save_dir: Path, filename: str) -> list[Path]:
     """Every file under RetroArch's save folder with this name.
 
-    Searched rather than reconstructed, for the reason ``restore`` gives: the
-    path depends on which core RetroArch picked and whether it sorts saves into
-    folders, and both can have changed since -- while the file itself, if it is
-    there, is unambiguous.
-
-    All of them, not the first. Two is not exotic: turning
-    ``sort_savefiles_enable`` on and then off leaves a copy loose in the folder
-    *and* one inside a core's subfolder, and only one of them is the file
-    RetroArch reads. Installing into the wrong one looks like it worked and
-    changes nothing, which is the worst outcome available here.
+    Lives in :func:`sync.find_saves` now, because Controller Paks want the same
+    answer and RetroArch path logic belongs beside ``retroarch_save_path``. Kept
+    here as the name this module's callers already use.
     """
-    if not save_dir.is_dir():
-        return []
-    lowered = filename.lower()
-    return sorted(
-        path
-        for path in save_dir.rglob("*")
-        if path.is_file() and path.name.lower() == lowered
-    )
+    from . import sync
+
+    return sync.find_saves(save_dir, filename)
 
 
 def plan_install(
