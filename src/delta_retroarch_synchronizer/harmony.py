@@ -62,13 +62,9 @@ import base64
 import binascii
 import json
 import plistlib
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
-
-#: Record files are "<Type>-<identifier>"; attached files add "-<fileID>".
-_RECORD_RE = re.compile(r"^(?P<type>[A-Za-z]+)-(?P<identifier>[^-]+(?:-[^-]+)*)$")
 
 #: Reserved Game identifiers Delta uses for melonDS BIOS/firmware bundles.
 #: These are not real games and must be skipped.
