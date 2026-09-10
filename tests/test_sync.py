@@ -147,6 +147,24 @@ class WritePathTests(unittest.TestCase):
         # The most recent backup holds the most recent pre-overwrite content.
         self.assertEqual(kept[-1].read_bytes(), b"version 14")
 
+    def test_a_rom_name_with_brackets_in_it_is_still_pruned(self) -> None:
+        """Region tags are ordinary in ROM names, and they are glob syntax.
+
+        A save is named after its ROM, so "Zelda [U].srm" is the normal case
+        rather than the exotic one. Interpolated straight into a glob pattern,
+        "[U]" is a character class matching the single letter U: the pattern
+        never matches this file's own backups, so pruning silently stopped and
+        they grew without bound.
+        """
+        target = self.root / "Zelda [U].srm"
+        backups = self.root / "backups"
+        for index in range(15):
+            target.write_bytes(b"version %d" % index)
+            sync.backup(target, backups, keep=10)
+        kept = sorted(path for path in backups.iterdir() if path.suffix == ".bak")
+        self.assertEqual(len(kept), 10)
+        self.assertEqual(kept[-1].read_bytes(), b"version 14")
+
     def test_backup_of_a_missing_file_is_a_no_op(self) -> None:
         self.assertIsNone(sync.backup(self.root / "nope.srm", self.root / "backups"))
 

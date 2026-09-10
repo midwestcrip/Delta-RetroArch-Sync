@@ -52,8 +52,16 @@ def safe_filename(name: str, *, fallback: str = "untitled") -> str:
 
     if not cleaned:
         return fallback
-    if cleaned.upper() in _RESERVED or cleaned.split(".")[0].upper() in _RESERVED:
-        return f"{cleaned}_"
+
+    # A device name is reserved by its *stem*: "NUL.txt" and "NUL.tar.gz" are
+    # both the NUL device as far as Windows is concerned, which is why the stem
+    # is what gets checked. It is therefore also what has to be changed --
+    # appending to the end leaves "CON.txt_", whose stem is still "CON", so the
+    # file is still one Windows refuses to create. "CON" itself has no dot, so
+    # this returns "CON_" for it exactly as before.
+    stem, dot, rest = cleaned.partition(".")
+    if stem.upper() in _RESERVED:
+        return f"{stem}_{dot}{rest}"
     return cleaned
 
 

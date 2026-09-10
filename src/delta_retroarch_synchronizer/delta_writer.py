@@ -208,6 +208,23 @@ def _record_bytes(payload: dict[str, Any]) -> bytes:
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
+def _preserved_hash(raw: dict[str, Any], record_path: Path) -> str:
+    """The record's own ``sha1Hash``, read out before anything is modified.
+
+    Preserved and never recomputed -- see the module docstring. Capturing it
+    first is the whole trick, so both writers read it here before touching a
+    field, and both refuse a record that has no usable one rather than write a
+    record whose Harmony metadata cannot be put back.
+    """
+    stored = raw.get("sha1Hash")
+    if not isinstance(stored, str) or not stored:
+        raise ValueError(
+            f"{record_path.name} has no usable sha1Hash; refusing to write a "
+            "record whose Harmony metadata we cannot preserve"
+        )
+    return stored
+
+
 def push_save(
     delta_folder: Path,
     identifier: str,
@@ -241,15 +258,7 @@ def push_save(
 
     raw = json.loads(record_path.read_text(encoding="utf-8"))
 
-    # The record's top-level hash is preserved, never recomputed -- see the
-    # module docstring. Capturing it before anything is modified is the whole
-    # trick, so it is read out here rather than left to be picked up later.
-    preserved_hash = raw.get("sha1Hash")
-    if not isinstance(preserved_hash, str) or not preserved_hash:
-        raise ValueError(
-            f"{record_path.name} has no usable sha1Hash; refusing to write a "
-            "record whose Harmony metadata we cannot preserve"
-        )
+    preserved_hash = _preserved_hash(raw, record_path)
 
     # Preflight. This used to require that we could reproduce the stored hash,
     # which stopped being a valid precondition once we began preserving it:
@@ -416,12 +425,7 @@ def push_cheat(
 
     raw = json.loads(record_path.read_text(encoding="utf-8"))
 
-    preserved_hash = raw.get("sha1Hash")
-    if not isinstance(preserved_hash, str) or not preserved_hash:
-        raise ValueError(
-            f"{record_path.name} has no usable sha1Hash; refusing to write a "
-            "record whose Harmony metadata we cannot preserve"
-        )
+    preserved_hash = _preserved_hash(raw, record_path)
 
     # A cheat with attached files is not the record shape this was written
     # against, and the difference would matter: files carry hashes and revisions

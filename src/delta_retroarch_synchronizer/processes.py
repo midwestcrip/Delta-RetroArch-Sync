@@ -31,7 +31,6 @@ from pathlib import Path
 _QUERY_LIMITED_INFORMATION = 0x1000
 _SYNCHRONIZE = 0x00100000
 
-_STILL_RUNNING = 0x00000103  # STILL_ACTIVE
 _WAIT_OBJECT_0 = 0x00000000
 
 #: Enough for any desktop. EnumProcesses truncates silently rather than failing,
