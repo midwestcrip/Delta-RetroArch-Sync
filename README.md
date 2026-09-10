@@ -22,11 +22,11 @@ record, annotated where it turned out wrong.
 
 ## Status
 
-Bidirectional save sync works, confirmed on a real device in both directions:
-progress made on the phone appears in RetroArch, and progress made in RetroArch
-appears in Delta. ROM export and cheat export work, and the launcher window is
-what you actually use day to day — it syncs, launches RetroArch, and syncs again
-once it closes.
+Bidirectional save sync works, confirmed on a real device in both directions for
+all six systems: progress made on the phone appears in RetroArch, and progress
+made in RetroArch appears in Delta. ROM export and cheat export work, and the
+launcher window is what you actually use day to day — it syncs, launches
+RetroArch, and syncs again once it closes.
 
 ### Cheats: edit anywhere, create on the phone
 
@@ -88,12 +88,6 @@ the pairing genuinely ambiguous does not, and is reported rather than guessed.
 | Health checks (`doctor`) | Working |
 | Rolling backups and `restore` | Working |
 | Launcher window | Working |
-
-One gap worth naming: the DS **RetroArch → Delta** direction has not been tested
-on a real device yet, only the other way. It uses the same code path as the five
-systems that have been, and DS is a plain copy with no conversion, so there is no
-particular reason to expect trouble — but it has not been proven, and this file
-would rather say so than let you find out.
 
 **Every system Delta supports now syncs: GBA, SNES, GBC, NES, DS and N64.** Each
 was enabled only once a real save had been inspected for a header, footer or
@@ -536,13 +530,14 @@ manifest or somebody's save backups.
 ## Tests
 
 ```
+python -m pip install pytest
 python -m pytest tests -q
 ```
 
-510 tests. `python -m unittest discover -s tests` also runs the whole suite and
-needs nothing installed, but it reports 352 — that is the number of test
-*methods*, and it does not tally the subtests inside them. Same coverage, and
-pytest is the only third-party package this repository asks for anywhere.
+As of v0.3.0 the suite reports 630 passed tests and 702 passed subtests on
+Windows. Pytest is a development-only dependency; neither application imports
+it at runtime. Use the pytest command above rather than `unittest` discovery:
+some test modules use pytest fixtures and markers directly.
 
 The suite runs against a synthetic Delta folder built from the layout documented
 in `docs/research.md`. Where real data has since been available it has been

@@ -238,9 +238,9 @@ So the extension is a migration leftover and DS is a rename, like SNES. Verified
 end to end the same day: the pull landed byte-identical (SHA-1 match against
 Delta's copy) at `saves/melonDS DS/Pokémon - Platinum Version.srm`.
 
-The RetroArch → Delta direction is **still unchecked on device** as of
-2026-09-08 — the same position GBC and NES were enabled in, and the one thing
-about DS that is asserted rather than measured.
+The RetroArch → Delta direction was verified end to end on a real device on
+2026-09-10. DS is now measured in both directions, like the other five systems,
+and the plain-copy path is no longer supported only by inference.
 
 ### The clock base barely ever moves, and Crystal does not move it
 
