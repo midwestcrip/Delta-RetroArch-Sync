@@ -12,6 +12,9 @@ registering an already-present game must change nothing at all.
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+import pytest
 
 from delta_retroarch_synchronizer import playlist
 
@@ -143,3 +146,46 @@ def test_two_games_land_in_one_playlist(tmp_path):
         "Super Mario World",
         "Chrono Trigger",
     ]
+
+
+def test_a_crash_mid_write_cannot_truncate_a_playlist(tmp_path, monkeypatch):
+    """The promise in register's docstring, kept against a crash and not only
+    against a bad parse.
+
+    A direct write_text truncates the target before it writes, so losing power
+    partway through left someone's whole collection as half a line of JSON.
+    Staging and renaming means the file is the old playlist or the new one,
+    never a fragment. Simulated by failing the write after the staged file
+    exists, which is the moment a direct write would already have destroyed it.
+    """
+    first = _rom(tmp_path, "Super Mario World.sfc")
+    second = _rom(tmp_path, "Chrono Trigger.sfc", data=b"\x01" * 64)
+    playlists = tmp_path / "playlists"
+
+    playlist.register(playlists, DB, first, "Super Mario World")
+    original = playlist.playlist_path(playlists, DB).read_text(encoding="utf-8")
+
+    real_write = Path.write_text
+
+    def explode(self, *args, **kwargs):
+        if self.name.endswith(".partial"):
+            real_write(self, *args, **kwargs)
+            raise OSError("the lights went out")
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", explode)
+    with pytest.raises(OSError):
+        playlist.register(playlists, DB, second, "Chrono Trigger")
+    monkeypatch.undo()
+
+    assert playlist.playlist_path(playlists, DB).read_text(encoding="utf-8") == original
+    assert list(playlists.glob("*.partial")) == []
+
+
+def test_no_staging_file_survives_an_ordinary_write(tmp_path):
+    rom = _rom(tmp_path, "Super Mario World.sfc")
+    playlists = tmp_path / "playlists"
+
+    playlist.register(playlists, DB, rom, "Super Mario World")
+
+    assert list(playlists.glob("*.partial")) == []

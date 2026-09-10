@@ -139,7 +139,24 @@ def register(
     data["items"].append(make_entry(rom_path, label, db_name))
 
     playlist_dir.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+
+    # Staged and renamed, like every other write here. This function's whole
+    # promise is that it never destroys a playlist, and it kept that promise
+    # against a *parse* failure while breaking it against a crash: a direct
+    # write truncates the file first, so losing power partway through replaces
+    # someone's entire collection with half a line of JSON. The rename is
+    # atomic on the same filesystem, so the playlist is either the old one or
+    # the new one and never a fragment.
+    staged = path.with_name(path.name + ".partial")
+    try:
+        staged.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        staged.replace(path)
+    finally:
+        if staged.exists():
+            try:
+                staged.unlink()
+            except OSError:
+                pass
     return path
