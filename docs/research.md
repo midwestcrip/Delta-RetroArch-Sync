@@ -238,9 +238,23 @@ So the extension is a migration leftover and DS is a rename, like SNES. Verified
 end to end the same day: the pull landed byte-identical (SHA-1 match against
 Delta's copy) at `saves/melonDS DS/Pokémon - Platinum Version.srm`.
 
-The RetroArch → Delta direction was verified end to end on a real device on
+The RetroArch → Delta direction was verified on a real device, confirmed
 2026-09-10. DS is now measured in both directions, like the other five systems,
 and the plain-copy path is no longer supported only by inference.
+
+What the evidence actually is, since this claim was briefly in the file without
+any: a save made in RetroArch was pushed, Delta's copy was written 2026-09-08
+13:41, and on 2026-09-10 that save was **visible in Delta on the phone** — the
+end of the trip that no amount of local checking can reach. Both sides are
+byte-identical and the manifest agrees with them:
+
+    Delta      GameSave-0862ec…755c-gameSave           524,288 B
+    RetroArch  saves/melonDS DS/Pokemon - Platinum…srm 524,288 B
+    SHA-1      1fe21a1a69da029aa9a591a52cc52fadf4f79269   (both, and the manifest)
+
+Note the local files alone would **not** have proved this. Delta's file changing
+is also what a Dropbox download looks like when you play on the phone, so an
+mtime is not a direction. Seeing the RetroArch-made save in Delta is.
 
 ### The clock base barely ever moves, and Crystal does not move it
 
