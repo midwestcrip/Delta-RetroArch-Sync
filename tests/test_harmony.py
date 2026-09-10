@@ -250,6 +250,21 @@ class NamingTests(unittest.TestCase):
     def test_reserved_device_names_are_escaped(self) -> None:
         self.assertEqual(naming.safe_filename("CON"), "CON_")
 
+    def test_a_reserved_name_with_an_extension_is_escaped_at_the_stem(self) -> None:
+        """Windows reserves a device name by its stem, not by the whole name.
+
+        "NUL.txt" is the NUL device, so escaping to "NUL.txt_" leaves a name
+        Windows still refuses to create -- its stem is unchanged. The underscore
+        has to go on the stem for the check to be worth making.
+        """
+        self.assertEqual(naming.safe_filename("CON.txt"), "CON_.txt")
+        self.assertEqual(naming.safe_filename("com1.gba"), "com1_.gba")
+        self.assertEqual(naming.safe_filename("PRN.x.y"), "PRN_.x.y")
+
+    def test_a_name_that_merely_starts_like_a_device_is_left_alone(self) -> None:
+        self.assertEqual(naming.safe_filename("Contra"), "Contra")
+        self.assertEqual(naming.safe_filename("console.log"), "console.log")
+
     def test_empty_result_falls_back(self) -> None:
         self.assertEqual(naming.safe_filename("///"), "untitled")
 
