@@ -13,6 +13,7 @@ difference. Data loss is the failure mode being designed against, so:
 
 from __future__ import annotations
 
+import glob as glob_module
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -153,7 +154,14 @@ def backup(path: Path, backup_dir: Path, *, keep: int = BACKUP_KEEP) -> Path | N
     destination = backup_dir / f"{path.name}.{stamp}.bak"
     shutil.copy2(path, destination)
 
-    existing = sorted(backup_dir.glob(f"{path.name}.*.bak"))
+    # The name is escaped because it goes into a glob pattern and a save is
+    # named after its ROM, where "[U]", "[!]" and "[T+Eng]" are ordinary. An
+    # unescaped "[U]" is a character class matching the single letter U, so the
+    # pattern never matches this file's own backups: pruning silently stops and
+    # they grow without bound. It matches "Zelda U.srm" instead, which is the
+    # other half of why the name has no business being read as a pattern.
+    prefix = glob_module.escape(path.name)
+    existing = sorted(backup_dir.glob(f"{prefix}.*.bak"))
     for stale in existing[:-keep]:
         try:
             stale.unlink()
