@@ -48,10 +48,17 @@ BUNDLE_SIZE = n64.PAK_COUNT * n64.PAK_SIZE
 #: what standalone mupen64plus and Project64 write.
 PAK_SUFFIXES = re.compile(r"\.mpk([1-4])?$", re.IGNORECASE)
 
-#: A trailing controller number, wherever it sits in the name -- ``.mpk3``,
-#: ``game_3.mpk``, ``mempak3.mpk``. Only consulted for a file that is one pak
-#: long, where the slot is otherwise unknowable.
-SLOT_IN_NAME = re.compile(r"([1-4])\s*(?:\.mpk[1-4]?)?$", re.IGNORECASE)
+#: A controller number in the **extension** -- ``.mpk1`` to ``.mpk4``. This is
+#: the shape standalone mupen64plus and Project64 write, and the digit here can
+#: only be a slot.
+SLOT_IN_SUFFIX = re.compile(r"\.mpk([1-4])$", re.IGNORECASE)
+
+#: A stem that is nothing but a pak word and a number -- ``mempak3``, ``pak2``,
+#: ``controllerpak1``. Here too the digit cannot be part of a title.
+SLOT_AS_WHOLE_STEM = re.compile(
+    r"^(?:controller[\s_-]*pak|mem[\s_-]*pak|pak|mpk)[\s_-]*([1-4])$",
+    re.IGNORECASE,
+)
 
 
 class PakError(Exception):
@@ -111,12 +118,29 @@ class PakSet:
 def _slot_from_name(path: Path) -> int | None:
     """Which controller a single-pak file belongs to, from its name.
 
-    ``None`` when the name does not say. That is not a failure -- a folder with
-    exactly one pak file in it is unambiguous whatever it is called -- but it is
-    a refusal when there are several.
+    **A digit in a game's title is not a slot number**, and an earlier version
+    of this read any trailing 1-4 as one. mupen64plus names its files after the
+    ROM, so ``Mario Kart 64.mpk`` was read as Controller Pak *4* and
+    ``Doom 64.mpk`` likewise -- both of them games whose only storage is the
+    Controller Pak, so the data landing in the wrong controller is the whole
+    save going missing. ``Turok 2``, ``Extreme-G XG2`` and ``Quake II`` are the
+    same trap.
+
+    So a digit counts only where it cannot be part of a title: in the extension
+    (``.mpk3``), or as the entire stem beside a pak word (``mempak3``).
+    Anything else returns ``None``, meaning "the name does not say" -- which a
+    lone file answers by being the only one, and several files answer by being
+    refused. Refusing costs a rename; guessing costs a save.
     """
-    match = SLOT_IN_NAME.search(path.name)
-    return int(match.group(1)) - 1 if match else None
+    suffix = SLOT_IN_SUFFIX.search(path.name)
+    if suffix:
+        return int(suffix.group(1)) - 1
+
+    whole = SLOT_AS_WHOLE_STEM.match(path.stem)
+    if whole:
+        return int(whole.group(1)) - 1
+
+    return None
 
 
 def split_bundle(data: bytes, source: str) -> list[Pak]:

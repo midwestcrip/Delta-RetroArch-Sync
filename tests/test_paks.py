@@ -70,12 +70,16 @@ class ReadingTests(unittest.TestCase):
         self.assertEqual(found.slots, (0, 1, 2, 3))
         self.assertEqual(found.paks[0].data, a_pak(1))
 
-    def test_the_slot_number_is_found_wherever_it_sits_in_the_name(self) -> None:
-        """Builds disagree about naming. The trailing digit is the part they
-        agree on."""
+    def test_the_slot_number_is_read_where_it_cannot_be_part_of_a_title(
+        self,
+    ) -> None:
+        """Two places a digit is certainly a slot: the extension, and a stem
+        that is nothing but a pak word and a number."""
         for name, slot in (
             ("mempak3.mpk", 2),
-            ("Paper Mario_2.mpk", 1),
+            ("MemPak 2.mpk", 1),
+            ("controller-pak4.mpk", 3),
+            ("pak1.mpk", 0),
             ("whatever.mpk4", 3),
         ):
             with self.subTest(name=name):
@@ -83,6 +87,48 @@ class ReadingTests(unittest.TestCase):
                 self.addCleanup(shutil.rmtree, folder, True)
                 (folder / name).write_bytes(a_pak(1))
                 self.assertEqual(paks.read_folder(folder).slots, (slot,))
+
+    def test_a_digit_in_the_game_title_is_not_a_slot_number(self) -> None:
+        """The bug this replaced, and it was not hypothetical.
+
+        mupen64plus names its files after the ROM, so ``Mario Kart 64.mpk`` was
+        read as Controller Pak **4** and ``Doom 64.mpk`` the same -- both games
+        whose *only* storage is the Controller Pak, so data in the wrong
+        controller is the entire save gone. Every name below is a real N64
+        title that the old trailing-digit rule mis-slotted.
+        """
+        for name in (
+            "Mario Kart 64.mpk",
+            "Doom 64.mpk",
+            "Turok 2.mpk",
+            "Extreme-G XG2.mpk",
+            "Top Gear Rally 2.mpk",
+        ):
+            with self.subTest(name=name):
+                self.assertIsNone(paks._slot_from_name(Path(name)))
+
+    def test_the_extension_still_decides_for_a_title_full_of_digits(
+        self,
+    ) -> None:
+        """``.mpk3`` is unambiguous however the game is called, so the fix must
+        not have thrown the working case away with the broken one."""
+        self.assertEqual(paks._slot_from_name(Path("Mario Kart 64.mpk3")), 2)
+
+    def test_one_file_named_after_its_game_is_still_read(self) -> None:
+        """Refusing to guess the slot must not become refusing the file. A
+        single pak in a folder is unambiguous whatever it is called."""
+        (self.folder / "Mario Kart 64.mpk").write_bytes(a_pak(1))
+        self.assertEqual(paks.read_folder(self.folder).slots, (0,))
+
+    def test_several_files_named_after_their_games_are_refused(self) -> None:
+        """And when it is genuinely ambiguous, it asks rather than scattering
+        them across controllers by whatever digits the titles happen to end
+        in."""
+        (self.folder / "Mario Kart 64.mpk").write_bytes(a_pak(1))
+        (self.folder / "Doom 64.mpk").write_bytes(a_pak(2))
+        with self.assertRaises(paks.PakError) as caught:
+            paks.read_folder(self.folder)
+        self.assertIn("does not say which controller", str(caught.exception))
 
     def test_a_lone_unnumbered_pak_is_taken_as_controller_one(self) -> None:
         """One file in a folder is unambiguous whatever it is called."""
@@ -101,8 +147,10 @@ class ReadingTests(unittest.TestCase):
         self.assertIn("does not say which controller", str(caught.exception))
 
     def test_two_files_claiming_the_same_slot_are_refused(self) -> None:
+        """Both of these name slot 1 unambiguously -- one in its extension, one
+        as its whole stem -- so there is a genuine conflict to refuse."""
         (self.folder / "a.mpk1").write_bytes(a_pak(1))
-        (self.folder / "b_1.mpk").write_bytes(a_pak(2))
+        (self.folder / "mempak1.mpk").write_bytes(a_pak(2))
         with self.assertRaises(paks.PakError) as caught:
             paks.read_folder(self.folder)
         self.assertIn("both claim Controller Pak 1", str(caught.exception))

@@ -833,12 +833,12 @@ class LauncherWindow:
             self._say(
                 "No cross-check: Delta has no battery save for that game to "
                 "compare against.",
-                "warning",
+                "warn",
             )
             self.recover_confirmation.show("Recovered")
             return
 
-        self._say(comparison.describe(), "" if comparison.identical else "warning")
+        self._say(comparison.describe(), "" if comparison.identical else "warn")
         if comparison.identical:
             self.recover_confirmation.show("Matches Delta")
         else:

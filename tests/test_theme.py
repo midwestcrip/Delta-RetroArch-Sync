@@ -77,3 +77,51 @@ def test_unknown_appearance_falls_back_to_light():
 
 def test_system_appearance_answers_one_of_two_things():
     assert theme.system_appearance() in (theme.LIGHT, theme.DARK)
+
+
+def test_every_log_level_the_launcher_uses_is_a_real_tag():
+    """``LOG_LEVELS`` was accurate, unused, and that let a typo through.
+
+    Two calls passed ``"warning"`` where the tag is ``"warn"``. Tkinter ignores
+    an unconfigured tag without complaint, so those lines simply rendered as
+    ordinary body text -- a bug with no symptom except the colour being wrong,
+    which nobody reads a log closely enough to notice.
+
+    Parsed rather than grepped: ``_say(describe(), "" if x else "warn")`` has a
+    bracket in it and a regex either misses it or matches the wrong thing.
+    """
+    import ast
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1] / "src"
+    launcher = source / "delta_retroarch_synchronizer" / "launcher.py"
+    tree = ast.parse(launcher.read_text(encoding="utf-8"))
+
+    allowed = set(theme.LOG_LEVELS) | {""}
+    seen: set[str] = set()
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        if not (isinstance(function, ast.Attribute) and function.attr == "_say"):
+            continue
+        if len(node.args) < 2:
+            continue
+        # The level may be a literal or a conditional between two literals.
+        candidates = [node.args[1]]
+        if isinstance(node.args[1], ast.IfExp):
+            candidates = [node.args[1].body, node.args[1].orelse]
+        for candidate in candidates:
+            if isinstance(candidate, ast.Constant) and isinstance(
+                candidate.value, str
+            ):
+                seen.add(candidate.value)
+
+    assert seen, "no _say levels found — the parse stopped matching"
+    unknown = seen - allowed
+    assert not unknown, (
+        f"launcher passes log level(s) {sorted(unknown)} that theme.LOG_LEVELS "
+        f"does not define ({sorted(theme.LOG_LEVELS)}); tkinter would ignore "
+        f"them silently"
+    )
