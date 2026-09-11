@@ -85,6 +85,20 @@ class FileState:
         that would call opening a game "the player made progress". It has to be
         passed to ``of`` and ``matches`` alike, or a state recorded one way is
         compared the other and never matches.
+
+        **A state recorded before there was a ``body`` still counts.** Every
+        manifest already on disk fingerprints the whole file, so introducing a
+        narrowed view would otherwise declare every one of those files changed
+        on the first run after an upgrade -- and for an N64 game where Delta had
+        genuinely moved, "Delta changed" plus that false "RetroArch changed" is
+        a **conflict reported in place of a perfectly ordinary pull**. So the
+        whole file is tried as a fallback.
+
+        That widening cannot produce a wrong answer: identical bytes narrow to
+        identical bytes, so "the whole file is unchanged" already implies "the
+        save inside it is unchanged". It can only ever forgive, never miss a
+        real change. The stale shape is then rewritten the next time this
+        target is recorded.
         """
         try:
             if body is None and path.stat().st_size != self.size:
@@ -92,7 +106,9 @@ class FileState:
         except OSError:
             return False
         try:
-            return FileState.of(path, body=body) == self
+            if FileState.of(path, body=body) == self:
+                return True
+            return body is not None and FileState.of(path) == self
         except OSError:
             return False
 

@@ -247,6 +247,7 @@ class ConvertedComparisonTests(unittest.TestCase):
         self.delta.write_bytes(self.save)
         self.target.write_bytes(n64.to_retroarch(self.save))
         self.entry = entry_for("n64", "Game", self.delta)
+        self.ident = self.entry.identifier
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -255,7 +256,7 @@ class ConvertedComparisonTests(unittest.TestCase):
         body = sync.converted_body(self.entry)
 
         action, detail = sync.decide(
-            self.state.get("abc"), self.delta, self.target, desktop_body=body
+            self.state.get(self.ident), self.delta, self.target, desktop_body=body
         )
 
         self.assertIs(action, sync.Action.NOTHING)
@@ -263,7 +264,7 @@ class ConvertedComparisonTests(unittest.TestCase):
 
     def test_without_the_conversion_it_is_a_phantom_conflict(self) -> None:
         """What the same two files used to say, which is why this exists."""
-        action, _ = sync.decide(self.state.get("abc"), self.delta, self.target)
+        action, _ = sync.decide(self.state.get(self.ident), self.delta, self.target)
 
         self.assertIs(action, sync.Action.CONFLICT)
 
@@ -273,7 +274,7 @@ class ConvertedComparisonTests(unittest.TestCase):
         body = sync.converted_body(self.entry)
 
         action, _ = sync.decide(
-            self.state.get("abc"), self.delta, self.target, desktop_body=body
+            self.state.get(self.ident), self.delta, self.target, desktop_body=body
         )
 
         self.assertIs(action, sync.Action.CONFLICT)
@@ -281,6 +282,83 @@ class ConvertedComparisonTests(unittest.TestCase):
     def test_an_unconverted_system_gets_no_narrowing(self) -> None:
         """Every other system's file already is the save; nothing to extract."""
         self.assertIsNone(sync.converted_body(entry_for("gba", "Game", self.delta)))
+
+    def test_a_manifest_from_before_the_narrowing_still_reads_as_unchanged(
+        self,
+    ) -> None:
+        """Every manifest already on disk fingerprints the whole .srm.
+
+        Narrowing the comparison without accepting the old shape would declare
+        every N64 save changed on the first run after an upgrade -- and the
+        damage is not the noise, it is what that does to a real pull. See the
+        next test.
+        """
+        self.state.record(self.ident, self.delta, self.target)
+        self.assertEqual(
+            self.state.get(self.ident).agreement().desktop.size, n64.SRM_SIZE
+        )
+
+        action, _ = sync.decide(
+            self.state.get(self.ident),
+            self.delta,
+            self.target,
+            desktop_body=sync.converted_body(self.entry),
+        )
+
+        self.assertIs(action, sync.Action.NOTHING)
+
+    def test_an_old_manifest_does_not_turn_a_pull_into_a_conflict(self) -> None:
+        """The case that made this a correctness bug rather than a cosmetic one.
+
+        Delta moves -- an ordinary session on the phone -- and that is a pull.
+        With the old fingerprint rejected, RetroArch reads as changed too, and
+        two changed sides is a conflict: the pull is refused and the player is
+        asked to resolve something that was never in dispute.
+        """
+        self.state.record(self.ident, self.delta, self.target)
+        self.delta.write_bytes(b"\x5a" * SRAM)
+
+        action, _ = sync.decide(
+            self.state.get(self.ident),
+            self.delta,
+            self.target,
+            desktop_body=sync.converted_body(self.entry),
+        )
+
+        self.assertIs(action, sync.Action.PULL)
+
+    def test_a_desktop_change_is_still_seen_through_the_old_fingerprint(
+        self,
+    ) -> None:
+        """Forgiving the old shape must not forgive an actual change.
+
+        Accepting the whole-file match is sound only because identical bytes
+        narrow to identical bytes. A cartridge region that really moved matches
+        neither shape.
+        """
+        self.state.record(self.ident, self.delta, self.target)
+        self.target.write_bytes(n64.to_retroarch(b"\x5a" * SRAM))
+
+        action, _ = sync.decide(
+            self.state.get(self.ident),
+            self.delta,
+            self.target,
+            desktop_body=sync.converted_body(self.entry),
+        )
+
+        self.assertIs(action, sync.Action.PUSH)
+
+    def test_the_old_shape_is_rewritten_rather_than_forgiven_forever(self) -> None:
+        """One run migrates it, so the fallback is a bridge and not a crutch."""
+        self.state.record(self.ident, self.delta, self.target)
+        body = sync.converted_body(self.entry)
+
+        sync.baseline_if_agreed(
+            self.state, self.entry, sync.Action.NOTHING, self.target,
+            desktop_body=body,
+        )
+
+        self.assertEqual(self.state.get(self.ident).agreement().desktop.size, SRAM)
 
     def test_a_save_the_conversion_cannot_read_falls_back(self) -> None:
         """An .srm of the wrong length must not raise out of the decision.

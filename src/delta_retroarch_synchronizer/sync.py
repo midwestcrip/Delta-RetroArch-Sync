@@ -244,12 +244,12 @@ def baseline_if_agreed(
     *,
     desktop_body: "manifest_module.Body | None" = None,
 ) -> None:
-    """Write down an agreement that two identical files have already reached.
+    """Write down the agreement that NOTHING has just established or confirmed.
 
-    ``decide`` can return NOTHING for two reasons, and only one of them has a
+    ``decide`` returns NOTHING for two reasons, and only one of them has a
     manifest entry behind it. "Unchanged on both sides" is read *from* the
     agreed state; "both sides already identical" is reached when there is no
-    agreed state at all, and until now nothing recorded one -- so the two sides
+    agreed state at all, and nothing used to record one -- so the two sides
     matched, the sync correctly did nothing, and the manifest still said it had
     never seen this game.
 
@@ -259,13 +259,15 @@ def baseline_if_agreed(
     history" -- a conflict with nothing conflicting in it, which the player
     cannot clear by playing because the history it wants was never written.
 
-    Keyed on the agreement being empty rather than on the wording, because the
-    two are structurally distinct: NOTHING with no agreement can only have come
-    from the identical branch.
+    Recorded on **every** NOTHING rather than only the empty case, which is what
+    migrates a manifest written before ``desktop_body`` existed. Those
+    fingerprint the whole file; ``FileState.matches`` forgives that, so the run
+    reaches here, and rewriting the pair now is what stops it having to be
+    forgiven again on every future run. Re-recording is safe precisely because
+    the action is NOTHING: that *means* both files still match what was agreed,
+    so this writes the same facts in the current shape.
     """
     if action is not Action.NOTHING:
-        return
-    if not state.get(entry.identifier).agreement(key).empty:
         return
     state.record(
         entry.identifier, entry.save_path, target, key, desktop_body=desktop_body

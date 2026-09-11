@@ -271,13 +271,18 @@ class BaselineTests(unittest.TestCase):
                 sync.baseline_if_agreed(self.state, entry, action, self.retro)
                 self.assertTrue(self.state.get("abc").agreement().empty)
 
-    def test_an_existing_agreement_is_never_overwritten(self) -> None:
-        """NOTHING with a history means "unchanged", which is already recorded."""
+    def test_re_recording_an_unchanged_pair_writes_the_same_facts(self) -> None:
+        """NOTHING means both files still match what was agreed, so this is a no-op.
+
+        It is done on every NOTHING rather than only the empty case because that
+        is what rewrites a manifest entry left in an older shape. Safe for the
+        reason stated: the action being NOTHING is itself the proof that neither
+        side has moved away from what is recorded.
+        """
         entry = self.entry()
         self.state.record("abc", self.delta, self.retro)
         before = self.state.get("abc").agreement()
 
-        self.retro.write_bytes(RETRO_BYTES)
         sync.baseline_if_agreed(self.state, entry, sync.Action.NOTHING, self.retro)
 
         self.assertEqual(self.state.get("abc").agreement(), before)
