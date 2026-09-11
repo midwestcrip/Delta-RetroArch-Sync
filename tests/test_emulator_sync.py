@@ -836,3 +836,77 @@ def test_an_emulator_backup_is_restored_to_that_emulator_s_folder(world):
     assert str(saves) in note
     # Undoable: what was there is now the newest point in the same folder.
     assert any(p.read_bytes() == b"current" for p in folder.glob("*.bak"))
+
+
+# --- two emulators resolving to one file ------------------------------------
+
+
+def test_two_emulators_sharing_one_file_is_refused_not_reconciled(world):
+    """mGBA and VBA-M both run GBA, both write <game>.sav beside the ROM.
+
+    Enable both with one ROM folder and they are two agreements over one file.
+    Reconciling the second reports a conflict the user cannot clear -- there is
+    no second version to choose between -- and it comes back every run. So the
+    second says what is actually wrong instead.
+    """
+    delta = world.delta_save(b"v1" * 512)
+    entry = entry_for("gba", "Pokemon", delta)
+    state = manifest.Manifest(world.paths.manifest_path)
+    claimed: dict[Path, str] = {}
+
+    first = only(
+        sync.sync_emulator(
+            world.paths, entry, world.install("mgba"), rom_dir=world.roms,
+            state=state, claimed=claimed,
+        )
+    )
+    second = only(
+        sync.sync_emulator(
+            world.paths, entry, world.install("vbam"), rom_dir=world.roms,
+            state=state, claimed=claimed,
+        )
+    )
+
+    assert first.action is sync.Action.PULL
+    assert second.action is sync.Action.SKIPPED
+    assert "same file" in second.detail
+    assert "save_dir" in second.detail
+
+
+def test_giving_one_of_them_its_own_folder_resolves_it(world):
+    """Which is what that message tells the user to do."""
+    delta = world.delta_save(b"v1" * 512)
+    entry = entry_for("gba", "Pokemon", delta)
+    state = manifest.Manifest(world.paths.manifest_path)
+    claimed: dict[Path, str] = {}
+    elsewhere = world.root / "vbam-saves"
+    elsewhere.mkdir()
+
+    sync.sync_emulator(
+        world.paths, entry, world.install("mgba"), rom_dir=world.roms,
+        state=state, claimed=claimed,
+    )
+    second = only(
+        sync.sync_emulator(
+            world.paths, entry, world.install("vbam"), rom_dir=world.roms,
+            override=elsewhere, state=state, claimed=claimed,
+        )
+    )
+
+    assert second.action is sync.Action.PULL
+    assert (world.roms / "Pokemon.sav").read_bytes() == b"v1" * 512
+    assert (elsewhere / "Pokemon.sav").read_bytes() == b"v1" * 512
+
+
+def test_without_a_claimed_dict_nothing_changes(world):
+    """The parameter is opt-in, so a single-emulator caller is unaffected."""
+    delta = world.delta_save(b"v1" * 512)
+    entry = entry_for("gba", "Pokemon", delta)
+
+    outcome = only(
+        sync.sync_emulator(
+            world.paths, entry, world.install("mgba"), rom_dir=world.roms
+        )
+    )
+
+    assert outcome.action is sync.Action.PULL

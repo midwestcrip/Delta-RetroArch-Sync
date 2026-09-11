@@ -1003,7 +1003,13 @@ new architecture. Two things it did not predict:
     two delete each other's. Standalone backups now go to
     `backups/<emulator key>/`; RetroArch keeps the flat folder it has always
     had, so every backup taken before this reads unchanged.
-  - The whole suite passed before all four fixes. None of these bugs is
+  - **Two emulators can resolve to the same file.** mGBA and VBA-M both run
+    GBA, both write `<game>.sav`, and both default to beside the ROM, so
+    enabling both gives two agreements over one file -- which surfaces as a
+    conflict that cannot be cleared, because there is no second version to
+    choose, and recurs every run. The second one is now refused with that
+    explanation and told to set `save_dir`.
+  - The whole suite passed before all five fixes. None of these bugs is
     reachable with one target, which is what every existing test had.
 - **The gate is per-save, not per-emulator.** Nothing here has run any of these
   emulators, so `check_shape` measures the file the emulator has already written

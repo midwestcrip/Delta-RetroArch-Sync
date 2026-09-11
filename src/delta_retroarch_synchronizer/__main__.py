@@ -443,6 +443,9 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
         # destinations.
         if chosen:
             state = manifest.Manifest.load(sync_paths.manifest_path)
+            # One per pass: two emulators for the same system can resolve to the
+            # same file, and the second needs to say so rather than reconcile it.
+            claimed: dict[Path, str] = {}
             for found in installed_emulators(config):
                 if found.emulator.key not in chosen:
                     continue
@@ -462,6 +465,7 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
                             allow_push=allow_push,
                             dropbox=dropbox,
                             state=state,
+                            claimed=claimed,
                         )
                     )
             if not dry_run:

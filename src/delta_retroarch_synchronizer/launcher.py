@@ -155,6 +155,9 @@ def sync_emulators(
     )
     outcomes: list[sync_module.Outcome] = []
     state = manifest_module.Manifest.load(paths.manifest_path)
+    # One per pass: two emulators for the same system can resolve to the same
+    # file, and the second needs to say so rather than reconcile it.
+    claimed: dict[Path, str] = {}
     for installed in emulators_module.find_installed(extra):
         if installed.emulator.key not in chosen:
             continue
@@ -173,6 +176,7 @@ def sync_emulators(
                     allow_push=config.push_enabled,
                     dropbox=dropbox,
                     state=state,
+                    claimed=claimed,
                 )
             )
     state.save()

@@ -1436,11 +1436,20 @@ def sync_emulator(
     allow_push: bool = False,
     dropbox: "dropbox_api.DropboxClient | None" = None,
     state: manifest_module.Manifest | None = None,
+    claimed: dict[Path, str] | None = None,
 ) -> list[Outcome]:
     """Reconcile one game between Delta and one standalone emulator.
 
     Returns the outcomes rather than a report, so a caller syncing several
     emulators can gather them into one.
+
+    ``claimed`` maps a save path to the emulator that already synced it this
+    run, and exists because two emulators can resolve to the *same file*: mGBA
+    and VBA-M both run GBA, both write ``<game>.sav``, and both default to
+    beside the ROM. Enable both and they are two agreements over one file, which
+    surfaces as a conflict the user cannot clear -- there is no second version
+    to choose, and it recurs every run. Pass a dict per pass to have the second
+    one say so instead.
     """
     emulator = installed.emulator
     system = entry.system
@@ -1468,6 +1477,25 @@ def sync_emulator(
     target, why = emulator_target(installed, entry, rom_dir, override=override)
     if target is None:
         return [made(Action.SKIPPED, why)]
+
+    # Refused rather than reconciled, because there is nothing here to
+    # reconcile: the two emulators are looking at one file, so the "conflict"
+    # this would otherwise report has no second version to choose between and
+    # would come back on every run.
+    if claimed is not None:
+        owner = claimed.get(target)
+        if owner is not None:
+            return [
+                made(
+                    Action.SKIPPED,
+                    f"{owner} already synced {target} this run -- both "
+                    "emulators keep this game's save in the same file. Give one "
+                    f"of them its own folder with save_dir under "
+                    f"[emulators.{emulator.key}] in config.toml, or enable only "
+                    "one of them.",
+                )
+            ]
+        claimed[target] = emulator.name
 
     if state is None:
         state = manifest_module.Manifest.load(paths.manifest_path)
