@@ -996,7 +996,14 @@ new architecture. Two things it did not predict:
     moved since every remaining agreement, so a divergent target is a conflict
     now), but a reconcile that *can* iterate is one that can iterate forever,
     and this runs against real saves.
-  - The whole suite passed before all three fixes. None of these bugs is
+  - **Backups assumed one desktop target too.** mGBA and VBA-M both write
+    `Pokemon.sav`, so in the flat backup folder their restore points arrive
+    under one name -- losing which emulator it came from, where to put it back,
+    and its own history, since `backup` prunes the last ten *by name* and the
+    two delete each other's. Standalone backups now go to
+    `backups/<emulator key>/`; RetroArch keeps the flat folder it has always
+    had, so every backup taken before this reads unchanged.
+  - The whole suite passed before all four fixes. None of these bugs is
     reachable with one target, which is what every existing test had.
 - **The gate is per-save, not per-emulator.** Nothing here has run any of these
   emulators, so `check_shape` measures the file the emulator has already written

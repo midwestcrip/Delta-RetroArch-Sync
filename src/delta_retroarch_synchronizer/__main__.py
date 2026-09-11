@@ -298,10 +298,8 @@ def run_restore_command(number: int, confirmed: bool) -> int:
     point = points[number - 1]
     print(f"\n  {point.describe()}")
 
-    if point.backup.side == restore.RETROARCH:
-        target = restore.find_retroarch_target(
-            save_dir, point.backup.original_name
-        )
+    if not point.backup.is_delta:
+        target = restore.find_target(point, save_dir, config_module.load())
         destination = str(target) if target else "(not found -- restore will fail)"
         print(f"  would overwrite: {destination}")
     else:
@@ -313,9 +311,9 @@ def run_restore_command(number: int, confirmed: bool) -> int:
         return 0
 
     try:
-        if point.backup.side == restore.RETROARCH:
+        if not point.backup.is_delta:
             note = restore.restore_retroarch(
-                point, save_dir, sync_paths.backup_dir
+                point, save_dir, sync_paths.backup_dir, config_module.load()
             )
         elif point.backup.kind == "cheat":
             note = restore.restore_delta_cheat(

@@ -143,7 +143,11 @@ def test_the_previous_save_is_backed_up_before_it_is_replaced(world):
     sync.sync_emulator(world.paths, entry, installed, rom_dir=world.roms)
 
     assert existing.read_bytes() == GBA_SAVE
-    backups = list(world.paths.backup_dir.glob("Pokemon.sav.*.bak"))
+    # Into the emulator's own folder, not the flat one -- see the collision
+    # tests below for why the flat folder cannot hold these.
+    backups = list(
+        world.paths.emulator_backup_dir("mgba").glob("Pokemon.sav.*.bak")
+    )
     assert len(backups) == 1
     assert backups[0].read_bytes() == b"\x01" * len(GBA_SAVE)
 
@@ -723,3 +727,112 @@ def test_retroarch_is_brought_up_to_date_by_the_settle_pass(world):
     sync.settle(one_pass, first)
 
     assert retro.read_bytes() == b"v2" * 512
+
+
+# --- backups have to say which emulator they came from ----------------------
+
+
+def test_two_emulators_backups_do_not_collide(world):
+    """mGBA and VBA-M both write Pokemon.sav, so the name cannot tell them apart.
+
+    In one flat folder that loses three things at once: which emulator a restore
+    point came from, where it would be put back, and its own rolling history --
+    `backup` keeps the last ten *by name*, so the two would prune each other.
+    """
+    from delta_retroarch_synchronizer import restore
+
+    for key, content in (("mgba", b"from mGBA"), ("vbam", b"from VBA-M")):
+        installed = world.install(key)
+        directory = world.root / f"{key}-roms"
+        directory.mkdir()
+        save = directory / "Pokemon.sav"
+        save.write_bytes(b"old" + content)
+        delta = world.delta_save(content, name=f"delta-{key}")
+        entry = entry_for("gba", "Pokemon", delta)
+        state = manifest.Manifest(world.paths.manifest_path)
+        state.record(entry.identifier, delta, save, key)
+        delta.write_bytes(b"new" + content)
+        sync.sync_emulator(
+            world.paths, entry, installed, rom_dir=directory, state=state
+        )
+
+    points = {b.side: b for b in restore.scan(world.paths.backup_dir)}
+
+    assert set(points) == {"mGBA", "VisualBoyAdvance-M"}
+    assert points["mGBA"].path.read_bytes() == b"oldfrom mGBA"
+    assert points["VisualBoyAdvance-M"].path.read_bytes() == b"oldfrom VBA-M"
+
+
+def test_an_emulator_backup_is_not_labelled_retroarch(world):
+    """It would otherwise be offered as a RetroArch restore point and fail."""
+    from delta_retroarch_synchronizer import restore
+
+    folder = world.paths.emulator_backup_dir("mgba")
+    folder.mkdir(parents=True)
+    (folder / "Pokemon.sav.20260910T120000000000.bak").write_bytes(b"x")
+
+    backup = restore.scan(world.paths.backup_dir)[0]
+
+    assert backup.side == "mGBA"
+    assert backup.emulator == "mgba"
+    assert not backup.is_delta
+
+
+def test_retroarch_backups_still_read_exactly_as_before(world):
+    """Every backup taken before this change lives in the flat folder."""
+    from delta_retroarch_synchronizer import restore
+
+    world.paths.backup_dir.mkdir(parents=True)
+    (world.paths.backup_dir / "Pokemon.srm.20260910T120000000000.bak").write_bytes(b"x")
+
+    backup = restore.scan(world.paths.backup_dir)[0]
+
+    assert backup.side == restore.RETROARCH
+    assert backup.emulator == ""
+
+
+def test_a_delta_backup_is_still_recognised_as_delta(world):
+    from delta_retroarch_synchronizer import restore
+
+    world.paths.backup_dir.mkdir(parents=True)
+    (
+        world.paths.backup_dir / "GameSave-abc123-gameSave.20260910T120000000000.bak"
+    ).write_bytes(b"x")
+
+    backup = restore.scan(world.paths.backup_dir)[0]
+
+    assert backup.is_delta
+    assert backup.identifier == "abc123"
+
+
+def test_an_emulator_backup_is_restored_to_that_emulator_s_folder(world):
+    """The other half: a backup that cannot be put back is not a backup."""
+    from delta_retroarch_synchronizer import config as config_module
+    from delta_retroarch_synchronizer import restore
+
+    installed = world.install("mgba")
+    saves = world.root / "mgba-saves"
+    saves.mkdir()
+    live = saves / "Pokemon.sav"
+    live.write_bytes(b"current")
+
+    folder = world.paths.emulator_backup_dir("mgba")
+    folder.mkdir(parents=True)
+    (folder / "Pokemon.sav.20260910T120000000000.bak").write_bytes(b"older")
+
+    point = restore.restore_points(
+        restore.scan(world.paths.backup_dir), {}
+    )[0]
+    config = config_module.Config(
+        emulator_paths={"mgba": installed.install_dir},
+        emulator_save_dirs={"mgba": saves},
+    )
+
+    note = restore.restore_retroarch(
+        point, world.paths.save_dir, world.paths.backup_dir, config
+    )
+
+    assert live.read_bytes() == b"older"
+    assert str(saves) in note
+    # Undoable: what was there is now the newest point in the same folder.
+    assert any(p.read_bytes() == b"current" for p in folder.glob("*.bak"))

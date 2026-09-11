@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING
 from . import delta_writer
 
 if TYPE_CHECKING:  # pragma: no cover -- imported for types only
+    from . import config as config_module
     from . import dropbox_api
     from . import inspect as inspect_module
     from . import sync as sync_module
@@ -60,18 +61,41 @@ class Backup:
     original_name: str
     stamp: datetime
     size: int
+    #: The standalone emulator this came from, as an ``Emulator.key``, or empty
+    #: for Delta and RetroArch. Taken from the subfolder rather than the name,
+    #: because the name cannot carry it: mGBA and VBA-M both write
+    #: ``Pokemon.sav``, so two emulators' restore points are the same string.
+    emulator: str = ""
 
     @property
     def side(self) -> str:
         """Which side the file came from.
 
-        Decided by the name's shape, because that is what the two sides actually
-        differ in: Delta's folder is flat and hash-named, RetroArch's files are
-        named after the game.
+        Decided by the name's shape for the two original sides, because that is
+        what they actually differ in: Delta's folder is flat and hash-named,
+        RetroArch's files are named after the game. A standalone emulator's
+        files are named the same way as RetroArch's, which is exactly why the
+        folder has to say and the name cannot.
         """
+        if self.emulator:
+            from . import emulators as emulators_module
+
+            found = emulators_module.for_key(self.emulator)
+            return found.name if found is not None else self.emulator
         if self.original_name.startswith(("GameSave-", "gamesave-", "Cheat-", "cheat-")):
             return DELTA
         return RETROARCH
+
+    @property
+    def is_delta(self) -> bool:
+        """Whether this came out of Delta's folder.
+
+        Used where ``side == DELTA`` used to be compared directly, which stopped
+        being safe once ``side`` could also be an emulator's display name.
+        """
+        return not self.emulator and self.original_name.startswith(
+            ("GameSave-", "gamesave-", "Cheat-", "cheat-")
+        )
 
     @property
     def kind(self) -> str:
@@ -88,7 +112,7 @@ class Backup:
     @property
     def identifier(self) -> str | None:
         """The game SHA-1 or cheat UUID, for a Delta-side backup."""
-        if self.side != DELTA:
+        if not self.is_delta:
             return None
         parts = self.original_name.split("-")
         if self.original_name.lower().startswith("cheat-"):
@@ -122,22 +146,35 @@ def scan(backup_dir: Path) -> list[Backup]:
 
     Anything that does not parse is skipped rather than reported. The folder is
     ours, but a stray file in it is not a reason to fail a listing.
+
+    One level of subfolders is included, each named after a standalone
+    emulator. Only one level: these are folders this tool creates, so there is
+    nothing below them, and a full walk would turn a stray directory somebody
+    dropped in here into an unbounded scan.
     """
     found: list[Backup] = []
     if not backup_dir.is_dir():
         return found
-    for path in backup_dir.iterdir():
-        if not path.is_file():
-            continue
-        parsed = parse_backup_name(path.name)
-        if parsed is None:
-            continue
-        original, stamp = parsed
-        try:
-            size = path.stat().st_size
-        except OSError:
-            continue
-        found.append(Backup(path, original, stamp, size))
+
+    def collect(directory: Path, emulator: str) -> None:
+        for path in directory.iterdir():
+            if not path.is_file():
+                continue
+            parsed = parse_backup_name(path.name)
+            if parsed is None:
+                continue
+            original, stamp = parsed
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            found.append(Backup(path, original, stamp, size, emulator))
+
+    collect(backup_dir, "")
+    for child in backup_dir.iterdir():
+        if child.is_dir():
+            collect(child, child.name)
+
     found.sort(key=lambda b: (b.stamp, b.original_name), reverse=True)
     return found
 
@@ -149,7 +186,7 @@ def label_for(backup: Backup, names: dict[str, str]) -> str:
     records. Falling back to the raw name matters: a backup whose game has since
     been deleted from Delta is exactly when someone needs to restore it.
     """
-    if backup.side == RETROARCH:
+    if not backup.is_delta:
         return Path(backup.original_name).stem
     identifier = backup.identifier
     if identifier and identifier in names:
@@ -214,21 +251,87 @@ RESTORE_IS_A_CHANGE = (
 )
 
 
+def emulator_search_roots(
+    key: str, config: "config_module.Config"
+) -> list[Path]:
+    """Where a standalone emulator's save could be, for a restore.
+
+    Same principle as :func:`find_retroarch_target`: the file is searched for
+    rather than reconstructed, because where an emulator writes can have changed
+    since the backup was taken. The difference is that there is no single folder
+    to search -- most of these write beside the ROM -- so the candidates are the
+    emulator's own folders plus the ROM folder.
+    """
+    from . import emulators as emulators_module
+
+    roots: list[Path] = []
+    override = config.emulator_save_dirs.get(key)
+    if override is not None:
+        roots.append(override)
+
+    raw = config.emulator_paths.get(key)
+    extra = (raw.parent if raw is not None and raw.is_file() else raw,)
+    for installed in emulators_module.find_installed(
+        tuple(p for p in extra if p is not None)
+    ):
+        if installed.emulator.key != key:
+            continue
+        roots.append(installed.install_dir)
+        for template in installed.emulator.save_dirs:
+            candidate = emulators_module._expand(template, installed.install_dir)
+            if candidate is not None:
+                roots.append(candidate)
+
+    if config.retroarch_rom_dir is not None:
+        roots.append(config.retroarch_rom_dir)
+    return [root for root in roots if root.is_dir()]
+
+
+def find_target(
+    point: RestorePoint,
+    save_dir: Path,
+    config: "config_module.Config | None" = None,
+) -> Path | None:
+    """Where a desktop-side backup came from, RetroArch's or an emulator's."""
+    if not point.backup.emulator:
+        return find_retroarch_target(save_dir, point.backup.original_name)
+    if config is None:
+        return None
+    for root in emulator_search_roots(point.backup.emulator, config):
+        found = find_retroarch_target(root, point.backup.original_name)
+        if found is not None:
+            return found
+    return None
+
+
 def restore_retroarch(
-    point: RestorePoint, save_dir: Path, backup_dir: Path
+    point: RestorePoint,
+    save_dir: Path,
+    backup_dir: Path,
+    config: "config_module.Config | None" = None,
 ) -> str:
-    """Put a RetroArch-side file back, backing up what is there now."""
+    """Put a desktop-side file back, backing up what is there now.
+
+    Handles RetroArch and the standalone emulators both. They are the same
+    operation -- find the file, back it up, copy over it -- and differ only in
+    where the file is looked for.
+    """
     from .sync import backup as take_backup
     from .sync import copy_atomically
 
-    target = find_retroarch_target(save_dir, point.backup.original_name)
+    target = find_target(point, save_dir, config)
     if target is None:
+        where = point.backup.side if point.backup.emulator else f"under {save_dir}"
         raise FileNotFoundError(
-            f"nothing named {point.backup.original_name} under {save_dir}. "
-            "RetroArch may not have this game any more, or it now sorts saves "
-            "into a different folder."
+            f"nothing named {point.backup.original_name} in {where}. "
+            f"{point.backup.side} may not have this game any more, or it now "
+            "keeps its saves in a different folder."
         )
 
+    # Into the same folder the backup came from, so a restore of an emulator's
+    # save stays that emulator's history rather than landing in RetroArch's.
+    if point.backup.emulator:
+        backup_dir = backup_dir / point.backup.emulator
     take_backup(target, backup_dir)
     copy_atomically(point.backup.path, target)
     return f"restored {target}"

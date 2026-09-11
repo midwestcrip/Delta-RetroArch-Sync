@@ -2078,16 +2078,15 @@ class LauncherWindow:
             return
         sync_paths = prepared[0]
 
-        if point.backup.side == restore.RETROARCH:
-            target = restore.find_retroarch_target(
-                sync_paths.save_dir, point.backup.original_name
-            )
+        if not point.backup.is_delta:
+            target = restore.find_target(point, sync_paths.save_dir, self.config)
             if target is None:
                 messagebox.showerror(
                     WINDOW_TITLE,
-                    f"Nothing named {point.backup.original_name} under "
-                    f"{sync_paths.save_dir}.\n\nRetroArch may not have this game "
-                    "any more, or it now sorts saves into a different folder.",
+                    f"Nothing named {point.backup.original_name} is where "
+                    f"{point.backup.side} keeps its saves.\n\n"
+                    f"{point.backup.side} may not have this game any more, or "
+                    "it now keeps its saves in a different folder.",
                     parent=self.root,
                 )
                 return
@@ -2119,9 +2118,9 @@ class LauncherWindow:
 
         self._say(f"Restoring {point.label} from {point.backup.when}", "heading")
         try:
-            if point.backup.side == restore.RETROARCH:
+            if not point.backup.is_delta:
                 note = restore.restore_retroarch(
-                    point, sync_paths.save_dir, sync_paths.backup_dir
+                    point, sync_paths.save_dir, sync_paths.backup_dir, self.config
                 )
             elif point.backup.kind == "cheat":
                 note = restore.restore_delta_cheat(

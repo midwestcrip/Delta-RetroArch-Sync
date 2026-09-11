@@ -427,6 +427,21 @@ class Paths:
     def backup_dir(self) -> Path:
         return self.state_dir / BACKUP_DIRNAME
 
+    def emulator_backup_dir(self, key: str) -> Path:
+        """A folder of its own for one standalone emulator's backups.
+
+        The flat folder cannot hold these. Two emulators for the same system use
+        the same extension -- mGBA and VBA-M both write ``Pokemon.sav`` -- so
+        their backups arrive under one name, which loses three things at once:
+        which emulator a restore point came from, where it would be restored to,
+        and its own rolling history, because ``backup``'s keep-the-last-ten
+        prunes by name and the two would delete each other's.
+
+        RetroArch keeps the flat folder it has always had, so every backup taken
+        before this still reads exactly as it did.
+        """
+        return self.backup_dir / key
+
     @property
     def manifest_path(self) -> Path:
         return self.state_dir / manifest_module.MANIFEST_FILENAME
@@ -1500,7 +1515,7 @@ def sync_emulator(
         if dry_run:
             return [made(Action.PULL, f"{detail}; would write {target}")]
 
-        saved = backup(target, paths.backup_dir)
+        saved = backup(target, paths.emulator_backup_dir(emulator.key))
         try:
             copy_atomically(entry.save_path, target)
         except OSError as error:
