@@ -1020,3 +1020,32 @@ def test_an_older_save_is_still_found_after_the_config_moves(world):
     )
 
     assert live.read_bytes() == b"older"
+
+
+def test_the_emulators_report_names_the_folder_the_sync_will_use(world, monkeypatch, capsys):
+    """It resolved with the *configured* ROM folder, which is normally unset.
+
+    So for every emulator that writes beside the ROM -- most of them -- the
+    report said "could not be determined, set it in config.toml" about a setup
+    that already worked, and named no folder at all.
+    """
+    from delta_retroarch_synchronizer import __main__ as main
+    from delta_retroarch_synchronizer import discovery
+
+    installed = world.install("mgba")
+    config = config_module.Config(
+        retroarch_config=world.paths.retroarch_config,
+        emulators_enabled=("mgba",),
+        emulator_paths={"mgba": installed.install_dir},
+    )
+    monkeypatch.setattr(main.config_module, "load", lambda *a, **k: config)
+    monkeypatch.setattr(main, "installed_emulators", lambda c: [installed])
+    monkeypatch.setattr(
+        discovery, "find_retroarch_config", lambda: discovery.Discovery("cfg", None)
+    )
+
+    main.run_emulators_command()
+
+    out = capsys.readouterr().out
+    assert str(world.roms) in out
+    assert "could not be determined" not in out

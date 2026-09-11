@@ -530,6 +530,15 @@ def run_emulators_command() -> int:
     config = config_module.load()
     found = installed_emulators(config)
 
+    # The same ROM folder the sync will use, derived the same way. Reporting
+    # ``config.retroarch_rom_dir`` instead said "could not be determined -- set
+    # it in config.toml" for emulators that already work, because most of these
+    # write beside the ROM and that value is normally unset.
+    retroarch_config = config.retroarch_config
+    if retroarch_config is None:
+        retroarch_config = discovery.find_retroarch_config().path
+    rom_dir = config_module.rom_dir(config, retroarch_config)
+
     print("\nStandalone emulators\n")
     if not found:
         print("  None found.")
@@ -560,7 +569,7 @@ def run_emulators_command() -> int:
 
         location = emulators_module.resolve_save_dir(
             installed,
-            config.retroarch_rom_dir,
+            rom_dir,
             override=config.emulator_save_dirs.get(emulator.key),
         )
         if location.found:
