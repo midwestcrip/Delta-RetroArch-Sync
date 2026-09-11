@@ -151,16 +151,13 @@ def sync_emulators(
     if not chosen:
         return []
 
-    extra = tuple(
-        raw.parent if raw.is_file() else raw
-        for raw in config.emulator_paths.values()
-    )
+    named = config_module.emulator_dirs(config)
     outcomes: list[sync_module.Outcome] = []
     state = manifest_module.Manifest.load(paths.manifest_path)
     # One per pass: two emulators for the same system can resolve to the same
     # file, and the second needs to say so rather than reconcile it.
     claimed: dict[Path, str] = {}
-    for installed in emulators_module.find_installed(extra):
+    for installed in emulators_module.find_installed(named=named):
         if installed.emulator.key not in chosen:
             continue
         for entry in entries:

@@ -191,6 +191,87 @@ def decide(
     return Action.NOTHING, "unchanged on both sides"
 
 
+def converted_body(
+    entry: "inspect_module.GameEntry",
+) -> "manifest_module.Body | None":
+    """Narrow RetroArch's combined save to the part Delta actually stores.
+
+    For N64, RetroArch's mupen64plus-next packs EEPROM, SRAM, FlashRAM and four
+    Controller Paks into one 296,960-byte ``.srm``. Delta stores one cartridge
+    storage. So the two files are *never* byte-equal even when they hold exactly
+    the same save, and comparing them whole answers a question nobody asked.
+
+    Two things follow, and the second is why this exists:
+
+    - A pak written on the desktop read as "RetroArch changed", and the push it
+      offered extracted the cartridge region and sent Delta bytes it already
+      had. Paks never leave the phone, so there was nothing there to send.
+    - **"Both sides already identical" could never fire for a converted
+      system.** That is the branch which establishes a first agreement, so an
+      N64 game with no manifest history had no way back to one: every run took
+      the first-sync branch, found two files that differ, and reported a
+      conflict with nothing conflicting in it. Losing the manifest left seven
+      games here permanently stuck that way.
+
+    Extraction failure falls back to the whole file, which is what this compared
+    before, so a save this cannot read is no worse off than it already was.
+    """
+    system = entry.system
+    if system is None or not system.converted:
+        return None
+    if entry.save_path is None or not entry.save_path.is_file():
+        return None
+    try:
+        size = entry.save_path.stat().st_size
+    except OSError:
+        return None
+
+    def body(data: bytes) -> bytes:
+        try:
+            return n64.to_delta(data, size)
+        except (n64.ConversionError, ValueError, IndexError):
+            return data
+
+    return body
+
+
+def baseline_if_agreed(
+    state: "manifest_module.Manifest",
+    entry: "inspect_module.GameEntry",
+    action: Action,
+    target: Path | None,
+    key: str = manifest_module.RETROARCH,
+    *,
+    desktop_body: "manifest_module.Body | None" = None,
+) -> None:
+    """Write down an agreement that two identical files have already reached.
+
+    ``decide`` can return NOTHING for two reasons, and only one of them has a
+    manifest entry behind it. "Unchanged on both sides" is read *from* the
+    agreed state; "both sides already identical" is reached when there is no
+    agreed state at all, and until now nothing recorded one -- so the two sides
+    matched, the sync correctly did nothing, and the manifest still said it had
+    never seen this game.
+
+    The cost lands on the *next* run. The moment either side genuinely moves,
+    the first-sync branch is still the one taken, the files no longer match, and
+    a plain one-sided change is reported as "both sides have saves but no agreed
+    history" -- a conflict with nothing conflicting in it, which the player
+    cannot clear by playing because the history it wants was never written.
+
+    Keyed on the agreement being empty rather than on the wording, because the
+    two are structurally distinct: NOTHING with no agreement can only have come
+    from the identical branch.
+    """
+    if action is not Action.NOTHING:
+        return
+    if not state.get(entry.identifier).agreement(key).empty:
+        return
+    state.record(
+        entry.identifier, entry.save_path, target, key, desktop_body=desktop_body
+    )
+
+
 def pushed_to_delta(outcomes: "list[Outcome]") -> bool:
     """Whether this pass actually moved Delta, as opposed to planning to."""
     return any(o.action is Action.PUSH and o.applied for o in outcomes)
@@ -1252,7 +1333,21 @@ def run_sync(
             report.outcomes.append(Outcome(entry.name, Action.SKIPPED, unverified))
             continue
 
-        action, detail = decide(state.get(entry.identifier), entry.save_path, target)
+        # One view of the desktop file, built once and used by the decision, the
+        # baseline and both records below. They must all narrow the same way: a
+        # state recorded on the whole file and compared against the extracted
+        # region never matches, and every run would report a change.
+        body = converted_body(entry)
+
+        action, detail = decide(
+            state.get(entry.identifier),
+            entry.save_path,
+            target,
+            desktop_body=body,
+        )
+
+        if not dry_run:
+            baseline_if_agreed(state, entry, action, target, desktop_body=body)
 
         # Checked before the action rather than after it, so it is said whatever
         # happens -- including when there is nothing to sync, which is exactly
@@ -1309,7 +1404,7 @@ def run_sync(
                         staged.unlink(missing_ok=True)
                     except OSError:
                         pass
-            state.record(entry.identifier, entry.save_path, target)
+            state.record(entry.identifier, entry.save_path, target, desktop_body=body)
             report.outcomes.append(
                 Outcome(
                     entry.name,
@@ -1349,7 +1444,7 @@ def run_sync(
                 Outcome(entry.name, Action.PULL, f"FAILED: {error}", failed=True)
             )
             continue
-        state.record(entry.identifier, entry.save_path, target)
+        state.record(entry.identifier, entry.save_path, target, desktop_body=body)
 
         note = f"{detail}; {written}"
         if saved is not None:
@@ -1636,6 +1731,11 @@ def sync_emulator(
         label=emulator.name,
         desktop_body=body,
     )
+
+    if not dry_run:
+        baseline_if_agreed(
+            state, entry, action, target, emulator.key, desktop_body=body
+        )
 
     outcomes: list[Outcome] = []
 

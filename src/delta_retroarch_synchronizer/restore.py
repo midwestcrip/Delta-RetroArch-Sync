@@ -282,10 +282,10 @@ def emulator_search_roots(
     if override is not None:
         roots.append(override)
 
-    raw = config.emulator_paths.get(key)
-    extra = (raw.parent if raw is not None and raw.is_file() else raw,)
+    from . import config as config_module
+
     for installed in emulators_module.find_installed(
-        tuple(p for p in extra if p is not None)
+        named=config_module.emulator_dirs(config)
     ):
         if installed.emulator.key != key:
             continue

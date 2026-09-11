@@ -515,26 +515,36 @@ def search_roots(extra_dirs: Sequence[Path] = ()) -> list[Path]:
     return unique
 
 
-def find_executable(emulator: Emulator, extra_dirs: tuple[Path, ...] = ()) -> Path | None:
+def find_executable(
+    emulator: Emulator,
+    extra_dirs: tuple[Path, ...] = (),
+    named: Path | None = None,
+) -> Path | None:
     """Locate one emulator's executable, or None.
 
-    ``extra_dirs`` is for folders the user has named -- a config override, or the
-    folder a sibling emulator was found in, since people keep them together.
+    Three sources, and the order between them is the whole point.
 
-    Those come **first**, ahead of the registry. The registry used to lead, on
-    the reasoning that it is what the machine itself says; but what the machine
-    says is a guess about which copy is meant, and ``emulator_paths`` in
-    config.toml is the user saying so outright. Someone with two copies of mGBA
-    who points the config at one of them was silently synced to the other --
-    saves written into an install they were not playing, with nothing on screen
-    to say which one had been chosen.
+    ``named`` is **this emulator's own** ``path`` from config.toml, and it wins.
+    The registry used to lead, on the reasoning that it is what the machine
+    itself says; but what the machine says is a guess about which copy is meant,
+    and the config setting is the user saying so outright. Someone with two
+    copies of mGBA who points the config at one of them was silently synced to
+    the other, with nothing on screen naming which had been chosen.
+
+    ``extra_dirs`` is the *un*keyed sort -- the folder a sibling emulator was
+    found in, since people keep them together. That is a guess like the
+    registry's and a weaker one, so it stays last. It must not be allowed to
+    stand in for ``named``: every caller has a dict of paths keyed by emulator,
+    and flattening it to a bare list of folders let a path set for mGBA answer
+    for Snes9x, pulling it away from the install the registry knew about.
     """
     from . import discovery
 
-    directories = list(extra_dirs)
+    directories = [named] if named is not None else []
     directories.extend(discovery.install_dirs(
         emulator.executables, emulator.uninstall_match
     ))
+    directories.extend(extra_dirs)
 
     for directory in directories:
         for executable in emulator.executables:
@@ -550,18 +560,28 @@ def find_executable(emulator: Emulator, extra_dirs: tuple[Path, ...] = ()) -> Pa
     return scanned[0] if scanned else None
 
 
-def find_installed(extra_dirs: tuple[Path, ...] = ()) -> list[Installed]:
+def find_installed(
+    extra_dirs: tuple[Path, ...] = (),
+    named: dict[str, Path] | None = None,
+) -> list[Installed]:
     """Every emulator from the table that is actually on this machine.
 
     One scan for all of them rather than one per emulator: the search roots are
     the same, and walking a collection folder ten times over would turn a cheap
     lookup into a visible pause in the launcher.
+
+    ``named`` is ``emulator_paths`` from config.toml, still keyed by emulator.
+    It has to stay keyed all the way down: what the user wrote under
+    ``[emulators.mgba]`` is a statement about mGBA and about nothing else.
     """
+    named = named or {}
     found: list[Installed] = []
     pending: list[Emulator] = []
 
     for emulator in EMULATORS.values():
-        executable = _from_registry_or_named(emulator, extra_dirs)
+        executable = _from_registry_or_named(
+            emulator, extra_dirs, named.get(emulator.key)
+        )
         if executable is not None:
             found.append(Installed(emulator, executable))
         else:
@@ -584,7 +604,7 @@ def find_installed(extra_dirs: tuple[Path, ...] = ()) -> list[Installed]:
 
 
 def _from_registry_or_named(
-    emulator: Emulator, extra_dirs: Sequence[Path]
+    emulator: Emulator, extra_dirs: Sequence[Path], named: Path | None = None
 ) -> Path | None:
     """The cheap half of :func:`find_executable`, with no directory walk.
 
@@ -594,10 +614,11 @@ def _from_registry_or_named(
     """
     from . import discovery
 
-    directories = list(extra_dirs)
+    directories = [named] if named is not None else []
     directories.extend(
         discovery.install_dirs(emulator.executables, emulator.uninstall_match)
     )
+    directories.extend(extra_dirs)
     for directory in directories:
         for executable in emulator.executables:
             candidate = Path(directory) / executable

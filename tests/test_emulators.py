@@ -339,17 +339,52 @@ def test_the_folder_the_user_named_beats_the_one_the_registry_found(
     monkeypatch.setattr(emulators, "search_roots", lambda extra=(): [])
 
     assert emulators.find_executable(
-        emulators.EMULATORS["mgba"], (named,)
+        emulators.EMULATORS["mgba"], named=named
     ) == named / "mGBA.exe"
 
     # `find_installed` is the one that actually runs during a sync, so it has to
     # agree -- a launcher that reports one install and writes to another is the
     # same bug wearing a different hat.
     installed = [
-        item for item in emulators.find_installed((named,))
+        item for item in emulators.find_installed(named={"mgba": named})
         if item.emulator.key == "mgba"
     ]
     assert [item.install_dir for item in installed] == [named]
+
+
+def test_one_emulators_configured_path_does_not_answer_for_another(
+    tmp_path, monkeypatch
+):
+    """A folder set under [emulators.mgba] is a statement about mGBA only.
+
+    The callers used to flatten `emulator_paths` to a bare list of folders, so
+    the key was gone by the time discovery saw it. Once a named folder outranks
+    the registry -- which is right for the emulator it was named for -- that
+    flattening lets a path set for one emulator capture a *different* one, and
+    pull it away from the install the registry knew about. A stray second copy
+    sitting in someone's mGBA folder is all it takes.
+    """
+    from delta_retroarch_synchronizer import discovery
+
+    mine = tmp_path / "my-mgba"
+    mine.mkdir()
+    (mine / "mGBA.exe").write_bytes(b"")
+    (mine / "snes9x.exe").write_bytes(b"")
+
+    registry = tmp_path / "proper-snes9x"
+    registry.mkdir()
+    (registry / "snes9x.exe").write_bytes(b"")
+
+    monkeypatch.setattr(discovery, "install_dirs", lambda *a, **kw: [registry])
+    monkeypatch.setattr(emulators, "search_roots", lambda extra=(): [])
+
+    found = {
+        item.emulator.key: item.install_dir
+        for item in emulators.find_installed(named={"mgba": mine})
+    }
+
+    assert found["mgba"] == mine
+    assert found["snes9x"] == registry
 
 
 def test_find_installed_reports_each_emulator_once(tmp_path, no_registry):

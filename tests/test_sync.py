@@ -199,5 +199,89 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(manifest.apple_timestamp_to_unix(0.0), 978307200.0)
 
 
+class BaselineTests(unittest.TestCase):
+    """Two identical files are an agreement, and it has to be written down.
+
+    `decide` returns NOTHING for two reasons. "Unchanged on both sides" is read
+    *from* the agreed state; "both sides already identical" is reached because
+    there is none -- and nothing used to record one, so the sync confirmed the
+    two sides matched and then forgot. The next genuine one-sided change then
+    took the first-sync branch again, found two files that no longer matched,
+    and reported a conflict with nothing conflicting in it.
+
+    This applies to RetroArch exactly as it does to a standalone emulator; the
+    branch is in the shared `decide`.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.delta = self.root / "GameSave-abc-gameSave"
+        self.retro = self.root / "Game.srm"
+        self.delta.write_bytes(DELTA_BYTES)
+        self.retro.write_bytes(DELTA_BYTES)
+        self.state = manifest.Manifest(self.root / "manifest.json")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def entry(self):
+        from delta_retroarch_synchronizer import inspect as inspect_module
+
+        return inspect_module.GameEntry(
+            identifier="abc",
+            name="Game",
+            delta_type="",
+            system=None,
+            rom_path=None,
+            save_path=self.delta,
+            extra_paths={},
+        )
+
+    def test_identical_sides_are_recorded_as_agreed(self) -> None:
+        entry = self.entry()
+        self.assertTrue(self.state.get("abc").agreement().empty)
+
+        sync.baseline_if_agreed(self.state, entry, sync.Action.NOTHING, self.retro)
+
+        agreed = self.state.get("abc").agreement()
+        self.assertFalse(agreed.empty)
+        self.assertTrue(agreed.delta.matches(self.delta))
+        self.assertTrue(agreed.desktop.matches(self.retro))
+
+    def test_the_next_one_sided_change_is_a_pull_not_a_conflict(self) -> None:
+        entry = self.entry()
+        sync.baseline_if_agreed(self.state, entry, sync.Action.NOTHING, self.retro)
+
+        self.delta.write_bytes(RETRO_BYTES)
+        action, _ = sync.decide(self.state.get("abc"), self.delta, self.retro)
+
+        self.assertIs(action, sync.Action.PULL)
+
+    def test_nothing_is_recorded_for_an_action_that_still_has_to_happen(self) -> None:
+        """Only NOTHING means the two sides already agree.
+
+        Baselining a PULL or a CONFLICT here would write an agreement over a
+        difference that has not been resolved -- which is the silent overwrite
+        this whole design exists to avoid, arriving one run later.
+        """
+        entry = self.entry()
+        for action in (sync.Action.PULL, sync.Action.PUSH, sync.Action.CONFLICT):
+            with self.subTest(action=action):
+                sync.baseline_if_agreed(self.state, entry, action, self.retro)
+                self.assertTrue(self.state.get("abc").agreement().empty)
+
+    def test_an_existing_agreement_is_never_overwritten(self) -> None:
+        """NOTHING with a history means "unchanged", which is already recorded."""
+        entry = self.entry()
+        self.state.record("abc", self.delta, self.retro)
+        before = self.state.get("abc").agreement()
+
+        self.retro.write_bytes(RETRO_BYTES)
+        sync.baseline_if_agreed(self.state, entry, sync.Action.NOTHING, self.retro)
+
+        self.assertEqual(self.state.get("abc").agreement(), before)
+
+
 if __name__ == "__main__":
     unittest.main()

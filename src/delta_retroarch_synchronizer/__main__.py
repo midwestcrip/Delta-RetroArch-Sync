@@ -509,14 +509,12 @@ def installed_emulators(
 ) -> list["emulators_module.Installed"]:
     """Every standalone emulator found, including any the user pointed at.
 
-    A path in config.toml may name either the executable or the folder holding
-    it, because both are things someone reasonably types when asked where a
-    program is.
+    Each configured path stays attached to the emulator it was written for --
+    see :func:`config.emulator_dirs`.
     """
-    extra: list[Path] = []
-    for raw in config.emulator_paths.values():
-        extra.append(raw.parent if raw.is_file() else raw)
-    return emulators_module.find_installed(tuple(extra))
+    return emulators_module.find_installed(
+        named=config_module.emulator_dirs(config)
+    )
 
 
 def run_emulators_command() -> int:

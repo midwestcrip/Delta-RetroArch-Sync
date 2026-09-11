@@ -486,7 +486,7 @@ def test_the_launcher_syncs_nothing_when_no_emulator_is_enabled(world, monkeypat
 
     installed = world.install("mgba")
     monkeypatch.setattr(
-        launcher.emulators_module, "find_installed", lambda extra=(): [installed]
+        launcher.emulators_module, "find_installed", lambda *a, **kw: [installed]
     )
     entry = entry_for("gba", "Pokemon", world.delta_save(GBA_SAVE))
 
@@ -505,7 +505,7 @@ def test_the_launcher_syncs_an_enabled_emulator(world, monkeypatch):
 
     installed = world.install("mgba")
     monkeypatch.setattr(
-        launcher.emulators_module, "find_installed", lambda extra=(): [installed]
+        launcher.emulators_module, "find_installed", lambda *a, **kw: [installed]
     )
     entry = entry_for("gba", "Pokemon", world.delta_save(GBA_SAVE))
     config = config_module.Config(
@@ -524,7 +524,7 @@ def test_the_launcher_skips_systems_the_emulator_does_not_run(world, monkeypatch
 
     installed = world.install("mgba")
     monkeypatch.setattr(
-        launcher.emulators_module, "find_installed", lambda extra=(): [installed]
+        launcher.emulators_module, "find_installed", lambda *a, **kw: [installed]
     )
     entry = entry_for("n64", "Ocarina of Time", world.delta_save(SRAM))
     config = config_module.Config(
@@ -594,6 +594,56 @@ def test_identical_saves_on_a_new_target_are_simply_agreed(world):
     )
 
     assert outcome.action is sync.Action.NOTHING
+
+
+def test_agreeing_is_written_down_so_the_next_change_is_not_a_conflict(world):
+    """"Already identical" has to leave a baseline, or it poisons the next run.
+
+    `decide` returns NOTHING for two different reasons and only one of them has
+    a manifest entry behind it. "Unchanged on both sides" is read *from* the
+    agreed state; "both sides already identical" is reached precisely because
+    there is no agreed state -- and recording nothing meant the sync had
+    verified the two sides matched and then thrown that away.
+
+    The bill arrives on the next run. One side moves, the first-sync branch is
+    still the one taken, the files no longer match, and an ordinary one-sided
+    change is reported as "both sides have saves but no agreed history" -- a
+    conflict with nothing conflicting in it, and one the player cannot clear by
+    playing, because the history it is asking for was never written.
+    """
+    installed = world.install("mgba")
+    delta = world.delta_save(b"D" * 1024)
+    entry = entry_for("gba", "Pokemon", delta)
+    live = world.roms / "Pokemon.sav"
+    live.write_bytes(b"D" * 1024)
+
+    assert (
+        only(sync.sync_emulator(world.paths, entry, installed, rom_dir=world.roms))
+    ).action is sync.Action.NOTHING
+
+    # Now the player makes progress on the phone. One side changed, so this is
+    # a pull -- there is nothing here for anyone to resolve by hand.
+    delta.write_bytes(b"E" * 1024)
+    outcome = only(
+        sync.sync_emulator(world.paths, entry, installed, rom_dir=world.roms)
+    )
+
+    assert outcome.action is sync.Action.PULL
+    assert live.read_bytes() == b"E" * 1024
+
+
+def test_a_dry_run_agrees_to_nothing(world):
+    """Baselining is a write, so --dry-run must not do it either."""
+    installed = world.install("mgba")
+    entry = entry_for("gba", "Pokemon", world.delta_save(b"D" * 1024))
+    (world.roms / "Pokemon.sav").write_bytes(b"D" * 1024)
+
+    sync.sync_emulator(
+        world.paths, entry, installed, rom_dir=world.roms, dry_run=True
+    )
+
+    state = manifest.Manifest.load(world.paths.manifest_path)
+    assert state.get(entry.identifier).agreement("mgba").empty
 
 
 # --- the shared-Delta-history bug ------------------------------------------

@@ -222,5 +222,78 @@ class ControllerPakNoticeTests(unittest.TestCase):
         self.assertFalse(loaded.already_said("anything"))
 
 
+class ConvertedComparisonTests(unittest.TestCase):
+    """A converted save has to be *compared* converted, not just pushed that way.
+
+    RetroArch's combined 296,960-byte .srm is never byte-equal to Delta's single
+    storage even when the two hold exactly the same save. So comparing them
+    whole answers a question nobody asked, and one branch in particular could
+    never be reached: "both sides already identical" is what establishes a first
+    agreement, and for N64 it could not fire. A game with no manifest history
+    had no route back to one -- every run took the first-sync branch, saw two
+    files that differ, and reported a conflict with nothing conflicting in it.
+
+    Seven real games on the development machine were stuck exactly that way.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.delta = self.root / "GameSave-abc-gameSave"
+        self.target = self.root / "Game.srm"
+        self.state = manifest_module.Manifest(self.root / "manifest.json")
+
+        self.save = bytes(range(256)) * (SRAM // 256)
+        self.delta.write_bytes(self.save)
+        self.target.write_bytes(n64.to_retroarch(self.save))
+        self.entry = entry_for("n64", "Game", self.delta)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_the_same_save_in_both_shapes_reads_as_identical(self) -> None:
+        body = sync.converted_body(self.entry)
+
+        action, detail = sync.decide(
+            self.state.get("abc"), self.delta, self.target, desktop_body=body
+        )
+
+        self.assertIs(action, sync.Action.NOTHING)
+        self.assertEqual(detail, "both sides already identical")
+
+    def test_without_the_conversion_it_is_a_phantom_conflict(self) -> None:
+        """What the same two files used to say, which is why this exists."""
+        action, _ = sync.decide(self.state.get("abc"), self.delta, self.target)
+
+        self.assertIs(action, sync.Action.CONFLICT)
+
+    def test_a_genuinely_different_save_is_still_a_conflict(self) -> None:
+        """Narrowing the comparison must not narrow it to nothing."""
+        self.target.write_bytes(n64.to_retroarch(b"\x5a" * SRAM))
+        body = sync.converted_body(self.entry)
+
+        action, _ = sync.decide(
+            self.state.get("abc"), self.delta, self.target, desktop_body=body
+        )
+
+        self.assertIs(action, sync.Action.CONFLICT)
+
+    def test_an_unconverted_system_gets_no_narrowing(self) -> None:
+        """Every other system's file already is the save; nothing to extract."""
+        self.assertIsNone(sync.converted_body(entry_for("gba", "Game", self.delta)))
+
+    def test_a_save_the_conversion_cannot_read_falls_back(self) -> None:
+        """An .srm of the wrong length must not raise out of the decision.
+
+        `to_delta` refuses a file that is not the size mupen64plus-next writes.
+        Falling back to the whole file means such a save compares exactly as it
+        did before this existed -- no better, and importantly no worse.
+        """
+        body = sync.converted_body(self.entry)
+        assert body is not None
+
+        self.assertEqual(body(b"too short"), b"too short")
+
+
 if __name__ == "__main__":
     unittest.main()

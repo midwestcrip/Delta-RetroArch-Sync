@@ -84,6 +84,27 @@ def rom_dir(config: Config, retroarch_config: Path | None) -> Path | None:
     return None
 
 
+def emulator_dirs(config: Config) -> dict[str, Path]:
+    """Each configured emulator path as a *folder*, still keyed by emulator.
+
+    A ``path`` in config.toml may name either the executable or the folder
+    holding it, because both are things someone reasonably types when asked
+    where a program is. Resolving that is the only work here.
+
+    Defined once, for the same reason as :func:`rom_dir`, and keyed for a
+    sharper one: all three callers used to flatten this dict to a bare list of
+    folders before handing it to discovery, which threw away *which emulator
+    each path was for*. A folder set under ``[emulators.mgba]`` then answered
+    for every other emulator too, and could pull one away from the install the
+    registry knew about. Handing back the mapping is what keeps that from being
+    expressible.
+    """
+    return {
+        key: raw.parent if raw.is_file() else raw
+        for key, raw in config.emulator_paths.items()
+    }
+
+
 def _path(raw: object) -> Path | None:
     return Path(str(raw)).expanduser() if isinstance(raw, str) and raw.strip() else None
 
