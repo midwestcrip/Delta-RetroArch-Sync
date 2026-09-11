@@ -1097,7 +1097,7 @@ headers:
 | `ZELDA` + NULs | `ZELDA-<md5>` |
 | twenty spaces | `-<md5>` — strips to nothing, and **stays** nothing |
 | twenty NULs | `unknown-<md5>` |
-| ` AB` + spaces | `unknown-<md5>` — stops at the NUL, so empty |
+| `\x00AB` + spaces | `unknown-<md5>` — stops at the NUL, so empty |
 
 Twenty NULs and twenty spaces are both nameless to a reader and get *different*
 filenames. Decoding the field and stripping it gets three of those six wrong.
