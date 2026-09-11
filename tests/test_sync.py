@@ -199,6 +199,154 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(manifest.apple_timestamp_to_unix(0.0), 978307200.0)
 
 
+class AgreementInvariantTests(unittest.TestCase):
+    """The one rule the whole agreement design now rests on.
+
+        When both halves are present they describe the same bytes: the save
+        Delta holds IS the save inside the desktop file.
+
+    `sync.desktop_still_agreed` uses it directly -- it treats "the extracted
+    save matches the Delta half" as proof the desktop save has not moved, which
+    is how it sees past a Controller Pak or a clock block. If the invariant is
+    ever false, that inference is false, and the sync calls a changed save
+    unchanged. Nothing is reported and nothing is written: the two sides quietly
+    diverge, which is the worst failure available here.
+
+    Four rounds of review each found a reader or a writer that had drifted from
+    it while every test still passed, so it is pinned here rather than left to
+    be re-derived at each call site.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.state = manifest.Manifest(self.root / "manifest.json")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def file(self, name: str, data: bytes) -> Path:
+        path = self.root / name
+        path.write_bytes(data)
+        return path
+
+    def test_a_pair_describing_two_different_saves_is_not_stored(self) -> None:
+        """Refusing costs a conflict next run. Storing it costs the divergence.
+
+        A pair like this can only mean the caller believes two different saves
+        agree. Written down, every later run reads it as "unchanged on both
+        sides" and the difference is never reported to anyone. Left alone, the
+        next run sees a change it cannot explain and says so.
+        """
+        delta = self.file("delta", b"one" * 100)
+        desktop = self.file("desktop", b"two" * 100)
+
+        self.state.record("abc", delta, desktop)
+
+        self.assertTrue(self.state.get("abc").agreement().empty)
+
+    def test_an_earlier_agreement_survives_a_refused_write(self) -> None:
+        """The fallback is the previous truth, not an empty entry."""
+        delta = self.file("delta", b"one" * 100)
+        desktop = self.file("desktop", b"one" * 100)
+        self.state.record("abc", delta, desktop)
+        before = self.state.get("abc").agreement()
+
+        desktop.write_bytes(b"two" * 100)
+        self.state.record("abc", delta, desktop)
+
+        self.assertEqual(self.state.get("abc").agreement(), before)
+
+    def test_one_half_alone_says_nothing_about_the_pair(self) -> None:
+        """A target can legitimately know one side and not the other."""
+        delta = self.file("delta", b"one" * 100)
+
+        self.state.record("abc", delta, self.root / "not-there")
+
+        agreed = self.state.get("abc").agreement()
+        self.assertIsNotNone(agreed.delta)
+        self.assertIsNone(agreed.desktop)
+
+    def test_the_data_structure_itself_stays_free_of_the_policy(self) -> None:
+        """Old manifests break the invariant, and must stay representable.
+
+        Before the desktop half described the *save* rather than the whole file,
+        every converted entry paired a 32 KB Delta save with a 296,960-byte
+        .srm. Those are on disk now. Enforcing at the data structure would make
+        the program unable to model its own history.
+        """
+        inconsistent = manifest.Agreement(
+            delta=manifest.FileState(sha1="a" * 40, size=32768),
+            desktop=manifest.FileState(sha1="b" * 40, size=296960),
+        )
+        self.assertFalse(inconsistent.consistent)
+
+        stored = manifest.Entry().with_agreement(manifest.RETROARCH, inconsistent)
+
+        self.assertEqual(stored.agreement(), inconsistent)
+
+    def test_every_sync_writer_leaves_a_consistent_pair(self) -> None:
+        """Driven through the real paths, not asserted about them.
+
+        Each of these is a way an agreement comes into being. Reading the code
+        and concluding they all hold is exactly what produced four incomplete
+        fixes, so they are run.
+        """
+        from delta_retroarch_synchronizer import inspect as inspect_module
+        from delta_retroarch_synchronizer import n64, systems
+
+        cases = []
+
+        # A plain-copy system, pulled: the desktop file becomes Delta's save.
+        delta = self.file("gba-delta", b"\xa5" * 1024)
+        desktop = self.file("gba-desktop", b"\xa5" * 1024)
+        cases.append(("plain copy", delta, desktop, None))
+
+        # N64, where the desktop file holds four Controller Paks besides.
+        save = bytes(range(256)) * (0x8000 // 256)
+        n64_delta = self.file("n64-delta", save)
+        srm = bytearray(n64.to_retroarch(save))
+        srm[n64.PAKS_START + 900 : n64.PAKS_START + 908] = b"PAKSAVE1"
+        n64_desktop = self.file("n64-desktop", bytes(srm))
+        n64_entry = inspect_module.GameEntry(
+            identifier="n64",
+            name="G",
+            delta_type=systems.SYSTEMS["n64"].delta_type,
+            system=systems.SYSTEMS["n64"],
+            rom_path=None,
+            save_path=n64_delta,
+            extra_paths={},
+        )
+        cases.append(
+            ("n64 with paks", n64_delta, n64_desktop, sync.converted_body(n64_entry))
+        )
+
+        # mGBA's Game Boy save, which carries a 48-byte clock block.
+        from delta_retroarch_synchronizer import emulators
+
+        layout = emulators.EMULATORS["mgba"].saves["gbc"]
+        gb_save = b"\x5c" * 0x8000
+        gb_delta = self.file("gb-delta", gb_save)
+        gb_desktop = self.file("gb-desktop", gb_save + bytes(48))
+        cases.append(
+            (
+                "mgba clock block",
+                gb_delta,
+                gb_desktop,
+                lambda data: emulators.split_trailer(data, layout)[0],
+            )
+        )
+
+        for label, delta_path, desktop_path, body in cases:
+            with self.subTest(case=label):
+                self.state.record(label, delta_path, desktop_path, desktop_body=body)
+                agreed = self.state.get(label).agreement()
+                self.assertFalse(
+                    agreed.empty, f"{label}: refused, so the pair was inconsistent"
+                )
+                self.assertTrue(agreed.consistent)
+
+
 class BaselineTests(unittest.TestCase):
     """Two identical files are an agreement, and it has to be written down.
 

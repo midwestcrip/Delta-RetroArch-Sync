@@ -152,6 +152,23 @@ class Agreement:
     *relative to a particular target*: the question a sync asks is "has Delta
     moved since this emulator last saw it", and two emulators synced at
     different moments have different answers.
+
+    **The invariant, which everything else here now rests on:**
+
+        When both halves are present they describe the *same bytes*. The save
+        Delta holds IS the save inside the desktop file.
+
+    It is true of every way an agreement is created -- a pull writes Delta's
+    save into the desktop file, a push sends the desktop save to Delta, and a
+    baseline is only written when the two are already identical -- and it is
+    what lets the Delta half stand in as a fingerprint of the desktop *save*
+    when the desktop *file* holds more than the save. ``sync.desktop_still_agreed``
+    uses exactly that to see past a Controller Pak or a clock block.
+
+    Stated here rather than inferred at each call site because inferring it is
+    what went wrong repeatedly: a reader that assumes the pair means one thing
+    and a writer that stores another do not fail loudly, they agree to the wrong
+    save and report "unchanged on both sides" forever.
     """
 
     delta: FileState | None = None
@@ -160,6 +177,17 @@ class Agreement:
     @property
     def empty(self) -> bool:
         return self.delta is None and self.desktop is None
+
+    @property
+    def consistent(self) -> bool:
+        """Whether this pair satisfies the invariant above.
+
+        Vacuously true when either half is missing: an agreement can legitimately
+        know one side and not the other, and says nothing about the pair then.
+        """
+        if self.delta is None or self.desktop is None:
+            return True
+        return self.delta == self.desktop
 
 
 @dataclass
@@ -199,7 +227,15 @@ class Entry:
         return self.agreement(target).desktop
 
     def with_agreement(self, target: str, agreed: Agreement) -> "Entry":
-        """A copy with one target's pair replaced and every other one untouched."""
+        """A copy with one target's pair replaced and every other one untouched.
+
+        Deliberately free of policy: it stores what it is given. Manifests
+        written before the desktop half described the *save* rather than the
+        whole file do not satisfy :class:`Agreement`'s invariant, and they are
+        real data that has to be representable. The invariant is enforced where
+        agreements are *created from files* -- :meth:`Manifest.record` and
+        :meth:`Manifest.record_states` -- not here.
+        """
         if target == RETROARCH:
             return Entry(
                 delta=agreed.delta,
@@ -368,16 +404,15 @@ class Manifest:
         save and nothing else, which is the reason a trailer has to be dropped
         on the way home rather than recorded and forgiven.
         """
-        self.entries[identifier] = self.entries.get(identifier, Entry()).with_agreement(
-            target,
-            Agreement(
-                delta=FileState.of(delta) if delta and delta.is_file() else None,
-                desktop=(
-                    FileState.of(desktop, body=desktop_body)
-                    if desktop and desktop.is_file()
-                    else None
-                ),
+        self.record_states(
+            identifier,
+            FileState.of(delta) if delta and delta.is_file() else None,
+            (
+                FileState.of(desktop, body=desktop_body)
+                if desktop and desktop.is_file()
+                else None
             ),
+            target,
         )
 
     def record_states(
@@ -395,9 +430,20 @@ class Manifest:
         that were examined and the bytes on disk a moment later are not
         necessarily the same, and re-reading would agree to whichever arrived
         last rather than to the pair that was actually checked.
+
+        Both recording paths funnel through here, and a pair that breaks
+        :class:`Agreement`'s invariant is **dropped rather than stored**. Such a
+        pair can only mean the caller believes two different saves agree, and
+        writing that down is the worst outcome available: every later run reads
+        it as "unchanged on both sides" and the difference is never reported to
+        anyone at all. Leaving the old agreement in place costs a conflict on
+        the next run instead -- visible, refusing to write, and resolvable.
         """
+        agreed = Agreement(delta=delta, desktop=desktop)
+        if not agreed.consistent:
+            return
         self.entries[identifier] = self.entries.get(identifier, Entry()).with_agreement(
-            target, Agreement(delta=delta, desktop=desktop)
+            target, agreed
         )
 
     def cheat_code(self, identifier: str) -> str | None:

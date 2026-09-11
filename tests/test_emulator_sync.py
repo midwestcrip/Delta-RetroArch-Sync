@@ -417,7 +417,8 @@ def test_a_second_run_finds_nothing_to_do(world):
 def test_recording_one_emulator_does_not_erase_another(world):
     state = manifest.Manifest(world.paths.manifest_path)
     delta = world.delta_save(GBA_SAVE)
-    other = world.delta_save(b"\x01" * 64, name="other")
+    # Both emulators hold the same save as Delta, which is what "agreed" means.
+    other = world.delta_save(GBA_SAVE, name="other")
 
     state.record("game", delta, other, "mgba")
     state.record("game", delta, other, "vbam")
@@ -724,10 +725,13 @@ def test_recording_one_target_leaves_another_s_delta_half_alone(world):
     state = manifest.Manifest(world.paths.manifest_path)
     old = world.delta_save(b"v1" * 512, name="old")
     new = world.delta_save(b"v2" * 512, name="new")
-    desktop = world.delta_save(b"x" * 64, name="desktop")
+    # One desktop file per agreement, each holding the save that agreement is
+    # about -- the two halves of a pair describe the same bytes.
+    mgba_save = world.delta_save(b"v1" * 512, name="mgba-save")
+    retro_save = world.delta_save(b"v2" * 512, name="retro-save")
 
-    state.record("g", old, desktop, "mgba")
-    state.record("g", new, desktop)  # RetroArch moves on
+    state.record("g", old, mgba_save, "mgba")
+    state.record("g", new, retro_save)  # RetroArch moves on
 
     assert state.get("g").agreement("mgba").delta.sha1 == manifest.sha1_of(old)
     assert state.get("g").agreement("retroarch").delta.sha1 == manifest.sha1_of(new)
@@ -736,7 +740,7 @@ def test_recording_one_target_leaves_another_s_delta_half_alone(world):
 def test_the_pair_survives_a_round_trip(world):
     state = manifest.Manifest(world.paths.manifest_path)
     delta = world.delta_save(b"v1" * 512)
-    desktop = world.delta_save(b"x" * 64, name="desktop")
+    desktop = world.delta_save(b"v1" * 512, name="desktop")
     state.record("g", delta, desktop, "mgba")
     state.save()
 
@@ -895,8 +899,12 @@ def test_two_emulators_backups_do_not_collide(world):
         directory = world.root / f"{key}-roms"
         directory.mkdir()
         save = directory / "Pokemon.sav"
+        # Agreed means both sides held the same save -- see Agreement's
+        # invariant. Starting them equal is what makes the next line a pull,
+        # and the two versions are the same length because a size difference
+        # would be refused by `check_shape` before any of that.
         save.write_bytes(b"old" + content)
-        delta = world.delta_save(content, name=f"delta-{key}")
+        delta = world.delta_save(b"old" + content, name=f"delta-{key}")
         entry = entry_for("gba", "Pokemon", delta)
         state = manifest.Manifest(world.paths.manifest_path)
         state.record(entry.identifier, delta, save, key)
@@ -1376,7 +1384,9 @@ def test_a_gba_save_is_pushed_whole(world, monkeypatch):
     delta = world.delta_save(GBA_SAVE)
     entry = entry_for("gba", "Pokemon", delta)
     live = world.roms / "Pokemon.sav"
-    live.write_bytes(b"\x31" * 131072)
+    # Agreed on the same save, then played on the desktop -- which is what makes
+    # the next sync a push and puts a whole 131,072-byte file on the wire.
+    live.write_bytes(GBA_SAVE)
 
     sent = {}
 

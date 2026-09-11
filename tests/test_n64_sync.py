@@ -252,6 +252,27 @@ class ConvertedComparisonTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
+    def record_legacy(self) -> None:
+        """A manifest entry as an older version of this program wrote it.
+
+        Built directly rather than through `Manifest.record`, because `record`
+        will not produce it any more: the desktop half is the whole 296,960-byte
+        .srm while the Delta half is the 32 KB save, which breaks the invariant
+        `Agreement` now states and `record_states` refuses to write.
+
+        That refusal is the point -- and so is this bypass. Every manifest
+        already on disk looks like this, so the code has to keep reading them
+        correctly even though it will never write another.
+        """
+        entry = self.state.get(self.ident).with_agreement(
+            manifest_module.RETROARCH,
+            manifest_module.Agreement(
+                delta=manifest_module.FileState.of(self.delta),
+                desktop=manifest_module.FileState.of(self.target),
+            ),
+        )
+        self.state.entries[self.ident] = entry
+
     def test_the_same_save_in_both_shapes_reads_as_identical(self) -> None:
         body = sync.converted_body(self.entry)
 
@@ -293,7 +314,7 @@ class ConvertedComparisonTests(unittest.TestCase):
         damage is not the noise, it is what that does to a real pull. See the
         next test.
         """
-        self.state.record(self.ident, self.delta, self.target)
+        self.record_legacy()
         self.assertEqual(
             self.state.get(self.ident).agreement().desktop.size, n64.SRM_SIZE
         )
@@ -315,7 +336,7 @@ class ConvertedComparisonTests(unittest.TestCase):
         two changed sides is a conflict: the pull is refused and the player is
         asked to resolve something that was never in dispute.
         """
-        self.state.record(self.ident, self.delta, self.target)
+        self.record_legacy()
         self.delta.write_bytes(b"\x5a" * SRAM)
 
         action, _ = sync.decide(
@@ -336,7 +357,7 @@ class ConvertedComparisonTests(unittest.TestCase):
         narrow to identical bytes. A cartridge region that really moved matches
         neither shape.
         """
-        self.state.record(self.ident, self.delta, self.target)
+        self.record_legacy()
         self.target.write_bytes(n64.to_retroarch(b"\x5a" * SRAM))
 
         action, _ = sync.decide(
@@ -350,7 +371,7 @@ class ConvertedComparisonTests(unittest.TestCase):
 
     def test_the_old_shape_is_rewritten_rather_than_forgiven_forever(self) -> None:
         """One run migrates it, so the fallback is a bridge and not a crutch."""
-        self.state.record(self.ident, self.delta, self.target)
+        self.record_legacy()
         body = sync.converted_body(self.entry)
 
         sync.baseline_if_agreed(
@@ -380,7 +401,7 @@ class ConvertedComparisonTests(unittest.TestCase):
         the same agreement is what settles it: recording an agreement always
         meant the desktop side held exactly the save Delta had.
         """
-        self.state.record(self.ident, self.delta, self.target)
+        self.record_legacy()
         self.used_pak()
 
         action, detail = sync.decide(
@@ -401,7 +422,7 @@ class ConvertedComparisonTests(unittest.TestCase):
         and one that never clears, because a run reporting a conflict never
         reaches the code that would migrate the entry.
         """
-        self.state.record(self.ident, self.delta, self.target)
+        self.record_legacy()
         self.used_pak()
         self.delta.write_bytes(b"\x5a" * SRAM)
 
@@ -416,7 +437,7 @@ class ConvertedComparisonTests(unittest.TestCase):
 
     def test_a_cartridge_change_under_an_old_manifest_is_still_seen(self) -> None:
         """Forgiving the paks must not forgive the save sitting next to them."""
-        self.state.record(self.ident, self.delta, self.target)
+        self.record_legacy()
         data = bytearray(self.target.read_bytes())
         data[n64.SRAM.start : n64.SRAM.start + 8] = b"REALPLAY"
         self.target.write_bytes(bytes(data))
@@ -432,7 +453,7 @@ class ConvertedComparisonTests(unittest.TestCase):
 
     def test_an_entry_whose_paks_moved_can_still_migrate(self) -> None:
         """Otherwise the one entry that most needs migrating never can."""
-        self.state.record(self.ident, self.delta, self.target)
+        self.record_legacy()
         self.used_pak()
         body = sync.converted_body(self.entry)
 
