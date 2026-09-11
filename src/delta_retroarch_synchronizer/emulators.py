@@ -630,6 +630,13 @@ V64_MAGIC = b"\x37\x80\x40\x12"   # 16-bit byte-swapped
 N64_MAGIC = b"\x40\x12\x37\x80"   # 32-bit little-endian
 
 
+#: The smallest file Mupen64Plus will open as a ROM. Measured by bisection
+#: against a real 2.6.0: 0x800 gives "core failed to open ROM image file",
+#: 0x1000 loads. Anything below this is not a ROM as far as it is concerned, so
+#: deriving a save name from one would name a save for a game it cannot run.
+MINIMUM_ROM_SIZE = 0x1000
+
+
 def to_z64(data: bytes) -> bytes | None:
     """A ROM in native big-endian order, whatever order it arrived in.
 
@@ -638,19 +645,43 @@ def to_z64(data: bytes) -> bytes | None:
     a byte-swapped dump -- and the refusal would blame its database for not
     knowing a game it knows perfectly well.
 
-    None for anything that is not an N64 ROM at all, rather than a guess.
+    None rather than a guess for anything that is not a ROM this emulator would
+    load. Two ways that happens, and the second is the one that bites:
+
+    - **Too small.** See :data:`MINIMUM_ROM_SIZE`.
+    - **A swapped dump whose length does not divide by the swap width.** The
+      conversion has no defined answer for the leftover bytes, and an earlier
+      version quietly dropped them -- which changes the bytes being hashed, and
+      so the MD5, and so the filename. Mupen64Plus does load such a file, so
+      this is deliberately stricter than it is: refusing names no save, while
+      guessing writes one under a name it will never open.
     """
+    if len(data) < MINIMUM_ROM_SIZE:
+        return None
+
     head = data[:4]
     if head == Z64_MAGIC:
         return data
     if head == V64_MAGIC:
-        return bytes(data[i ^ 1] for i in range(len(data) - len(data) % 2))
+        if len(data) % 2:
+            return None
+        return bytes(data[i ^ 1] for i in range(len(data)))
     if head == N64_MAGIC:
-        out = bytearray(len(data) - len(data) % 4)
-        for i in range(0, len(out), 4):
-            out[i : i + 4] = data[i : i + 4][::-1]
-        return bytes(out)
+        if len(data) % 4:
+            return None
+        return b"".join(data[i : i + 4][::-1] for i in range(0, len(data), 4))
     return None
+
+
+#: Where a ROM carries its own name, 20 bytes at offset 0x20 of the header.
+#: Mupen64Plus falls back to this when its database does not know the ROM.
+_HEADER_NAME = slice(0x20, 0x34)
+
+
+def internal_name(native: bytes) -> str:
+    """The name a ROM carries in its own header, trimmed."""
+    raw = native[_HEADER_NAME]
+    return raw.decode("ascii", "replace").replace("\x00", " ").strip()
 
 
 def mupen64plus_stem(install_dir: Path, rom: Path) -> str | None:
@@ -667,8 +698,20 @@ def mupen64plus_stem(install_dir: Path, rom: Path) -> str | None:
         return None
     if native is None:
         return None
+
     digest = hashlib.md5(native).hexdigest().upper()
     good = goodnames(install_dir / "mupen64plus.ini").get(digest)
+    if not good:
+        # Not in the database is not a dead end. Mupen64Plus falls back to the
+        # name the ROM carries in its own header -- measured by hiding a known
+        # ROM's entry and running it: it reported the GoodName as "SUPER MARIO
+        # 64 (unknown rom)" and wrote "SUPER MARIO 64-20B854B2.eep", so the
+        # suffix is for display and the filename uses the bare header name.
+        #
+        # Worth following rather than refusing: hacks, translations and
+        # homebrew are ordinary things to have in Delta, and every one of them
+        # is an "unknown rom" here.
+        good = internal_name(native)
     if not good:
         return None
     return mupen64plus_filename(good, digest)

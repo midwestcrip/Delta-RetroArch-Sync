@@ -1078,6 +1078,21 @@ sync having done nothing.
 
 Then append `-<first eight hex digits of that MD5>` and the extension.
 
+**A ROM its database does not know is not a dead end.** Measured by hiding a
+known ROM's entry: the core reported the GoodName as `SUPER MARIO 64 (unknown
+rom)` and wrote `SUPER MARIO 64-20B854B2.eep`, so the suffix is for display and
+the filename falls back to the **name in the ROM's own header** (20 bytes at
+offset 0x20). Hacks, translations and homebrew are all "unknown" here, so
+following that fallback is the difference between the feature working for them
+and refusing.
+
+**What it will not open at all:** a file below **0x1000 bytes**. Bisected —
+0x800 gives "core failed to open ROM image file", 0x1000 loads. This project is
+deliberately stricter in one more way: a byte-swapped dump whose length does not
+divide by the swap width is refused, even though the core loads one, because the
+conversion has no defined answer for the leftover bytes and guessing changes the
+MD5 and therefore the filename.
+
 So `Super Mario 64.z64` becomes `Super Mario 64 (U) [!]-20B854B2.eep`, and
 Ocarina of Time becomes `Legend of Zelda, The - Ocarina o-57A9719A.sra`.
 

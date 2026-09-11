@@ -383,7 +383,7 @@ def _swapped(data, width):
 
 
 def test_a_native_rom_is_left_alone():
-    rom = emulators.Z64_MAGIC + bytes(range(60))
+    rom = emulators.Z64_MAGIC + bytes(range(256)) * 16
 
     assert emulators.to_z64(rom) == rom
 
@@ -391,7 +391,7 @@ def test_a_native_rom_is_left_alone():
 def test_a_byte_swapped_rom_is_converted():
     """Mupen64Plus hashes the ROM in native order, so a v64 dump of the same
     game must hash to the same MD5 or its database is missed entirely."""
-    native = emulators.Z64_MAGIC + bytes(range(60))
+    native = emulators.Z64_MAGIC + bytes(range(256)) * 16  # past the size floor
     v64 = _swapped(native, 2)
     assert v64[:4] == emulators.V64_MAGIC
 
@@ -399,7 +399,7 @@ def test_a_byte_swapped_rom_is_converted():
 
 
 def test_a_little_endian_rom_is_converted():
-    native = emulators.Z64_MAGIC + bytes(range(60))
+    native = emulators.Z64_MAGIC + bytes(range(256)) * 16  # past the size floor
     n64 = _swapped(native, 4)
     assert n64[:4] == emulators.N64_MAGIC
 
@@ -419,3 +419,74 @@ def test_an_unknown_rom_yields_no_stem(tmp_path):
     rom.write_bytes(emulators.Z64_MAGIC + b"\x00" * 60)
 
     assert emulators.mupen64plus_stem(installed.install_dir, rom) is None
+
+
+# --- what counts as a ROM at all -------------------------------------------
+
+
+def _rom(magic=None, size=0x1000):
+    return (magic or emulators.Z64_MAGIC) + bytes(size - 4)
+
+
+def test_a_file_too_small_to_be_a_rom_is_refused():
+    """Bisected against a real 2.6.0: 0x800 is refused by the core with
+    "failed to open ROM image file", 0x1000 loads. Below that there is no game
+    to name a save for."""
+    assert emulators.to_z64(_rom(size=0x800)) is None
+    assert emulators.to_z64(_rom(size=emulators.MINIMUM_ROM_SIZE)) is not None
+
+
+def test_a_swapped_dump_of_indivisible_length_is_refused():
+    """Deliberately stricter than the emulator, which does load these.
+
+    The conversion has no defined answer for the leftover bytes. An earlier
+    version dropped them silently, which changes the bytes hashed, so the MD5,
+    so the filename -- a save written where nothing looks for it. Refusing
+    writes no save; guessing writes an unreadable one.
+    """
+    v64 = _rom(emulators.V64_MAGIC, 0x1000)
+    n64 = _rom(emulators.N64_MAGIC, 0x1000)
+
+    assert emulators.to_z64(v64[:-1]) is None
+    assert emulators.to_z64(n64[:-3]) is None
+    assert emulators.to_z64(v64) is not None
+    assert emulators.to_z64(n64) is not None
+
+
+def test_the_header_name_is_read_for_an_unknown_rom(tmp_path):
+    """Not in the database is not a dead end.
+
+    Measured by hiding a known ROM's entry and running it: the core reported
+    "SUPER MARIO 64 (unknown rom)" and wrote "SUPER MARIO 64-20B854B2.eep", so
+    the suffix is for display and the filename uses the bare header name.
+    """
+    import hashlib
+
+    native = bytearray(_rom())
+    native[0x20:0x34] = b"SUPER MARIO 64      "
+    rom = tmp_path / "hack.z64"
+    rom.write_bytes(bytes(native))
+    (tmp_path / "mupen64plus.ini").write_text("", encoding="utf-8")
+    digest = hashlib.md5(bytes(native)).hexdigest().upper()
+
+    stem = emulators.mupen64plus_stem(tmp_path, rom)
+
+    assert stem == f"SUPER MARIO 64-{digest[:8]}"
+
+
+def test_the_header_name_is_trimmed_of_its_padding(tmp_path):
+    native = bytearray(_rom())
+    native[0x20:0x34] = b"ZELDA\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+
+    assert emulators.internal_name(bytes(native)) == "ZELDA"
+
+
+def test_a_rom_with_neither_a_name_nor_an_entry_is_refused(tmp_path):
+    """There is nothing left to build a filename out of."""
+    native = bytearray(_rom())
+    native[0x20:0x34] = b" " * 20
+    rom = tmp_path / "nameless.z64"
+    rom.write_bytes(bytes(native))
+    (tmp_path / "mupen64plus.ini").write_text("", encoding="utf-8")
+
+    assert emulators.mupen64plus_stem(tmp_path, rom) is None

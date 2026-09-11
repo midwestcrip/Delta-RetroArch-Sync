@@ -53,11 +53,13 @@ def mupen_rom(world, installed, name):
     """
     import hashlib
 
-    # A real z64 header, because the stem is derived from the ROM in *native*
-    # byte order -- anything without a recognised magic is refused rather than
-    # hashed as if it were a ROM.
+    # A real z64 header and a plausible size, because the stem is derived from
+    # the ROM in *native* byte order and anything without a recognised magic,
+    # or smaller than the emulator will open, is refused rather than hashed as
+    # if it were a ROM.
     rom = world.root / f"{name}.z64"
-    rom.write_bytes(emulators.Z64_MAGIC + (name.encode() * 64))
+    body = (name.encode() * 64).ljust(emulators.MINIMUM_ROM_SIZE, b"\x00")
+    rom.write_bytes(emulators.Z64_MAGIC + body)
     digest = hashlib.md5(rom.read_bytes()).hexdigest().upper()
     (installed.install_dir / "mupen64plus.ini").write_text(
         f"[{digest}]\nGoodName={name} (U) [!]\nCRC=00000000 00000000\n",
