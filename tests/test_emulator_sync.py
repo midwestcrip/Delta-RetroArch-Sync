@@ -6,9 +6,10 @@ about:
 - **The second desktop side gets its own agreed state.** Syncing the same game
   to RetroArch and to mGBA is two agreements, not one, and mixing them would
   make each sync look like a change the other side had made.
-- **The file already on disk is what clears the write.** Nobody here has run any
-  of these emulators, so the only real evidence about what one writes is what it
-  has already written.
+- **The file already on disk is what clears the write.** Most of these have
+  never been run here, so for those the only real evidence about what one writes
+  is what it has already written. mGBA and Mupen64Plus are the exceptions: both
+  have been run against real ROMs and the constants they need are measured.
 """
 
 from __future__ import annotations
@@ -27,6 +28,24 @@ from delta_retroarch_synchronizer import manifest, sync, systems
 
 GBA_SAVE = b"\xa5" * 131072
 SRAM = b"\x77" * 0x8000
+
+
+@pytest.fixture(autouse=True)
+def off_this_machine(monkeypatch):
+    """Keep discovery inside the fixture, out of the real registry and disk.
+
+    Not tidiness. Two tests here went from passing to failing the moment a real
+    mGBA was installed on the development machine -- `find_installed` answered
+    with *that* copy instead of the fixture's, and the suite reported a
+    regression in code nobody had touched. A test whose result depends on what
+    the developer happens to have installed is worse than no test: it is a green
+    run that means nothing and a red one that sends you looking in the wrong
+    place.
+    """
+    from delta_retroarch_synchronizer import discovery
+
+    monkeypatch.setattr(discovery, "install_dirs", lambda *args, **kwargs: [])
+    monkeypatch.setattr(emulators, "search_roots", lambda *args, **kwargs: [])
 
 
 def entry_for(key, name, save_path, rom_path=None):
@@ -1182,3 +1201,180 @@ def test_the_resolved_folder_is_searched_first(world):
     assert dirs[0] == chosen
     assert world.roms in dirs
     assert installed.install_dir in dirs
+
+
+# --- mGBA's Game Boy clock block -------------------------------------------
+#
+# All four of these are one measurement: mGBA 0.10.5, run against a real
+# Pokemon Crystal ROM on 2026-09-11, wrote a 32,816-byte .sav where Delta and
+# Gambatte both store 32,768. What makes it a sync problem rather than a
+# curiosity is *when* it writes those 48 bytes -- on load, and restamped every
+# launch -- so the desktop file changes without the player doing anything.
+
+#: The body and the trailer from that run, at the sizes that were measured.
+CRYSTAL_SAVE = b"\x5c" * 0x8000
+CLOCK_BLOCK = bytes(40) + (1789152446).to_bytes(8, "little")
+
+
+def _crystal(world):
+    """mGBA, a Game Boy game, and Delta's tail-less copy of its save."""
+    installed = world.install("mgba")
+    delta = world.delta_save(CRYSTAL_SAVE, name="crystal-save")
+    return installed, delta, entry_for("gbc", "Pokemon - Crystal Version", delta)
+
+
+def test_opening_a_game_in_mgba_is_not_progress(world):
+    """The regression this whole trailer business exists to prevent.
+
+    mGBA restamps its clock block every time it opens a save, so the file on
+    disk differs from the one that was written into it -- without a single byte
+    of the save itself having changed. Fingerprinting the whole file makes the
+    very next run report "mGBA changed since the last sync" and offer to push a
+    clock tick to the phone as though it were a session of progress.
+    """
+    installed, delta, entry = _crystal(world)
+    sync.sync_emulator(world.paths, entry, installed, rom_dir=world.roms)
+
+    live = world.roms / "Pokemon - Crystal Version.sav"
+    assert live.read_bytes() == CRYSTAL_SAVE
+
+    # What mGBA does the first time the game is opened.
+    live.write_bytes(CRYSTAL_SAVE + CLOCK_BLOCK)
+
+    outcome = only(
+        sync.sync_emulator(world.paths, entry, installed, rom_dir=world.roms)
+    )
+
+    assert outcome.action is sync.Action.NOTHING
+    assert outcome.detail == "unchanged on both sides"
+
+
+def test_real_progress_under_a_clock_block_is_still_seen(world):
+    """The other half, and the one that proves the first is not just deafness.
+
+    Ignoring the trailer must not turn into ignoring the file. A save that
+    genuinely changed still has to read as a change when it arrives wearing the
+    same 48 bytes.
+    """
+    installed, delta, entry = _crystal(world)
+    sync.sync_emulator(world.paths, entry, installed, rom_dir=world.roms)
+
+    live = world.roms / "Pokemon - Crystal Version.sav"
+    live.write_bytes(b"\x99" * 0x8000 + CLOCK_BLOCK)
+
+    outcome = only(
+        sync.sync_emulator(
+            world.paths, entry, installed, rom_dir=world.roms, allow_push=True
+        )
+    )
+
+    assert outcome.action is sync.Action.PUSH
+
+
+def test_the_clock_block_does_not_go_to_delta(world, monkeypatch):
+    """What goes home is the save, at the size the phone stores.
+
+    Delta has no idea what mGBA's clock block is. Pushing 32,816 bytes where it
+    keeps 32,768 is the shape of write this program exists not to make, so the
+    trailer comes off on the way out -- and is never rebuilt on the way back,
+    because mGBA writes its own when it opens a save that has none.
+    """
+    installed, delta, entry = _crystal(world)
+    sync.sync_emulator(world.paths, entry, installed, rom_dir=world.roms)
+
+    live = world.roms / "Pokemon - Crystal Version.sav"
+    played = b"\x99" * 0x8000
+    live.write_bytes(played + CLOCK_BLOCK)
+
+    sent = {}
+
+    def fake_push(paths, game, source, dropbox, **kwargs):
+        sent["bytes"] = source.read_bytes()
+        sent["path"] = source
+        return "pushed"
+
+    monkeypatch.setattr(sync, "push_with_revision", fake_push)
+
+    outcome = only(
+        sync.sync_emulator(
+            world.paths,
+            entry,
+            installed,
+            rom_dir=world.roms,
+            allow_push=True,
+            dropbox=object(),
+        )
+    )
+
+    assert outcome.action is sync.Action.PUSH
+    assert outcome.applied
+    assert sent["bytes"] == played
+    # Staged, not the live file, and cleaned up rather than left in state/.
+    assert sent["path"] != live
+    assert not sent["path"].exists()
+    # And mGBA's own copy is untouched -- pushing is a read of that side.
+    assert live.read_bytes() == played + CLOCK_BLOCK
+
+
+def test_a_gba_save_is_pushed_whole(world, monkeypatch):
+    """No trailer is claimed for GBA, so nothing may be trimmed from one.
+
+    Fire Red came back at exactly 131,072 bytes. Sharing one trailer across both
+    of mGBA's rows would quietly shorten every GBA save by 48 bytes.
+    """
+    installed = world.install("mgba")
+    delta = world.delta_save(GBA_SAVE)
+    entry = entry_for("gba", "Pokemon", delta)
+    live = world.roms / "Pokemon.sav"
+    live.write_bytes(b"\x31" * 131072)
+
+    sent = {}
+
+    def fake_push(paths, game, source, dropbox, **kwargs):
+        sent["bytes"] = source.read_bytes()
+        return "pushed"
+
+    monkeypatch.setattr(sync, "push_with_revision", fake_push)
+
+    state = manifest.Manifest(world.paths.manifest_path)
+    state.record(entry.identifier, delta, live, "mgba")
+    live.write_bytes(b"\x32" * 131072)
+
+    sync.sync_emulator(
+        world.paths,
+        entry,
+        installed,
+        rom_dir=world.roms,
+        allow_push=True,
+        dropbox=object(),
+        state=state,
+    )
+
+    assert sent["bytes"] == b"\x32" * 131072
+
+
+def test_mgbas_clock_block_does_not_read_as_a_different_kind_of_file(world):
+    """The size rule would otherwise refuse every Game Boy save forever.
+
+    32,816 against Delta's 32,768 is a real difference, and `check_shape` is
+    right to be suspicious of one in general. Here it is the clock block, and
+    refusing on it would mean no Game Boy save ever reached mGBA again after the
+    first time the game was opened.
+    """
+    installed, delta, entry = _crystal(world)
+    sync.sync_emulator(world.paths, entry, installed, rom_dir=world.roms)
+
+    # The game gets opened, so mGBA's copy is now 48 bytes longer than Delta's.
+    live = world.roms / "Pokemon - Crystal Version.sav"
+    live.write_bytes(CRYSTAL_SAVE + CLOCK_BLOCK)
+
+    # Then the player makes progress on the phone. The pull has to land despite
+    # the two files no longer being the same length.
+    delta.write_bytes(b"\x5d" * 0x8000)
+
+    outcome = only(
+        sync.sync_emulator(world.paths, entry, installed, rom_dir=world.roms)
+    )
+
+    assert outcome.action is sync.Action.PULL
+    assert live.read_bytes() == b"\x5d" * 0x8000

@@ -1112,6 +1112,53 @@ MD5 and therefore the filename.
 So `Super Mario 64.z64` becomes `Super Mario 64 (U) [!]-20B854B2.eep`, and
 Ocarina of Time becomes `Legend of Zelda, The - Ocarina o-57A9719A.sra`.
 
+### mGBA names saves the easy way, and then appends to them
+
+Measured 2026-09-11 against mGBA **0.10.5** (official win64 portable build,
+sha256 `b497a57c…`), run with the save absent and the file it created read back.
+
+Naming is the boring answer Mupen64Plus was not: **the ROM's filename with the
+extension replaced by `.sav`, written beside the ROM.** `Pokémon - Fire Red
+Version.gba` gave `Pokémon - Fire Red Version.sav`, accent intact. The ROM's
+internal header title is not consulted, so nothing needs looking up.
+
+Two further things came out of the same run and matter more than the name:
+
+| Game | Delta / RetroArch | mGBA | Difference |
+| --- | --- | --- | --- |
+| Fire Red (GBA, flash, no clock) | 131,072 | 131,072 | none |
+| Crystal (GBC, SRAM + clock) | 32,768 + 8-byte `.rtc` | 32,816 | +48 in the save |
+
+**mGBA keeps the Game Boy clock inside the save file.** The extra 48 bytes are
+ten little-endian `uint32` clock registers followed by a 64-bit little-endian
+Unix timestamp — and that timestamp is the same value Gambatte keeps in its
+separate 8-byte `.rtc`, which is what confirms the reading. Two measured runs of
+the same game gave two different timestamps, so it is rewritten on every launch.
+
+Three consequences, each of which would be a bug if guessed at instead:
+
+1. **It is written on load, not on save.** A save copied in from Delta is 32,768
+   bytes until the game is opened and 32,816 afterwards, with no play in
+   between. Fingerprinting the whole file therefore reports progress that did
+   not happen, and with pushing on would send a clock tick to the phone.
+2. **A tail-less save is accepted.** Planting the real 32,768-byte Gambatte save
+   and launching gave back 32,816 bytes with the **first 32,768 byte-for-byte
+   unchanged**. So the trailer never has to be constructed — mGBA writes its own
+   when it finds one missing, which is why this project only ever removes it.
+3. **The size rule needs the exception.** 32,816 against Delta's 32,768 is a
+   genuine difference and `check_shape` refuses differences; without knowing
+   about the trailer it would refuse every Game Boy save forever after the first
+   launch.
+
+What is *not* measured: a GBA cartridge with a clock (Ruby, Sapphire, Emerald).
+No such ROM was on hand, so the GBA row claims no trailer rather than assuming
+the Game Boy one applies, and a longer file is refused rather than trimmed.
+
+Which half of a file is the save is decided by **length alone**: every real
+cartridge storage size is a power of two, so a file that is already one is all
+save, and one that is a power of two *plus* 48 has a trailer. Nothing about the
+game has to be known.
+
 ## Safety constraint
 
 Delta's documentation warns that files in the Dropbox folder are not intended to

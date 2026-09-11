@@ -103,6 +103,7 @@ def decide(
     *,
     target: str = manifest_module.RETROARCH,
     label: str = "RetroArch",
+    desktop_body: "manifest_module.Body | None" = None,
 ) -> tuple[Action, str]:
     """Work out what to do for one game, from the two files and the manifest.
 
@@ -113,6 +114,12 @@ def decide(
     be more than one -- RetroArch and any standalone emulator each keep their
     own agreement with Delta. ``label`` is the same thing said for a human, and
     is only ever used in the returned explanation.
+
+    ``desktop_body`` narrows the desktop file to the save inside it, for an
+    emulator that appends its own bookkeeping. It has to be applied everywhere
+    this function looks at that file's contents -- both the comparison against
+    the agreed state and the "already identical" test -- or opening a game in
+    mGBA, which restamps its clock block, reads as a session of progress.
     """
     delta_exists = delta_save is not None and delta_save.is_file()
     retro_exists = retroarch_save is not None and retroarch_save.is_file()
@@ -149,8 +156,8 @@ def decide(
         # Both exist with no agreed history. They may be identical, in which
         # case there is nothing to do and nothing to lose.
         assert delta_save is not None and retroarch_save is not None
-        if manifest_module.sha1_of(delta_save) == manifest_module.sha1_of(
-            retroarch_save
+        if manifest_module.FileState.of(delta_save) == manifest_module.FileState.of(
+            retroarch_save, body=desktop_body
         ):
             return Action.NOTHING, "both sides already identical"
         return Action.CONFLICT, "both sides have saves but no agreed history"
@@ -172,7 +179,7 @@ def decide(
     retro_changed = not (
         agreed_desktop is not None
         and retroarch_save is not None
-        and agreed_desktop.matches(retroarch_save)
+        and agreed_desktop.matches(retroarch_save, body=desktop_body)
     )
 
     if delta_changed and retro_changed:
@@ -1588,6 +1595,15 @@ def sync_emulator(
     else:
         owned = False
 
+    # One view of "the save inside this emulator's file", built once and used by
+    # every step below. Splitting it per step is how the halves drift apart: a
+    # state recorded on the whole file and compared against the body never
+    # matches, and the sync reports a change on every single run.
+    layout = emulator.saves.get(system.key)
+
+    def body(data: bytes) -> bytes:
+        return emulators.split_trailer(data, layout)[0]
+
     # Before the decision, not inside the pull branch. Nobody here has run this
     # emulator, so what it writes is unknown -- except where it has already
     # written something, which is evidence and is treated as such.
@@ -1600,7 +1616,7 @@ def sync_emulator(
     if target.is_file() and entry.save_path is not None and entry.save_path.is_file():
         try:
             mismatch = emulators.check_shape(
-                target.read_bytes(), entry.save_path.read_bytes()
+                target.read_bytes(), entry.save_path.read_bytes(), layout
             )
         except OSError as error:
             return [made(Action.SKIPPED, f"FAILED: {error}", failed=True)]
@@ -1618,6 +1634,7 @@ def sync_emulator(
         target,
         target=emulator.key,
         label=emulator.name,
+        desktop_body=body,
     )
 
     outcomes: list[Outcome] = []
@@ -1633,7 +1650,13 @@ def sync_emulator(
             copy_atomically(entry.save_path, target)
         except OSError as error:
             return [made(Action.PULL, f"FAILED: {error}", failed=True)]
-        state.record(entry.identifier, entry.save_path, target, emulator.key)
+        state.record(
+            entry.identifier,
+            entry.save_path,
+            target,
+            emulator.key,
+            desktop_body=body,
+        )
 
         note = f"{detail}; copied to {target} ({why})"
         if saved is not None:
@@ -1659,19 +1682,45 @@ def sync_emulator(
                 made(Action.PUSH, f"{detail}; {delta_writer.REVISION_MUST_BE_REAL}")
             )
         else:
-            # No staging step, unlike RetroArch. A standalone emulator stores one
-            # cartridge storage per file, which is already the shape Delta wants,
-            # so what is on disk is what goes home -- including for N64, where
-            # the RetroArch path has to extract a region from the combined .srm.
+            # Usually no staging step, unlike RetroArch: a standalone emulator
+            # stores one cartridge storage per file, which is already the shape
+            # Delta wants -- including for N64, where the RetroArch path has to
+            # extract a region from the combined .srm.
+            #
+            # The exception is an emulator that appends its own bookkeeping.
+            # Delta stores the save and nothing else, so mGBA's clock block has
+            # to come off before the file goes home; pushing 32,816 bytes where
+            # the phone expects 32,768 is exactly the kind of write this program
+            # exists not to make.
+            staged: Path | None = None
             try:
-                pushed = push_with_revision(paths, entry, target, dropbox)
+                source, trailer = emulators.split_trailer(target.read_bytes(), layout)
+                if trailer:
+                    paths.state_dir.mkdir(parents=True, exist_ok=True)
+                    staged = paths.state_dir / f"{entry.identifier}.{emulator.key}.body"
+                    staged.write_bytes(source)
+                pushed = push_with_revision(
+                    paths, entry, staged or target, dropbox
+                )
             except (OSError, ValueError, dropbox_api.DropboxError) as error:
                 outcomes.append(
                     made(Action.PUSH, f"{detail}; FAILED: {error}", failed=True)
                 )
             else:
-                state.record(entry.identifier, entry.save_path, target, emulator.key)
+                state.record(
+                    entry.identifier,
+                    entry.save_path,
+                    target,
+                    emulator.key,
+                    desktop_body=body,
+                )
                 outcomes.append(made(Action.PUSH, f"{detail}; {pushed}", applied=True))
+            finally:
+                if staged is not None:
+                    try:
+                        staged.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
     else:
         outcomes.append(made(action, detail))

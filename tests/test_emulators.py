@@ -315,6 +315,43 @@ def test_nothing_is_found_when_nothing_is_there(tmp_path, no_registry):
     assert emulators.find_executable(emulators.EMULATORS["mgba"], (tmp_path,)) is None
 
 
+def test_the_folder_the_user_named_beats_the_one_the_registry_found(
+    tmp_path, monkeypatch
+):
+    """Two copies of an emulator, and only one of them is the one being played.
+
+    The registry used to be consulted first, on the reasoning that it is what
+    the machine itself says. But the machine is guessing which copy is meant and
+    `emulator_paths` in config.toml is the user saying so outright, so the
+    registry's answer was quietly overriding the setting that exists to override
+    it -- saves written into an install the player was not using, with nothing
+    on screen naming which one had been chosen.
+    """
+    from delta_retroarch_synchronizer import discovery
+
+    registry = tmp_path / "registry-copy"
+    named = tmp_path / "the-one-i-play"
+    for directory in (registry, named):
+        directory.mkdir()
+        (directory / "mGBA.exe").write_bytes(b"")
+
+    monkeypatch.setattr(discovery, "install_dirs", lambda *args, **kw: [registry])
+    monkeypatch.setattr(emulators, "search_roots", lambda extra=(): [])
+
+    assert emulators.find_executable(
+        emulators.EMULATORS["mgba"], (named,)
+    ) == named / "mGBA.exe"
+
+    # `find_installed` is the one that actually runs during a sync, so it has to
+    # agree -- a launcher that reports one install and writes to another is the
+    # same bug wearing a different hat.
+    installed = [
+        item for item in emulators.find_installed((named,))
+        if item.emulator.key == "mgba"
+    ]
+    assert [item.install_dir for item in installed] == [named]
+
+
 def test_find_installed_reports_each_emulator_once(tmp_path, no_registry):
     """Two emulators kept in one folder, which is how people keep them."""
     (tmp_path / "mGBA.exe").write_bytes(b"")
@@ -514,3 +551,71 @@ def test_a_nameless_rom_is_still_named_the_emulator_s_way(tmp_path):
     digest = hashlib.md5(bytes(native)).hexdigest().upper()
 
     assert emulators.mupen64plus_stem(tmp_path, rom) == f"-{digest[:8]}"
+
+
+# --- the trailer some emulators append -------------------------------------
+
+GBC_LAYOUT = emulators.EMULATORS["mgba"].saves["gbc"]
+GBA_LAYOUT = emulators.EMULATORS["mgba"].saves["gba"]
+
+
+def test_the_measured_trailer_is_what_the_table_claims():
+    """mGBA 0.10.5 wrote 32,816 bytes for a 32,768-byte Game Boy save.
+
+    Pinned as a number because it is a measurement, not a derivation -- if it
+    ever needs changing, that has to mean someone ran the emulator again.
+    """
+    assert emulators.MGBA_GB_CLOCK_TRAILER == 48
+    assert GBC_LAYOUT.trailer == 48
+    assert GBA_LAYOUT.trailer == 0
+
+
+@pytest.mark.parametrize(
+    "size, body, trailer",
+    [
+        (0x8000, 0x8000, 0),        # Delta's copy, and a fresh one from Delta
+        (0x8000 + 48, 0x8000, 48),  # the same save once mGBA has opened it
+        (0x800, 0x800, 0),          # a 2 KiB cartridge
+        (0x800 + 48, 0x800, 48),
+        (0x20000, 0x20000, 0),      # Fire Red, which came back with no trailer
+        (48, 48, 0),                # nothing left over if the trailer were cut
+        (1000, 1000, 0),            # would leave 952, which is no storage size
+    ],
+)
+def test_the_length_decides_whether_there_is_a_trailer(size, body, trailer):
+    """The same emulator's file has two legitimate lengths, so it must.
+
+    A Game Boy save is 32,768 bytes the moment it is copied in and 32,816 once
+    the game has been opened. Neither the emulator nor the game says which one
+    is in front of you; the length does, because every real cartridge storage
+    size is a power of two and 32,816 is not.
+    """
+    head, tail = emulators.split_trailer(bytes(size), GBC_LAYOUT)
+
+    assert (len(head), len(tail)) == (body, trailer)
+
+
+def test_a_row_claiming_no_trailer_never_loses_bytes():
+    """GBA and every other row must be returned exactly as they arrived."""
+    for layout in (GBA_LAYOUT, None):
+        head, tail = emulators.split_trailer(bytes(0x8000 + 48), layout)
+        assert len(head) == 0x8000 + 48
+        assert tail == b""
+
+
+def test_a_clock_block_is_not_a_different_kind_of_file():
+    """With the layout, the 48-byte difference stops being a refusal."""
+    existing = b"\x99" * 0x8000 + bytes(48)
+    incoming = b"\x5c" * 0x8000
+
+    assert emulators.check_shape(existing, incoming, GBC_LAYOUT) is None
+    # And without it, the size rule is still the size rule.
+    assert emulators.check_shape(existing, incoming) is not None
+
+
+def test_a_genuinely_different_size_is_still_refused():
+    """Forgiving 48 bytes must not turn into forgiving any difference."""
+    reason = emulators.check_shape(b"\x00" * 0x10000, b"\x00" * 0x8000, GBC_LAYOUT)
+
+    assert reason is not None
+    assert "65,536" in reason and "32,768" in reason

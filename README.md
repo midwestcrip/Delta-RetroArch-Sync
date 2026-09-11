@@ -375,15 +375,31 @@ and its own size chooses which of the three files it is.
 Each one is still found and listed, with the reason printed. One real save file
 measured from any of them is what would unblock it.
 
+### Game Boy: the progress syncs, the clock does not
+
+mGBA keeps a Game Boy game's real-time clock **inside the save file**, in 48
+bytes after the save itself; Delta and RetroArch keep it in a separate file.
+Those 48 bytes are dropped on the way to Delta and never rebuilt on the way
+back, because mGBA writes its own whenever it opens a save that has none — the
+save's own bytes come through untouched either way.
+
+What that costs you is the clock, not the game: progress syncs in full, but a
+game waiting real hours for berries or a daily event may think no time has
+passed. The sync says so once, the first time it touches a Game Boy save.
+
 ### What clears a write
 
-None of these emulators has been run by this project, so nothing is written on
-the strength of a documented format. Where the emulator has **already written a
-save for that game**, that file is measured before anything replaces it — its
-size, and whether it is gzip-compressed or carries a DeSmuME footer. If it is
-not the same kind of file as Delta's, nothing is written and the reason is
-printed. That is a stronger check than any table, because it is evidence from
-the emulator itself rather than a claim about it.
+Most of these emulators have never been run by this project, so nothing is
+written on the strength of a documented format. (mGBA and Mupen64Plus are the
+exceptions — both were run against real ROMs, and the details they need were
+measured from the files they produced rather than read out of their source.)
+
+Where the emulator has **already written a save for that game**, that file is
+measured before anything replaces it — its size, and whether it is
+gzip-compressed or carries a DeSmuME footer. If it is not the same kind of file
+as Delta's, nothing is written and the reason is printed. That is a stronger
+check than any table, because it is evidence from the emulator itself rather
+than a claim about it.
 
 As everywhere else here, a save about to be overwritten is backed up first, and
 a genuine conflict is reported rather than resolved.

@@ -72,6 +72,12 @@ class SaveFile:
 
     extension: str
     blocked: str = ""
+    #: Bytes this emulator appends *after* the save, which Delta does not store.
+    #:
+    #: 0 for every row whose file is exactly the cartridge's storage, which is
+    #: most of them. Non-zero is only ever written here from a measured file --
+    #: see :data:`MGBA_GB_CLOCK_TRAILER`, the one case found so far.
+    trailer: int = 0
 
 
 @dataclass(frozen=True)
@@ -143,6 +149,22 @@ class Emulator:
         return N64_EXTENSIONS[region.name]
 
 
+#: What mGBA appends to a Game Boy save when the cartridge has a clock.
+#:
+#: Measured against a real file rather than read out of the source, because the
+#: whole point is what lands on disk: mGBA wrote 32,816 bytes for Pokemon
+#: Crystal where Delta and Gambatte both store 32,768. The extra 48 are ten
+#: little-endian ``uint32`` clock registers followed by a 64-bit Unix timestamp
+#: -- the same timestamp Gambatte keeps in its separate 8-byte ``.rtc``.
+#:
+#: Two measured facts about *when* it is written decide everything downstream.
+#: mGBA appends it on **load**, not when the player saves, so a save copied in
+#: from Delta grows by 48 bytes the first time the game is opened. And it
+#: rewrites the timestamp on **every launch**, so the file changes even if
+#: nobody plays. Fingerprinting the whole file would therefore report progress
+#: that does not exist and push a clock tick home as if it were a save.
+MGBA_GB_CLOCK_TRAILER = 48
+
 #: Every standalone emulator this tool knows how to place a save for.
 #:
 #: The save shapes come from the same survey recorded in ``docs/research.md``.
@@ -155,8 +177,21 @@ EMULATORS: dict[str, Emulator] = {
         executables=("mGBA.exe", "mgba-qt.exe"),
         uninstall_match="mGBA",
         # mGBA runs GBA and Game Boy / Color from the same binary and writes a
-        # raw .sav for both, which is the same shape Delta stores.
-        saves={"gba": SaveFile("sav"), "gbc": SaveFile("sav")},
+        # raw .sav for both, named after the ROM file and beside it -- measured
+        # 2026-09-11 by running 0.10.5 with the save absent and reading back
+        # what appeared. Accented characters in the ROM name survive verbatim.
+        #
+        # The two rows differ only in the clock block. Fire Red's save came back
+        # at exactly 131,072 bytes, the flash size and the size Delta stores;
+        # Crystal's came back 48 bytes longer. GBA cartridges with a clock
+        # (Ruby, Sapphire, Emerald) are the untested case -- no such ROM was on
+        # hand, so the GBA row claims no trailer rather than guessing at one,
+        # and a file that does turn up longer is refused by `check_shape`
+        # instead of being trimmed on a hunch.
+        saves={
+            "gba": SaveFile("sav"),
+            "gbc": SaveFile("sav", trailer=MGBA_GB_CLOCK_TRAILER),
+        },
         where=Where.BESIDE_ROM,
         config=ConfigKey(
             files=("{install}/config.ini", "{appdata}/mGBA/config.ini"),
@@ -166,9 +201,11 @@ EMULATORS: dict[str, Emulator] = {
         # choosing mGBA over Gambatte, and it is invisible until the in-game
         # clock is wrong. Same gate as `System.clock_cores`.
         note=(
-            "Game Boy Color clock files are not synced to mGBA: it stores the "
-            "clock as a 48-byte struct where Gambatte stores eight bytes, and "
-            "only Gambatte's layout has been checked against a real file."
+            "Your Game Boy Color progress syncs to mGBA, but the in-game clock "
+            "does not: mGBA keeps the clock in the save file itself while Delta "
+            "and RetroArch keep it in a separate one. mGBA starts a fresh clock "
+            "when it opens the save, so a game that waits real hours for berries "
+            "or a daily event may think no time has passed."
         ),
     ),
     "vbam": Emulator(
@@ -482,15 +519,22 @@ def find_executable(emulator: Emulator, extra_dirs: tuple[Path, ...] = ()) -> Pa
     """Locate one emulator's executable, or None.
 
     ``extra_dirs`` is for folders the user has named -- a config override, or the
-    folder a sibling emulator was found in, since people keep them together. The
-    registry sources come first because they are what the machine itself says.
+    folder a sibling emulator was found in, since people keep them together.
+
+    Those come **first**, ahead of the registry. The registry used to lead, on
+    the reasoning that it is what the machine itself says; but what the machine
+    says is a guess about which copy is meant, and ``emulator_paths`` in
+    config.toml is the user saying so outright. Someone with two copies of mGBA
+    who points the config at one of them was silently synced to the other --
+    saves written into an install they were not playing, with nothing on screen
+    to say which one had been chosen.
     """
     from . import discovery
 
-    directories = list(discovery.install_dirs(
+    directories = list(extra_dirs)
+    directories.extend(discovery.install_dirs(
         emulator.executables, emulator.uninstall_match
     ))
-    directories.extend(extra_dirs)
 
     for directory in directories:
         for executable in emulator.executables:
@@ -542,13 +586,18 @@ def find_installed(extra_dirs: tuple[Path, ...] = ()) -> list[Installed]:
 def _from_registry_or_named(
     emulator: Emulator, extra_dirs: Sequence[Path]
 ) -> Path | None:
-    """The cheap half of :func:`find_executable`, with no directory walk."""
+    """The cheap half of :func:`find_executable`, with no directory walk.
+
+    Same order as :func:`find_executable`, and it has to stay the same order:
+    this is the one that actually runs during a sync, so a disagreement between
+    the two would mean the launcher reporting one install and writing to another.
+    """
     from . import discovery
 
-    directories = list(
+    directories = list(extra_dirs)
+    directories.extend(
         discovery.install_dirs(emulator.executables, emulator.uninstall_match)
     )
-    directories.extend(extra_dirs)
     for directory in directories:
         for executable in emulator.executables:
             candidate = Path(directory) / executable
@@ -873,7 +922,43 @@ GZIP_MAGIC = b"\x1f\x8b"
 DESMUME_MARKER = b"|-DESMUME SAVE-|"
 
 
-def check_shape(existing: bytes, incoming: bytes) -> str | None:
+def is_storage_size(size: int) -> bool:
+    """Whether a length could be a cartridge's own battery-backed storage.
+
+    Every such size on every system here is a power of two -- 512-byte and 8 KiB
+    EEPROM, 32 KiB SRAM, 64 and 128 KiB flash -- and that is the whole test. It
+    is what separates "this file is the save" from "this file is the save with
+    something appended", without having to know which game it belongs to.
+    """
+    return size > 0 and size & (size - 1) == 0
+
+
+def split_trailer(data: bytes, layout: SaveFile | None) -> tuple[bytes, bytes]:
+    """The save itself, and whatever the emulator appended after it.
+
+    Conditional, because the trailer is not always there. The same game's save
+    is 32,768 bytes in Delta, 32,768 the moment it is copied in, and 32,816 once
+    mGBA has opened it -- one file, two lengths, both legitimate. So the length
+    decides rather than the emulator: a file that is already a storage size is
+    all save, and one that is a storage size *plus* this emulator's trailer has
+    a trailer to set aside.
+
+    Nothing is ever reconstructed from this. The trailer is dropped on the way
+    to Delta and never rebuilt on the way back, because mGBA writes its own when
+    it loads a save that has none -- measured, and it leaves the save's bytes
+    untouched while doing it.
+    """
+    if layout is None or layout.trailer <= 0:
+        return data, b""
+    body = len(data) - layout.trailer
+    if body > 0 and is_storage_size(body) and not is_storage_size(len(data)):
+        return data[:body], data[body:]
+    return data, b""
+
+
+def check_shape(
+    existing: bytes, incoming: bytes, layout: SaveFile | None = None
+) -> str | None:
     """Why the save already on disk must not be overwritten, or None.
 
     This is what actually clears a write, and it is deliberately not a table
@@ -883,7 +968,14 @@ def check_shape(existing: bytes, incoming: bytes) -> str | None:
     The three findings are all the same finding -- the file on disk is not the
     shape Delta's save is -- and each one means a plain copy would replace a
     working save with something the emulator cannot read.
+
+    ``layout`` names a trailer to set aside first, where the emulator is known
+    to append one. Without it the size rule refuses mGBA's Game Boy saves
+    forever: 32,816 against Delta's 32,768 is a genuine difference, but it is
+    the clock block rather than a different kind of file, and refusing on it
+    would mean no Game Boy save ever reached mGBA after its first run.
     """
+    existing, _ = split_trailer(existing, layout)
     if existing.startswith(GZIP_MAGIC) and not incoming.startswith(GZIP_MAGIC):
         return (
             "the save already there is gzip-compressed and Delta's is not, so "

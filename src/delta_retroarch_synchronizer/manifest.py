@@ -22,11 +22,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 MANIFEST_FILENAME = "manifest.json"
+
+#: Narrows a file's bytes to the part that is the save, for emulators that
+#: append their own bookkeeping. Supplied by the caller -- what counts as the
+#: save is the emulator's business, and this module deliberately knows nothing
+#: about any particular one.
+Body = Callable[[bytes], bytes]
 
 #: Seconds between the Unix epoch and Apple's 2001-01-01 reference date, used
 #: by Delta's Core Data `modifiedDate`.
@@ -55,23 +62,39 @@ class FileState:
     size: int
 
     @classmethod
-    def of(cls, path: Path) -> "FileState":
+    def of(cls, path: Path, *, body: "Body | None" = None) -> "FileState":
+        if body is not None:
+            return cls.of_bytes(body(path.read_bytes()))
         return cls(sha1=sha1_of(path), size=path.stat().st_size)
 
-    def matches(self, path: Path) -> bool:
+    @classmethod
+    def of_bytes(cls, data: bytes) -> "FileState":
+        return cls(sha1=hashlib.sha1(data).hexdigest(), size=len(data))
+
+    def matches(self, path: Path, *, body: "Body | None" = None) -> bool:
         """True if the file on disk is unchanged from this recorded state.
 
         Size is checked first because it is free and rules out most changes; the
         hash is what actually decides. Timestamps are deliberately not used --
         Dropbox rewrites mtimes on sync, so an mtime comparison reports changes
         that never happened.
+
+        ``body`` narrows all of that to the part of the file that is the save.
+        Some emulators append their own bookkeeping -- mGBA writes a clock block
+        after a Game Boy save and restamps it on every launch -- and hashing
+        that would call opening a game "the player made progress". It has to be
+        passed to ``of`` and ``matches`` alike, or a state recorded one way is
+        compared the other and never matches.
         """
         try:
-            if path.stat().st_size != self.size:
+            if body is None and path.stat().st_size != self.size:
                 return False
         except OSError:
             return False
-        return sha1_of(path) == self.sha1
+        try:
+            return FileState.of(path, body=body) == self
+        except OSError:
+            return False
 
 
 @dataclass
@@ -311,6 +334,7 @@ class Manifest:
         delta: Path | None,
         desktop: Path | None,
         target: str = RETROARCH,
+        desktop_body: "Body | None" = None,
     ) -> None:
         """Record Delta and one desktop target as agreed, after a copy.
 
@@ -322,12 +346,21 @@ class Manifest:
         Only this target's pair is touched, *including its Delta half*. Writing
         the Delta half globally is what made the second target go stale: it said
         "Delta is agreed" on behalf of emulators that had not seen the new save.
+
+        ``desktop_body`` applies only to the desktop half, because only that
+        side has an emulator appending to it. Delta's own copy is always the
+        save and nothing else, which is the reason a trailer has to be dropped
+        on the way home rather than recorded and forgiven.
         """
         self.entries[identifier] = self.entries.get(identifier, Entry()).with_agreement(
             target,
             Agreement(
                 delta=FileState.of(delta) if delta and delta.is_file() else None,
-                desktop=FileState.of(desktop) if desktop and desktop.is_file() else None,
+                desktop=(
+                    FileState.of(desktop, body=desktop_body)
+                    if desktop and desktop.is_file()
+                    else None
+                ),
             ),
         )
 
