@@ -1,0 +1,537 @@
+"""Standalone emulators as a sync target, alongside RetroArch.
+
+RetroArch is one program with one config, so the whole of ``discovery.py`` can
+ask it where its saves go. A standalone emulator is a different problem in three
+ways, and only the first is about file formats:
+
+1. **The emulator owns the save format, not the frontend.** RetroArch's frontend
+   writes the ``.srm`` itself, which is why every system except N64 is a plain
+   copy there *whatever core is loaded*. Nothing like that is true here: mGBA,
+   Nestopia and DeSmuME each decide their own layout, so "it worked on RetroArch"
+   carries no weight at all.
+2. **There is usually no central save folder.** Most of these default to writing
+   the save *beside the ROM*, and the ones that do not disagree about where.
+3. **Most of them ship as a zip.** No installer, so no uninstall registry entry
+   and no App Paths registration -- see :func:`discovery.muicache_dirs`, which is
+   often the only registry source that knows a standalone emulator exists.
+
+The N64 row is the one that gets *easier*. RetroArch's mupen64plus-next packs
+every storage type into one 296,960-byte ``.srm`` (see ``n64.py``); standalone
+mupen64plus and Project64 write separate ``.eep`` / ``.sra`` / ``.fla`` files,
+which is the shape Delta already stores. So a standalone N64 save is a copy with
+the right extension chosen by size, and no conversion at all.
+
+**Nothing here writes on the strength of a documented format.** Where a save
+already exists, its bytes are measured before anything is overwritten -- see
+:func:`check_shape`, which is what actually clears a write. Documentation says
+Nestopia's ``.sav`` is raw on Windows and gzip on macOS; that is exactly the kind
+of claim this module refuses to bet a save on.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+
+from . import n64
+
+#: Delta writes a bare dump of whichever storage the cartridge has, and the four
+#: sizes are distinct, so the size names the file extension a standalone N64
+#: emulator expects. ``n64.BY_SIZE`` already does the first half of this.
+N64_EXTENSIONS: dict[str, str] = {
+    "EEPROM": "eep",
+    "SRAM": "sra",
+    "FlashRAM": "fla",
+}
+
+
+class Where(Enum):
+    """Where an emulator puts a save when its config does not say otherwise."""
+
+    BESIDE_ROM = "beside the ROM"
+    OWN_FOLDER = "a folder of its own"
+
+
+@dataclass(frozen=True)
+class SaveFile:
+    """How one emulator stores one system's battery save.
+
+    ``extension`` empty means the save's *size* names the extension, which is
+    true only of N64 -- see :func:`extension_for`.
+
+    ``blocked`` is the same gate as ``System.converted_cores`` in ``systems.py``,
+    for the same reason and with the same bias: an emulator whose layout is
+    known to differ from Delta's is refused outright rather than written to and
+    hoped about. An emulator that is merely *unmeasured* is not blocked -- it is
+    checked against its own existing save at write time instead.
+    """
+
+    extension: str
+    blocked: str = ""
+
+
+@dataclass(frozen=True)
+class ConfigKey:
+    """A setting in an emulator's own config file that names its save folder.
+
+    Treated as a hint, never as the answer. Every one of these is read
+    opportunistically: if the file is missing, or the key is absent, or it names
+    a folder that does not exist, resolution moves on to the next source. That
+    keeps a wrong guess about some emulator's config format from being able to
+    send a save anywhere -- the worst case is that it contributes nothing.
+    """
+
+    #: Candidate paths, with ``{install}``, ``{appdata}`` and ``{localappdata}``
+    #: substituted. Portable copies keep their config beside the executable, so
+    #: that candidate comes first wherever both are possible.
+    files: tuple[str, ...]
+    key: str
+
+
+@dataclass(frozen=True)
+class Emulator:
+    key: str
+    name: str
+    #: Filenames to look for in the registry and on disk. Matched whole, so an
+    #: installer's own executable is not mistaken for the program.
+    executables: tuple[str, ...]
+    #: Substring of the uninstall entry's DisplayName, for the ones that have an
+    #: installer. Empty for the zip-only ones, which is most of them.
+    uninstall_match: str = ""
+    #: System key -> how this emulator stores that system's save.
+    saves: dict[str, SaveFile] = field(default_factory=dict)
+    where: Where = Where.BESIDE_ROM
+    #: Candidate save folders when ``where`` is OWN_FOLDER, same substitutions
+    #: as ``ConfigKey.files``.
+    save_dirs: tuple[str, ...] = ()
+    config: ConfigKey | None = None
+    note: str = ""
+
+    def handles(self, system_key: str) -> bool:
+        return system_key in self.saves
+
+    def extension_for(self, system_key: str, save_size: int) -> str:
+        """The extension this emulator wants, given Delta's save size.
+
+        The size only matters for N64, where it names the storage type and
+        therefore the file. Everything else ignores it.
+        """
+        layout = self.saves[system_key]
+        if layout.extension:
+            return layout.extension
+        region = n64.BY_SIZE.get(save_size)
+        if region is None:
+            raise ValueError(
+                f"{save_size} bytes is not one of the four N64 storage sizes, "
+                "so there is no way to tell which file it belongs in"
+            )
+        return N64_EXTENSIONS[region.name]
+
+
+#: Every standalone emulator this tool knows how to place a save for.
+#:
+#: The save shapes come from the same survey recorded in ``docs/research.md``.
+#: What is written here is which file the emulator reads, not a promise about
+#: its contents -- the contents are settled per-save by :func:`check_shape`.
+EMULATORS: dict[str, Emulator] = {
+    "mgba": Emulator(
+        key="mgba",
+        name="mGBA",
+        executables=("mGBA.exe", "mgba-qt.exe"),
+        uninstall_match="mGBA",
+        # mGBA runs GBA and Game Boy / Color from the same binary and writes a
+        # raw .sav for both, which is the same shape Delta stores.
+        saves={"gba": SaveFile("sav"), "gbc": SaveFile("sav")},
+        where=Where.BESIDE_ROM,
+        config=ConfigKey(
+            files=("{install}/config.ini", "{appdata}/mGBA/config.ini"),
+            key="savegamePath",
+        ),
+        # Said out loud because it is the one thing a GBC player loses by
+        # choosing mGBA over Gambatte, and it is invisible until the in-game
+        # clock is wrong. Same gate as `System.clock_cores`.
+        note=(
+            "Game Boy Color clock files are not synced to mGBA: it stores the "
+            "clock as a 48-byte struct where Gambatte stores eight bytes, and "
+            "only Gambatte's layout has been checked against a real file."
+        ),
+    ),
+    "vbam": Emulator(
+        key="vbam",
+        name="VisualBoyAdvance-M",
+        executables=("visualboyadvance-m.exe",),
+        uninstall_match="visualboyadvance",
+        # The same emulator Delta runs for GBA, which is as close to a matching
+        # pair as this table gets.
+        saves={"gba": SaveFile("sav"), "gbc": SaveFile("sav")},
+        where=Where.BESIDE_ROM,
+        config=ConfigKey(
+            files=(
+                "{install}/vbam.ini",
+                "{appdata}/visualboyadvance-m/vbam.ini",
+            ),
+            key="batteryDir",
+        ),
+    ),
+    "snes9x": Emulator(
+        key="snes9x",
+        name="Snes9x",
+        executables=("snes9x.exe", "snes9x-x64.exe"),
+        uninstall_match="snes9x",
+        # Delta runs snes9x too, and Delta's own save extension is already .srm.
+        saves={"snes": SaveFile("srm")},
+        where=Where.OWN_FOLDER,
+        save_dirs=("{install}/Saves", "{install}/Sram"),
+        note=(
+            "Snes9x has kept its saves in more than one place across versions. "
+            "An existing .srm found on disk is preferred over any of these."
+        ),
+    ),
+    "nestopia": Emulator(
+        key="nestopia",
+        name="Nestopia UE",
+        executables=("nestopia.exe",),
+        uninstall_match="nestopia",
+        # Blocked rather than merely unmeasured. The nesdev thread that reports
+        # the compression also carries the correction that Windows writes raw --
+        # so the likely outcome is that this is a plain copy, and "likely" is
+        # not what a save is worth. One real file settles it and unblocks it.
+        saves={
+            "nes": SaveFile(
+                "sav",
+                blocked=(
+                    "Nestopia compresses its save on some platforms and writes "
+                    "it raw on others, and no real Windows file has been "
+                    "measured here. Writing a raw save over a compressed one "
+                    "would destroy it"
+                ),
+            )
+        },
+        where=Where.BESIDE_ROM,
+    ),
+    "melonds": Emulator(
+        key="melonds",
+        name="melonDS",
+        executables=("melonDS.exe",),
+        # The same emulator Delta runs for DS, and Delta's payload was measured
+        # raw -- 524,288 bytes with no DeSmuME footer. See systems.py.
+        saves={"ds": SaveFile("sav")},
+        where=Where.BESIDE_ROM,
+        config=ConfigKey(
+            files=("{install}/melonDS.ini", "{localappdata}/melonDS/melonDS.ini"),
+            key="SaveFilePath",
+        ),
+    ),
+    "desmume": Emulator(
+        key="desmume",
+        name="DeSmuME",
+        executables=("DeSmuME.exe",),
+        uninstall_match="desmume",
+        # The trap this project already walked into from the other direction.
+        # Delta declares DeSmuME's .dsv extension while running melonDS, and its
+        # payload is raw -- so it is *not* a .dsv, and handing DeSmuME one would
+        # give it a save with no footer where it requires one.
+        saves={
+            "ds": SaveFile(
+                "dsv",
+                blocked=(
+                    "DeSmuME's .dsv is raw save data plus a footer ending in "
+                    "'|-DESMUME SAVE-|', and Delta's save is raw with no footer "
+                    "despite sharing the extension. Copying one to the other "
+                    "needs a conversion nobody has written or tested"
+                ),
+            )
+        },
+        where=Where.BESIDE_ROM,
+    ),
+    "mupen64plus": Emulator(
+        key="mupen64plus",
+        name="Mupen64Plus",
+        executables=("mupen64plus-ui-console.exe", "mupen64plus-gui.exe"),
+        # The prize. Delta stores one storage whole and so does this, so the
+        # conversion RetroArch needs disappears: it is a copy, to a filename
+        # the save's own size chooses.
+        saves={"n64": SaveFile("")},
+        where=Where.OWN_FOLDER,
+        # The install-relative one is for a portable copy, which keeps its whole
+        # data directory beside the executable rather than under %APPDATA%.
+        save_dirs=("{appdata}/Mupen64Plus/save", "{install}/save"),
+        config=ConfigKey(
+            files=("{appdata}/Mupen64Plus/mupen64plus.cfg",),
+            key="SaveSRAMPath",
+        ),
+    ),
+    "project64": Emulator(
+        key="project64",
+        name="Project64",
+        executables=("Project64.exe",),
+        uninstall_match="project64",
+        saves={
+            "n64": SaveFile(
+                "",
+                blocked=(
+                    "Project64 has shipped versions that store SRAM and "
+                    "FlashRAM byte-swapped relative to mupen64plus, and no real "
+                    "file has been measured here to say which this one does. "
+                    "Use Mupen64Plus, where the bytes are known to match"
+                ),
+            )
+        },
+        where=Where.OWN_FOLDER,
+        save_dirs=("{install}/Save", "{appdata}/Project64/Save"),
+        config=ConfigKey(
+            files=("{install}/Project64.cfg",),
+            key="Save Directory",
+        ),
+    ),
+    "sameboy": Emulator(
+        key="sameboy",
+        name="SameBoy",
+        executables=("sameboy.exe", "SameBoy.exe"),
+        saves={"gbc": SaveFile("sav")},
+        where=Where.BESIDE_ROM,
+        note=(
+            "Game Boy Color clock files are not synced to SameBoy: its clock "
+            "layout has not been checked against a real file."
+        ),
+    ),
+    "bgb": Emulator(
+        key="bgb",
+        name="BGB",
+        executables=("bgb.exe", "bgb64.exe"),
+        saves={"gbc": SaveFile("sav")},
+        where=Where.BESIDE_ROM,
+        note=(
+            "Game Boy Color clock files are not synced to BGB: its clock "
+            "layout has not been checked against a real file."
+        ),
+    ),
+}
+
+
+def for_key(key: str) -> Emulator | None:
+    return EMULATORS.get(key)
+
+
+def handling(system_key: str) -> list[Emulator]:
+    """Every emulator in the table that runs this system, blocked or not."""
+    return [e for e in EMULATORS.values() if e.handles(system_key)]
+
+
+def _substitutions(install: Path | None) -> dict[str, str]:
+    return {
+        "install": str(install) if install is not None else "",
+        "appdata": os.environ.get("APPDATA", ""),
+        "localappdata": os.environ.get("LOCALAPPDATA", ""),
+    }
+
+
+def _expand(template: str, install: Path | None) -> Path | None:
+    """Fill a templated path, or None when the variable it needs is unset.
+
+    A missing ``%APPDATA%`` would otherwise produce a path rooted at the drive,
+    which is both wrong and the kind of wrong that creates folders.
+    """
+    values = _substitutions(install)
+    for name, value in values.items():
+        marker = "{" + name + "}"
+        if marker in template:
+            if not value:
+                return None
+            template = template.replace(marker, value)
+    return Path(template)
+
+
+@dataclass
+class Installed:
+    """One standalone emulator found on this machine."""
+
+    emulator: Emulator
+    executable: Path
+
+    @property
+    def install_dir(self) -> Path:
+        return self.executable.parent
+
+    @property
+    def name(self) -> str:
+        return self.emulator.name
+
+
+def find_executable(emulator: Emulator, extra_dirs: tuple[Path, ...] = ()) -> Path | None:
+    """Locate one emulator's executable, or None.
+
+    ``extra_dirs`` is for folders the user has named -- a config override, or the
+    folder a sibling emulator was found in, since people keep them together. The
+    registry sources come first because they are what the machine itself says.
+    """
+    from . import discovery
+
+    directories = list(discovery.install_dirs(
+        emulator.executables, emulator.uninstall_match
+    ))
+    directories.extend(extra_dirs)
+
+    for directory in directories:
+        for executable in emulator.executables:
+            candidate = directory / executable
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def find_installed(extra_dirs: tuple[Path, ...] = ()) -> list[Installed]:
+    """Every emulator from the table that is actually on this machine."""
+    found: list[Installed] = []
+    for emulator in EMULATORS.values():
+        executable = find_executable(emulator, extra_dirs)
+        if executable is not None:
+            found.append(Installed(emulator, executable))
+    return found
+
+
+_SETTING = re.compile(r'^\s*(?P<key>[^=;#\[\]]+?)\s*=\s*"?(?P<value>.*?)"?\s*$')
+
+
+def read_setting(path: Path, key: str) -> str:
+    """Read one ``key = value`` setting out of an emulator's config.
+
+    Section-blind on purpose. These files are INI-shaped but not consistently
+    so, the keys wanted here are distinctive enough not to collide, and being
+    wrong about a section name would silently return nothing -- which is the
+    same as the file being missing, and is handled the same way.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    wanted = key.strip().lower()
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped[0] in "#;[":
+            continue
+        match = _SETTING.match(line)
+        if match and match["key"].strip().lower() == wanted:
+            return match["value"].strip()
+    return ""
+
+
+@dataclass
+class SaveLocation:
+    """Where this emulator's saves go, and how that was decided.
+
+    ``source`` is carried so the launcher can print it. "Beside the ROM" and
+    "its config says" are very different confidence levels, and someone whose
+    save went somewhere unexpected needs to know which one they got.
+    """
+
+    directory: Path | None
+    source: str
+
+    @property
+    def found(self) -> bool:
+        return self.directory is not None
+
+
+def resolve_save_dir(
+    installed: Installed,
+    rom_dir: Path | None,
+    *,
+    override: Path | None = None,
+    observed: Path | None = None,
+) -> SaveLocation:
+    """Decide where to put a save for this emulator, best evidence first.
+
+    The order is the point. Evidence beats construction:
+
+    1. What the user set, which ends the argument.
+    2. **An existing save found on disk**, which is the machine telling us where
+       this emulator actually writes rather than us telling it. Passed in by the
+       caller, because finding it needs the filename we are about to use.
+    3. The emulator's own config, when it has the key and the folder exists.
+    4. A candidate folder that exists.
+    5. Beside the ROM, which is the documented default for most of these.
+    """
+    if override is not None:
+        return SaveLocation(override, "set in config.toml")
+
+    if observed is not None:
+        return SaveLocation(observed.parent, f"where {observed.name} already is")
+
+    emulator = installed.emulator
+    if emulator.config is not None:
+        for template in emulator.config.files:
+            config_path = _expand(template, installed.install_dir)
+            if config_path is None or not config_path.is_file():
+                continue
+            raw = read_setting(config_path, emulator.config.key)
+            if not raw:
+                continue
+            # Relative paths in these files are relative to the install.
+            named = Path(os.path.expandvars(raw)).expanduser()
+            if not named.is_absolute():
+                named = installed.install_dir / named
+            if named.is_dir():
+                return SaveLocation(named, f"{config_path.name} says so")
+
+    for template in emulator.save_dirs:
+        candidate = _expand(template, installed.install_dir)
+        if candidate is not None and candidate.is_dir():
+            return SaveLocation(candidate, "its usual folder")
+
+    if emulator.where is Where.BESIDE_ROM and rom_dir is not None:
+        return SaveLocation(rom_dir, "beside the ROM, which is its default")
+
+    return SaveLocation(
+        None,
+        "could not be determined -- set it in config.toml under "
+        f"[emulators.{emulator.key}]",
+    )
+
+
+#: gzip, which is the shape Nestopia is reported to write on some platforms.
+GZIP_MAGIC = b"\x1f\x8b"
+
+#: DeSmuME stamps this at the end of a .dsv. Delta's DS save carries the same
+#: extension and none of this, which is exactly why it is checked for.
+DESMUME_MARKER = b"|-DESMUME SAVE-|"
+
+
+def check_shape(existing: bytes, incoming: bytes) -> str | None:
+    """Why the save already on disk must not be overwritten, or None.
+
+    This is what actually clears a write, and it is deliberately not a table
+    lookup: it measures the user's own file at the moment it matters, which is
+    the only evidence available about an emulator nobody here has run.
+
+    The three findings are all the same finding -- the file on disk is not the
+    shape Delta's save is -- and each one means a plain copy would replace a
+    working save with something the emulator cannot read.
+    """
+    if existing.startswith(GZIP_MAGIC) and not incoming.startswith(GZIP_MAGIC):
+        return (
+            "the save already there is gzip-compressed and Delta's is not, so "
+            "this emulator does not store saves the way Delta does"
+        )
+    if existing.endswith(DESMUME_MARKER) and not incoming.endswith(DESMUME_MARKER):
+        return (
+            "the save already there ends in DeSmuME's footer and Delta's does "
+            "not, so this emulator wants a wrapped save rather than a raw one"
+        )
+    if len(existing) != len(incoming):
+        return (
+            f"the save already there is {len(existing):,} bytes and Delta's is "
+            f"{len(incoming):,}, so the two are not the same kind of file"
+        )
+    return None
+
+
+def blocked_reason(emulator: Emulator, system_key: str) -> str | None:
+    """Why this emulator will not be written to for this system, or None."""
+    layout = emulator.saves.get(system_key)
+    if layout is None:
+        return f"{emulator.name} does not run this system"
+    return layout.blocked or None

@@ -331,6 +331,63 @@ If automatic discovery gets a path wrong, copy `config.example.toml` to
 `config.toml` and override it. `config.toml` is gitignored, because this
 repository is public and that file holds machine-specific absolute paths.
 
+## Standalone emulators instead of RetroArch
+
+RetroArch is the default target, not the only one. If you play on mGBA,
+Mupen64Plus, Snes9x, melonDS, SameBoy or BGB, saves can be synced into those
+too, and into several at once — each keeps its own agreed state with Delta, so
+syncing a game to RetroArch *and* to mGBA is two independent agreements rather
+than one fighting itself.
+
+See what is here:
+
+```bash
+python -m delta_retroarch_synchronizer emulators
+```
+
+That reports every emulator it found, which systems each one would sync, where
+its saves go and how that was worked out. It writes nothing. To actually sync
+into one, name it in `config.toml`:
+
+```toml
+[emulators]
+enabled = ["mgba", "mupen64plus"]
+```
+
+Being installed is deliberately not the same as being enabled. Having mGBA on
+the machine is not a statement that these games should be synced into it.
+
+**Nintendo 64 is the one case where dropping RetroArch removes work.** RetroArch's
+mupen64plus-next packs EEPROM, SRAM, FlashRAM and four Controller Paks into a
+single 296,960-byte `.srm`, so syncing to it needs a real conversion. Standalone
+Mupen64Plus writes separate `.eep` / `.sra` / `.fla` files — which is exactly the
+shape Delta already stores. So there is no conversion at all: the save is copied,
+and its own size chooses which of the three files it is.
+
+### Three emulators are recognised but refused
+
+| Emulator | Why |
+| --- | --- |
+| Nestopia UE | Its `.sav` is compressed on some platforms and raw on others. Windows is reported to be raw, and "reported" is not the standard a save is held to here. |
+| DeSmuME | Its `.dsv` is raw data plus a footer ending `\|-DESMUME SAVE-\|`. Delta's DS save shares the extension and has no footer, so this needs a conversion nobody has written. |
+| Project64 | Some versions store SRAM and FlashRAM byte-swapped relative to Mupen64Plus. Use Mupen64Plus, where the bytes are known to match. |
+
+Each one is still found and listed, with the reason printed. One real save file
+measured from any of them is what would unblock it.
+
+### What clears a write
+
+None of these emulators has been run by this project, so nothing is written on
+the strength of a documented format. Where the emulator has **already written a
+save for that game**, that file is measured before anything replaces it — its
+size, and whether it is gzip-compressed or carries a DeSmuME footer. If it is
+not the same kind of file as Delta's, nothing is written and the reason is
+printed. That is a stronger check than any table, because it is evidence from
+the emulator itself rather than a claim about it.
+
+As everywhere else here, a save about to be overwritten is backed up first, and
+a genuine conflict is reported rather than resolved.
+
 ## How matching works
 
 Delta's Dropbox folder is flat and its filenames are hashes, not game names:

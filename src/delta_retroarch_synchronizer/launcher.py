@@ -38,7 +38,9 @@ from . import addons, n64, paks, processes, restore, savestate
 from . import tray as tray_module
 from . import shortcut as shortcut_module
 from . import theme
+from . import emulators as emulators_module
 from . import inspect as inspect_module
+from . import manifest as manifest_module
 from . import sync as sync_module
 from . import systems
 
@@ -121,11 +123,60 @@ def change_lines(applied: list["sync_module.Outcome"]) -> list[str]:
         if outcome.action is sync_module.Action.PUSH:
             direction = "sent to Delta"
         elif outcome.action is sync_module.Action.PULL:
-            direction = "brought to RetroArch"
+            direction = f"brought to {outcome.target}"
         else:
-            direction = outcome.action.value
+            direction = outcome.description
         lines.append(f"{outcome.game} — {direction}")
     return lines
+
+
+def sync_emulators(
+    paths: "sync_module.Paths",
+    entries: list,
+    config: "config_module.Config",
+    dropbox: "dropbox_api.DropboxClient | None",
+) -> list["sync_module.Outcome"]:
+    """Reconcile every enabled standalone emulator, in one manifest pass.
+
+    Module level, like ``backup_row``, so the window's sync loop stays readable
+    and so what it does can be checked without a Tk display.
+
+    One manifest for the whole pass: each emulator keeps its own agreed
+    state inside it, so loading and saving per emulator would be the same
+    result with several times the I/O.
+    """
+    chosen = set(config.emulators_enabled)
+    if not chosen:
+        return []
+
+    extra = tuple(
+        raw.parent if raw.is_file() else raw
+        for raw in config.emulator_paths.values()
+    )
+    outcomes: list[sync_module.Outcome] = []
+    state = manifest_module.Manifest.load(paths.manifest_path)
+    for installed in emulators_module.find_installed(extra):
+        if installed.emulator.key not in chosen:
+            continue
+        for entry in entries:
+            if entry.system is None or not installed.emulator.handles(
+                entry.system.key
+            ):
+                continue
+            outcomes.extend(
+                sync_module.sync_emulator(
+                    paths,
+                    entry,
+                    installed,
+                    rom_dir=config.retroarch_rom_dir,
+                    override=config.emulator_save_dirs.get(installed.emulator.key),
+                    allow_push=config.push_enabled,
+                    dropbox=dropbox,
+                    state=state,
+                )
+            )
+    state.save()
+    return outcomes
 
 
 def backup_row(point: "restore.RestorePoint") -> tuple[str, str, str, str]:
@@ -2426,10 +2477,24 @@ class LauncherWindow:
                 if outcome.applied:
                     applied.append(outcome)
                 level = self._level_for(outcome)
-                self._say(f"  {outcome.game}: {outcome.action.value}", level)
+                self._say(f"  {outcome.game}: {outcome.description}", level)
                 self._say(f"      {outcome.detail}", level)
             if not any(o.action is not sync_module.Action.NOTHING for o in report.outcomes):
                 self._say(f"  {entry.name}: already up to date", "muted")
+
+        # Standalone emulators, for the ones turned on in config.toml. The same
+        # pass the `sync` command makes -- kept in step with it deliberately,
+        # because an emulator that syncs from the command line and silently does
+        # nothing from this window is worse than one that is not supported.
+        for outcome in sync_emulators(paths, entries, config, dropbox):
+            if outcome.action is sync_module.Action.NOTHING and not outcome.applied:
+                continue
+            changed_anything = True
+            if outcome.applied:
+                applied.append(outcome)
+            level = self._level_for(outcome)
+            self._say(f"  {outcome.game}: {outcome.description}", level)
+            self._say(f"      {outcome.detail}", level)
 
         # The log auto-scrolls, so the last thing written is the only thing
         # guaranteed to be on screen. That makes the bottom the right place for

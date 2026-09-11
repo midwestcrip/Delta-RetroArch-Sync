@@ -10,6 +10,8 @@ from pathlib import Path
 from . import config as config_module
 from . import delta_writer, discovery, dropbox_api, health, paths, restore, savestate
 from . import inspect as inspect_module
+from . import emulators as emulators_module
+from . import manifest
 from . import sync as sync_module
 from . import systems
 
@@ -433,12 +435,42 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
         )
         report.outcomes.extend(single.outcomes)
 
+    # Standalone emulators, after RetroArch and only for the ones turned on.
+    # Each keeps its own agreement with Delta, so syncing to several is several
+    # independent reconciles rather than one with several destinations.
+    chosen = set(config.emulators_enabled)
+    if chosen:
+        state = manifest.Manifest.load(sync_paths.manifest_path)
+        for installed in installed_emulators(config):
+            if installed.emulator.key not in chosen:
+                continue
+            for entry in syncable:
+                if entry.system is None or not installed.emulator.handles(
+                    entry.system.key
+                ):
+                    continue
+                report.outcomes.extend(
+                    sync_module.sync_emulator(
+                        sync_paths,
+                        entry,
+                        installed,
+                        rom_dir=rom_dir,
+                        override=config.emulator_save_dirs.get(installed.emulator.key),
+                        dry_run=dry_run,
+                        allow_push=allow_push,
+                        dropbox=dropbox,
+                        state=state,
+                    )
+                )
+        if not dry_run:
+            state.save()
+
     header = "Sync (dry run -- nothing written)" if dry_run else "Sync"
     print(f"\n{header}\n")
     for outcome in report.outcomes:
         mark = "*" if outcome.applied else " "
         print(f"  {mark} {outcome.game}")
-        print(f"      {outcome.action.value}: {outcome.detail}")
+        print(f"      {outcome.description}: {outcome.detail}")
 
     if report.conflicts:
         print(
@@ -448,6 +480,83 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
         return 2
     if missing:
         return 1
+    return 0
+
+
+def installed_emulators(
+    config: "config_module.Config",
+) -> list["emulators_module.Installed"]:
+    """Every standalone emulator found, including any the user pointed at.
+
+    A path in config.toml may name either the executable or the folder holding
+    it, because both are things someone reasonably types when asked where a
+    program is.
+    """
+    extra: list[Path] = []
+    for raw in config.emulator_paths.values():
+        extra.append(raw.parent if raw.is_file() else raw)
+    return emulators_module.find_installed(tuple(extra))
+
+
+def run_emulators_command() -> int:
+    """Report which standalone emulators are here and what each one would do.
+
+    Reporting is unconditional and writing is opt-in, which is the shape the
+    naive-user tests kept asking for: a feature nobody can see is one nobody
+    turns on, and an emulator being installed is not a statement that saves
+    should be written into it.
+    """
+    config = config_module.load()
+    found = installed_emulators(config)
+
+    print("\nStandalone emulators\n")
+    if not found:
+        print("  None found.")
+        print(
+            "  Most of these ship as a zip rather than an installer, so they "
+            "are only\n  found once they have been run at least once. If you "
+            "have one, name its\n  folder in config.toml:\n"
+        )
+        print("      [emulators.mgba]")
+        print('      path = "C:/Emulators/mGBA"')
+        return 1
+
+    enabled = set(config.emulators_enabled)
+    for installed in found:
+        emulator = installed.emulator
+        mark = "*" if emulator.key in enabled else " "
+        print(f"  {mark} {emulator.name}  ({installed.executable})")
+
+        for system_key in sorted(emulator.saves):
+            system = systems.SYSTEMS[system_key]
+            blocked = emulators_module.blocked_reason(emulator, system_key)
+            if blocked is not None:
+                print(f"      {system.name}: not synced -- {blocked}.")
+            elif system_key not in systems.ENABLED_SYSTEMS:
+                print(f"      {system.name}: not synced -- system not enabled.")
+            else:
+                print(f"      {system.name}: ready")
+
+        location = emulators_module.resolve_save_dir(
+            installed,
+            config.retroarch_rom_dir,
+            override=config.emulator_save_dirs.get(emulator.key),
+        )
+        if location.found:
+            print(f"      saves: {location.directory} ({location.source})")
+        else:
+            print(f"      saves: {location.source}")
+
+        if emulator.note:
+            print(f"      note: {emulator.note}")
+        if emulator.key not in enabled:
+            print(f"      to sync to it, add \"{emulator.key}\" to:")
+            print("          [emulators]")
+            print('          enabled = [...]')
+        print()
+
+    if not enabled:
+        print("  Nothing is enabled, so nothing is written to any of them.")
     return 0
 
 
@@ -603,6 +712,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Show what would happen without writing anything.",
     )
     subparsers.add_parser(
+        "emulators",
+        help="List standalone emulators found here and what each would sync.",
+    )
+    subparsers.add_parser(
         "backups", help="List the saves and cheats that can be put back."
     )
     restore_parser = subparsers.add_parser(
@@ -676,6 +789,8 @@ def main(argv: list[str] | None = None) -> int:
         return inspect_module.run()
     if args.command == "sync":
         return run_sync_command(dry_run=args.dry_run, allow_push=args.push)
+    if args.command == "emulators":
+        return run_emulators_command()
     if args.command == "backups":
         return run_backups_command()
     if args.command == "restore":

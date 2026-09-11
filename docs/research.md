@@ -967,8 +967,24 @@ Confirmed live on 2026-09-05 against `C:\Media\Games\Emulators\RetroArch`:
 
 ## Standalone emulators instead of RetroArch
 
-Surveyed 2026-09-07, not yet built. Mostly a discovery-and-naming problem rather
-than a format one — with two traps that must be measured rather than assumed.
+Surveyed 2026-09-07; **built 2026-09-10** as `emulators.py` plus
+`sync.sync_emulator`. Mostly a discovery-and-naming problem rather than a format
+one — with two traps that must be measured rather than assumed.
+
+The survey's prediction held: it was another table plus its own discovery, not a
+new architecture. Two things it did not predict:
+
+- **The manifest needed a per-target slot.** `Entry` had one desktop side, and a
+  second target sharing it makes every sync look like a change the other side
+  made. `Entry.targets` keyed by emulator fixed that — and keying `decide`'s
+  first-sync branch on the entry as a whole rather than on *this target* left a
+  real data-loss path: a newly enabled emulator with its own save read as
+  "Delta unchanged, target changed" and pushed that save to the phone.
+- **The gate is per-save, not per-emulator.** Nothing here has run any of these
+  emulators, so `check_shape` measures the file the emulator has already written
+  before replacing it — size, gzip magic, DeSmuME footer. That is stronger than
+  the table, because it is evidence from the emulator rather than a claim about
+  it. Nestopia, DeSmuME and Project64 are additionally blocked outright.
 
 | Delta core | Standalone equivalent | Save shape | Note |
 | --- | --- | --- | --- |

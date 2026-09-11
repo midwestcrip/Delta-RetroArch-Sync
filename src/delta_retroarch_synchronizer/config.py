@@ -9,7 +9,7 @@ config.example.toml for the accepted keys.
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import paths as paths_module
@@ -29,6 +29,20 @@ class Config:
     retroarch_rom_dir: Path | None = None
     #: Path to retroarch.exe, for the launcher.
     retroarch_exe: Path | None = None
+
+    #: Standalone emulators to sync to, by key -- "mgba", "mupen64plus" and so
+    #: on. Empty by default, which is the whole of the opt-in: every installed
+    #: emulator is *found* and reported, and none is written to until it is
+    #: named here. Having mGBA installed is not a statement that these games
+    #: should be synced into it.
+    emulators_enabled: tuple[str, ...] = ()
+    #: Where each emulator is installed, when discovery cannot find it. The
+    #: value may be the executable or the folder holding it.
+    emulator_paths: dict[str, Path] = field(default_factory=dict)
+    #: Where each emulator keeps its saves, when its own config does not say and
+    #: the default is wrong. This is the setting the tool tells you to write
+    #: when it cannot work the folder out for itself.
+    emulator_save_dirs: dict[str, Path] = field(default_factory=dict)
 
     #: Write desktop saves back into Delta's Dropbox folder. Off by default:
     #: Delta assumes it is the only writer to that folder, so pushing is the
@@ -79,6 +93,30 @@ def load(path: Path | None = None) -> Config:
         value = options.get(key, default)
         return bool(value) if isinstance(value, bool) else default
 
+    # [emulators] holds one list plus a subtable per emulator, so its own keys
+    # and its subtables are read separately. A malformed section reads as no
+    # section at all rather than raising: this file is hand-edited, and a typo
+    # in an optional setting should not stop the tool from starting.
+    raw_emulators = data.get("emulators")
+    emulators = raw_emulators if isinstance(raw_emulators, dict) else {}
+    enabled_raw = emulators.get("enabled")
+    enabled = (
+        tuple(str(key) for key in enabled_raw if isinstance(key, str))
+        if isinstance(enabled_raw, list)
+        else ()
+    )
+    emulator_paths: dict[str, Path] = {}
+    emulator_save_dirs: dict[str, Path] = {}
+    for key, section in emulators.items():
+        if not isinstance(section, dict):
+            continue
+        install = _path(section.get("path"))
+        if install is not None:
+            emulator_paths[str(key)] = install
+        save_dir = _path(section.get("save_dir"))
+        if save_dir is not None:
+            emulator_save_dirs[str(key)] = save_dir
+
     return Config(
         delta_folder=_path(paths.get("delta_folder")),
         retroarch_config=_path(paths.get("retroarch_config")),
@@ -96,6 +134,9 @@ def load(path: Path | None = None) -> Config:
         shortcuts_offered=flag(
             "shortcuts_offered", flag("start_menu_offered", False)
         ),
+        emulators_enabled=enabled,
+        emulator_paths=emulator_paths,
+        emulator_save_dirs=emulator_save_dirs,
     )
 
 
@@ -133,5 +174,27 @@ def save(config: Config, path: Path | None = None) -> Path:
         f"shortcuts_offered = {str(config.shortcuts_offered).lower()}",
         "",
     ]
+
+    # Written back rather than dropped. The launcher saves this whole file
+    # whenever any setting changes, so anything omitted here is deleted by the
+    # next press of Save settings -- which would quietly un-enable an emulator
+    # the user had configured by hand.
+    keys = sorted(
+        set(config.emulators_enabled)
+        | set(config.emulator_paths)
+        | set(config.emulator_save_dirs)
+    )
+    if keys or config.emulators_enabled:
+        listed = ", ".join(f'"{key}"' for key in config.emulators_enabled)
+        body += ["[emulators]", f"enabled = [{listed}]", ""]
+        for key in keys:
+            section = [f"[emulators.{key}]"]
+            if key in config.emulator_paths:
+                section.append(line("path", config.emulator_paths[key]))
+            if key in config.emulator_save_dirs:
+                section.append(line("save_dir", config.emulator_save_dirs[key]))
+            if len(section) > 1:
+                body += section + [""]
+
     path.write_text("\n".join(body) + "\n", encoding="utf-8")
     return path

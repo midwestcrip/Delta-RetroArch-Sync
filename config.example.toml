@@ -26,3 +26,43 @@
 # Only needed to use your own Dropbox app registration instead of the bundled
 # one. See docs/dropbox-app.md. The App *key*, never the App secret.
 # dropbox_app_key = ""
+
+# Standalone emulators, as a sync target alongside RetroArch.
+#
+# Every emulator below is *found* automatically and reported by the `emulators`
+# command whether or not it is listed here. Listing it is what allows saves to
+# be written into it: having mGBA installed is not a statement that these games
+# should be synced into it.
+#
+# Each emulator keeps its own agreed state with Delta, so syncing the same game
+# to RetroArch and to mGBA is two independent agreements rather than one.
+#
+# Known keys, and what each one runs:
+#
+#   mgba          Game Boy Advance, Game Boy / Color
+#   vbam          Game Boy Advance, Game Boy / Color
+#   snes9x        Super Nintendo
+#   melonds       Nintendo DS
+#   mupen64plus   Nintendo 64
+#   sameboy       Game Boy / Color
+#   bgb           Game Boy / Color
+#
+# Three more are recognised but refuse to be written to, because their save
+# layout is known or suspected to differ from Delta's and no real file has been
+# measured here to settle it. `emulators` prints the reason for each:
+#
+#   nestopia      NES -- may compress its save
+#   desmume       DS  -- wants a footered .dsv; Delta's is raw
+#   project64     N64 -- some versions byte-swap SRAM and FlashRAM
+#
+# [emulators]
+# enabled = ["mgba", "mupen64plus"]
+
+# Per emulator, both optional. `path` is only needed when the emulator cannot be
+# found -- most ship as a zip rather than an installer, so they are only found
+# once they have been run at least once. `save_dir` is only needed when the tool
+# says it could not work out where the saves go.
+#
+# [emulators.mgba]
+# path = "C:/Emulators/mGBA"
+# save_dir = "D:/Saves/GBA"

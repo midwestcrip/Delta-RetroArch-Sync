@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -99,18 +99,57 @@ class CheatState:
         return cls(code="")
 
 
+#: The manifest's name for RetroArch, which has its own field rather than a slot
+#: in ``targets`` because it was here first and its shape is already on disk in
+#: every existing manifest.
+RETROARCH = "retroarch"
+
+
 @dataclass
 class Entry:
-    """The agreed state of one game's save on both sides."""
+    """The agreed state of one game's save on Delta and on each desktop target.
+
+    There can be more than one desktop side. Someone syncing the same game to
+    RetroArch and to standalone mGBA has two independent agreements to keep, and
+    collapsing them into one field would make each sync look like a change the
+    other side had made -- every run reporting a conflict that is really just the
+    other emulator's copy.
+    """
 
     delta: FileState | None = None
     retroarch: FileState | None = None
+    #: Agreed state per standalone emulator, keyed by ``Emulator.key``.
+    targets: dict[str, FileState] = field(default_factory=dict)
+
+    def desktop(self, target: str = RETROARCH) -> FileState | None:
+        """The agreed state for one desktop target."""
+        if target == RETROARCH:
+            return self.retroarch
+        return self.targets.get(target)
+
+    def with_desktop(self, target: str, state: FileState | None) -> "Entry":
+        """A copy with one target's state replaced and the others untouched."""
+        if target == RETROARCH:
+            return Entry(delta=self.delta, retroarch=state, targets=dict(self.targets))
+        targets = dict(self.targets)
+        if state is None:
+            targets.pop(target, None)
+        else:
+            targets[target] = state
+        return Entry(delta=self.delta, retroarch=self.retroarch, targets=targets)
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "delta": asdict(self.delta) if self.delta else None,
             "retroarch": asdict(self.retroarch) if self.retroarch else None,
         }
+        # Omitted entirely when empty, so a manifest from a machine that only
+        # uses RetroArch keeps the shape it has always had.
+        if self.targets:
+            payload["targets"] = {
+                key: asdict(state) for key, state in sorted(self.targets.items())
+            }
+        return payload
 
     @classmethod
     def from_json(cls, raw: Any) -> "Entry":
@@ -122,7 +161,19 @@ class Entry:
                 return FileState(sha1=str(value["sha1"]), size=int(value["size"]))
             return None
 
-        return cls(delta=state(raw.get("delta")), retroarch=state(raw.get("retroarch")))
+        stored = raw.get("targets")
+        targets: dict[str, FileState] = {}
+        if isinstance(stored, dict):
+            for key, value in stored.items():
+                parsed = state(value)
+                if parsed is not None:
+                    targets[str(key)] = parsed
+
+        return cls(
+            delta=state(raw.get("delta")),
+            retroarch=state(raw.get("retroarch")),
+            targets=targets,
+        )
 
 
 class Manifest:
@@ -199,15 +250,26 @@ class Manifest:
         return self.entries.get(identifier, Entry())
 
     def record(
-        self, identifier: str, delta: Path | None, retroarch: Path | None
+        self,
+        identifier: str,
+        delta: Path | None,
+        desktop: Path | None,
+        target: str = RETROARCH,
     ) -> None:
-        """Record both sides as agreed, after a successful copy."""
-        self.entries[identifier] = Entry(
-            delta=FileState.of(delta) if delta and delta.is_file() else None,
-            retroarch=(
-                FileState.of(retroarch) if retroarch and retroarch.is_file() else None
-            ),
+        """Record Delta and one desktop target as agreed, after a copy.
+
+        Merged into whatever is already stored rather than replacing it, so
+        recording a sync to one emulator does not erase the agreement with
+        another -- which would leave the next run with no history for it and
+        report a conflict.
+        """
+        existing = self.entries.get(identifier, Entry())
+        updated = existing.with_desktop(
+            target,
+            FileState.of(desktop) if desktop and desktop.is_file() else None,
         )
+        updated.delta = FileState.of(delta) if delta and delta.is_file() else None
+        self.entries[identifier] = updated
 
     def cheat_code(self, identifier: str) -> str | None:
         """The last agreed code for one cheat, or None if there is no history."""

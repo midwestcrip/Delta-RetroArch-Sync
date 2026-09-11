@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -143,13 +143,18 @@ def find_delta_folder() -> Discovery:
     )
 
 
-def _registry_retroarch_dirs() -> list[Path]:
-    """Ask Windows where RetroArch was installed.
+def dirs_from_uninstall(match: str) -> list[Path]:
+    """Ask Windows where a program whose DisplayName contains ``match`` lives.
 
-    RetroArch's installer lets you put it anywhere, so a candidate list of
-    "usual" paths misses real installs. The uninstall registry entry is
-    authoritative. InstallLocation is often blank for this installer, but
-    DisplayIcon points at retroarch.exe, so fall back to its parent directory.
+    An installer lets you put a program anywhere, so a candidate list of "usual"
+    paths misses real installs. The uninstall registry entry is authoritative.
+    InstallLocation is often blank -- it is for RetroArch's installer -- but
+    DisplayIcon points at the executable, so fall back to its parent directory.
+
+    ``match`` is compared case-insensitively against DisplayName. It is a
+    substring rather than an equality test because publishers append versions
+    ("mGBA 0.10.3"), and it is matched against the *display* name rather than
+    the key name because the key is often a GUID.
     """
     try:
         import winreg
@@ -162,6 +167,7 @@ def _registry_retroarch_dirs() -> list[Path]:
         (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
     ]
 
+    wanted = match.lower()
     found: list[Path] = []
     for hive, subkey in hives:
         try:
@@ -174,7 +180,7 @@ def _registry_retroarch_dirs() -> list[Path]:
                     name = winreg.EnumKey(root, index)
                     with winreg.OpenKey(root, name) as entry:
                         display = str(winreg.QueryValueEx(entry, "DisplayName")[0])
-                        if "retroarch" not in display.lower():
+                        if wanted not in display.lower():
                             continue
                         for value, is_exe in (
                             ("InstallLocation", False),
@@ -196,6 +202,10 @@ def _registry_retroarch_dirs() -> list[Path]:
     return found
 
 
+def _registry_retroarch_dirs() -> list[Path]:
+    return dirs_from_uninstall("retroarch")
+
+
 #: Windows records the full path of every executable the user has actually run,
 #: keyed as "<path>.FriendlyAppName" and "<path>.ApplicationCompany".
 _MUICACHE_KEY = (
@@ -204,11 +214,26 @@ _MUICACHE_KEY = (
 _MUICACHE_SUFFIXES = (".FriendlyAppName", ".ApplicationCompany")
 
 
-def retroarch_dirs_from_muicache(names: Iterable[str]) -> list[Path]:
-    """Pull retroarch.exe's directory out of MuiCache value names.
+def _executable_name(path: str) -> str:
+    """The filename part of a Windows path, lowercased.
+
+    Not ``Path(path).name``: MuiCache stores Windows paths, and this module is
+    imported on non-Windows when the tests run there, where ``Path`` would treat
+    the whole backslash string as one filename.
+    """
+    return path.replace("/", "\\").rpartition("\\")[2].lower()
+
+
+def dirs_from_muicache(names: Iterable[str], executables: Sequence[str]) -> list[Path]:
+    """Pull an executable's directory out of MuiCache value names.
 
     Separated from the registry read so it can be tested without a registry.
+
+    The match is on the whole filename rather than a suffix, which is what keeps
+    ``RetroArch-Win64-setup.exe`` from being read as an install: running the
+    installer leaves a MuiCache entry of its own, and its directory is Downloads.
     """
+    wanted = {name.lower() for name in executables}
     directories: list[Path] = []
     for name in names:
         trimmed = name
@@ -218,7 +243,7 @@ def retroarch_dirs_from_muicache(names: Iterable[str]) -> list[Path]:
                 break
         else:
             continue
-        if not trimmed.lower().endswith("retroarch.exe"):
+        if _executable_name(trimmed) not in wanted:
             continue
         directory = Path(trimmed).parent
         if directory not in directories:
@@ -226,10 +251,15 @@ def retroarch_dirs_from_muicache(names: Iterable[str]) -> list[Path]:
     return directories
 
 
-def _muicache_retroarch_dirs() -> list[Path]:
-    """Where RetroArch has been run from, which finds portable copies.
+def retroarch_dirs_from_muicache(names: Iterable[str]) -> list[Path]:
+    """RetroArch's own case of :func:`dirs_from_muicache`."""
+    return dirs_from_muicache(names, ("retroarch.exe",))
 
-    The uninstall registry only knows about installs made by the installer, and
+
+def muicache_dirs(executables: Sequence[str]) -> list[Path]:
+    """Where a program has been run from, which finds portable copies.
+
+    The uninstall registry only knows about installs made by an installer, and
     it keeps pointing at them after the folder is deleted. A RetroArch extracted
     from the portable zip is invisible to it. On this project's own machine the
     uninstall entry named a stale C:\\RetroArch-Win64 that no longer existed
@@ -237,7 +267,10 @@ def _muicache_retroarch_dirs() -> list[Path]:
     so discovery reported nothing and the user had to set the path by hand.
 
     MuiCache is the difference: Windows writes an entry the first time you run
-    an executable, wherever it lives.
+    an executable, wherever it lives. That matters more for the standalone
+    emulators than it does for RetroArch -- most of them ship as a zip with no
+    installer at all, so the uninstall registry knows nothing about them and
+    this is the only registry source that does.
     """
     try:
         import winreg
@@ -256,26 +289,65 @@ def _muicache_retroarch_dirs() -> list[Path]:
                 names.append(winreg.EnumValue(key, index)[0])
             except OSError:
                 continue
-    return retroarch_dirs_from_muicache(names)
+    return dirs_from_muicache(names, executables)
 
 
-def _app_paths_retroarch_dir() -> list[Path]:
-    """The App Paths registration, when RetroArch's installer wrote one."""
+def _muicache_retroarch_dirs() -> list[Path]:
+    return muicache_dirs(("retroarch.exe",))
+
+
+def dirs_from_app_paths(executables: Sequence[str]) -> list[Path]:
+    """The App Paths registration, when an installer wrote one."""
     try:
         import winreg
     except ImportError:
         return []
 
-    subkey = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\retroarch.exe"
-    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
-        try:
-            with winreg.OpenKey(hive, subkey) as key:
-                raw = str(winreg.QueryValueEx(key, "")[0]).strip('"').strip()
-        except OSError:
-            continue
-        if raw:
-            return [Path(raw).parent]
-    return []
+    found: list[Path] = []
+    for executable in executables:
+        subkey = (
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths" "\\" + executable
+        )
+        for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                with winreg.OpenKey(hive, subkey) as key:
+                    raw = str(winreg.QueryValueEx(key, "")[0]).strip('"').strip()
+            except OSError:
+                continue
+            if raw:
+                directory = Path(raw).parent
+                if directory not in found:
+                    found.append(directory)
+                break
+    return found
+
+
+def _app_paths_retroarch_dir() -> list[Path]:
+    return dirs_from_app_paths(("retroarch.exe",))
+
+
+def install_dirs(executables: Sequence[str], uninstall_match: str = "") -> list[Path]:
+    """Every directory on this machine that might hold one of ``executables``.
+
+    The three registry sources answer different questions and none of them is
+    sufficient alone: App Paths and the uninstall list only know about installers,
+    and both keep naming a folder after it is deleted, while MuiCache only knows
+    what has actually been run. Most standalone emulators ship as a plain zip, so
+    for them MuiCache is usually the only source that says anything at all.
+
+    Nothing here checks that the directory still exists -- the caller filters by
+    looking for the file it actually wants, which is what makes it safe to
+    consult sources that go stale.
+    """
+    found: list[Path] = []
+    sources = [dirs_from_app_paths(executables), muicache_dirs(executables)]
+    if uninstall_match:
+        sources.insert(0, dirs_from_uninstall(uninstall_match))
+    for source in sources:
+        for directory in source:
+            if directory not in found:
+                found.append(directory)
+    return found
 
 
 def _config_candidates() -> list[Path]:

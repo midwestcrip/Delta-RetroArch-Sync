@@ -25,7 +25,7 @@ from . import clock, harmony
 from . import delta_writer, dropbox_api
 from . import inspect as inspect_module
 from . import manifest as manifest_module
-from . import n64, naming, playlist
+from . import emulators, n64, naming, playlist
 
 #: The RetroArch -> Delta direction writes into Delta's Dropbox folder, which
 #: Delta's own docs warn against. It is off by default and enabled per run.
@@ -58,6 +58,12 @@ class Outcome:
     game: str
     action: Action
     detail: str = ""
+    #: Which desktop side this outcome is about. The Action's own wording names
+    #: RetroArch, which was true of every outcome until standalone emulators
+    #: became a target and is now wrong for most of them -- a save copied into
+    #: mGBA was reported as "pull: Delta -> RetroArch", naming a program that
+    #: had not been touched.
+    target: str = "RetroArch"
     applied: bool = False
     #: Set when the action was attempted and went wrong, as opposed to being
     #: declined or left alone. A refusal ("not pushed, no Dropbox auth") is a
@@ -65,6 +71,15 @@ class Outcome:
     #: differently. Kept structural so the severity cannot drift away from the
     #: wording of the message.
     failed: bool = False
+
+    @property
+    def description(self) -> str:
+        """The action, naming the side it actually happened to."""
+        if self.action is Action.PULL:
+            return f"pull: Delta -> {self.target}"
+        if self.action is Action.PUSH:
+            return f"push: {self.target} -> Delta"
+        return self.action.value
 
 
 @dataclass
@@ -84,24 +99,44 @@ def decide(
     entry: manifest_module.Entry,
     delta_save: Path | None,
     retroarch_save: Path | None,
+    *,
+    target: str = manifest_module.RETROARCH,
+    label: str = "RetroArch",
 ) -> tuple[Action, str]:
     """Work out what to do for one game, from the two files and the manifest.
 
     Pure: it reads file contents but changes nothing, so the decision can be
     tested and shown to the user (``--dry-run``) before anything is written.
+
+    ``target`` names which desktop side is being reconciled, because there can
+    be more than one -- RetroArch and any standalone emulator each keep their
+    own agreement with Delta. ``label`` is the same thing said for a human, and
+    is only ever used in the returned explanation.
     """
     delta_exists = delta_save is not None and delta_save.is_file()
     retro_exists = retroarch_save is not None and retroarch_save.is_file()
+    agreed_desktop = entry.desktop(target)
 
     if not delta_exists and not retro_exists:
         return Action.MISSING, "neither side has a save"
 
-    # First sync for this game: whichever side has the only save is the source.
-    if entry.delta is None and entry.retroarch is None:
+    # First sync for this game *to this target*: whichever side has the only
+    # save is the source.
+    #
+    # Keyed on this target's own history, not on the entry as a whole. It used
+    # to also require ``entry.delta is None``, which was indistinguishable while
+    # RetroArch was the only target -- ``record`` writes both halves together --
+    # and became wrong the moment a second one existed. Enabling a new emulator
+    # that already had its own save for a game gave: Delta unchanged since the
+    # last RetroArch sync, this target "changed" because it has no history, so
+    # PUSH -- quietly sending that emulator's unrelated save to the phone and
+    # over the real one, with no conflict reported. Now it is a conflict, which
+    # is what two saves and no history has always meant here.
+    if agreed_desktop is None:
         if delta_exists and not retro_exists:
             return Action.PULL, "first sync, only Delta has a save"
         if retro_exists and not delta_exists:
-            return Action.PUSH, "first sync, only RetroArch has a save"
+            return Action.PUSH, f"first sync, only {label} has a save"
         # Both exist with no agreed history. They may be identical, in which
         # case there is nothing to do and nothing to lose.
         assert delta_save is not None and retroarch_save is not None
@@ -116,9 +151,9 @@ def decide(
     # treating a vanished RetroArch save as "RetroArch changed" would mean
     # pushing a deletion to Delta and wiping the save on the phone too.
     if not retro_exists:
-        return Action.PULL, "RetroArch's save is missing; restoring from Delta"
+        return Action.PULL, f"{label}'s save is missing; restoring from Delta"
     if not delta_exists:
-        return Action.PUSH, "Delta's save is missing; restoring from RetroArch"
+        return Action.PUSH, f"Delta's save is missing; restoring from {label}"
 
     delta_changed = not (
         entry.delta is not None
@@ -126,9 +161,9 @@ def decide(
         and entry.delta.matches(delta_save)
     )
     retro_changed = not (
-        entry.retroarch is not None
+        agreed_desktop is not None
         and retroarch_save is not None
-        and entry.retroarch.matches(retroarch_save)
+        and agreed_desktop.matches(retroarch_save)
     )
 
     if delta_changed and retro_changed:
@@ -136,7 +171,7 @@ def decide(
     if delta_changed:
         return Action.PULL, "Delta changed since the last sync"
     if retro_changed:
-        return Action.PUSH, "RetroArch changed since the last sync"
+        return Action.PUSH, f"{label} changed since the last sync"
     return Action.NOTHING, "unchanged on both sides"
 
 
@@ -1217,3 +1252,257 @@ def run_sync(
     if not dry_run:
         state.save()
     return report
+
+
+# --- standalone emulators ---------------------------------------------------
+#
+# The same reconcile, against an emulator that owns its own save format. Kept
+# apart from `run_sync` rather than folded into it because the standalone path
+# genuinely has less to do -- no core name deciding the folder, no combined
+# `.srm` to merge into, no playlist, no cheat database -- and because the one
+# thing it has that RetroArch does not is a shape check on the file it is about
+# to overwrite. See `emulators.check_shape`.
+
+
+def emulator_search_dirs(
+    installed: emulators.Installed, rom_dir: Path | None
+) -> list[Path]:
+    """Where a save for this emulator could already be sitting.
+
+    Deliberately a short list of named folders rather than a walk. These are
+    ordinary user folders -- someone's ROM library is plausibly tens of
+    thousands of files across a network drive -- and the question being asked is
+    only "has this emulator written here before", which its own folders and the
+    ROM folder answer.
+    """
+    directories: list[Path] = []
+    for candidate in (
+        rom_dir,
+        installed.install_dir,
+        *(
+            emulators._expand(template, installed.install_dir)
+            for template in installed.emulator.save_dirs
+        ),
+    ):
+        if candidate is not None and candidate not in directories:
+            directories.append(candidate)
+    return directories
+
+
+def find_emulator_save(
+    installed: emulators.Installed,
+    entry: inspect_module.GameEntry,
+    rom_dir: Path | None,
+) -> Path | None:
+    """An existing save this emulator has already written for this game.
+
+    Worth more than any constructed path: it is the machine saying where this
+    emulator writes, rather than this table saying where it ought to. Every
+    extension the emulator could use is checked, because for N64 the extension
+    depends on the cartridge and Delta may have no save to name it.
+    """
+    system = entry.system
+    if system is None or not installed.emulator.handles(system.key):
+        return None
+
+    layout = installed.emulator.saves[system.key]
+    extensions = (
+        (layout.extension,)
+        if layout.extension
+        else tuple(emulators.N64_EXTENSIONS.values())
+    )
+
+    for directory in emulator_search_dirs(installed, rom_dir):
+        if not directory.is_dir():
+            continue
+        for extension in extensions:
+            candidate = directory / naming.save_filename(entry.name, extension)
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def emulator_target(
+    installed: emulators.Installed,
+    entry: inspect_module.GameEntry,
+    rom_dir: Path | None,
+    *,
+    override: Path | None = None,
+) -> tuple[Path | None, str]:
+    """Where this game's save belongs for this emulator, and why -- or why not.
+
+    The filename always comes from Delta's save size when Delta has a save, even
+    when an existing file was found under a different one. For N64 that size
+    names the cartridge's storage type, so it is the authority on which of
+    ``.eep`` / ``.sra`` / ``.fla`` this cartridge uses; a file on disk with a
+    different extension belongs to a different dump, not to this save. The
+    existing file is used to locate the *folder* and nothing else.
+    """
+    system = entry.system
+    assert system is not None
+
+    existing = find_emulator_save(installed, entry, rom_dir)
+    location = emulators.resolve_save_dir(
+        installed, rom_dir, override=override, observed=existing
+    )
+    if location.directory is None:
+        return None, location.source
+
+    if entry.save_path is not None and entry.save_path.is_file():
+        try:
+            extension = installed.emulator.extension_for(
+                system.key, entry.save_path.stat().st_size
+            )
+        except ValueError as error:
+            return None, str(error)
+    elif existing is not None:
+        # Nothing from Delta to name the file, so the file that is already
+        # there names itself. This is the push direction.
+        extension = existing.suffix.lstrip(".")
+    else:
+        return None, "neither side has a save"
+
+    filename = naming.save_filename(entry.name, extension)
+    return location.directory / filename, location.source
+
+
+def sync_emulator(
+    paths: Paths,
+    entry: inspect_module.GameEntry,
+    installed: emulators.Installed,
+    *,
+    rom_dir: Path | None = None,
+    override: Path | None = None,
+    dry_run: bool = False,
+    allow_push: bool = False,
+    dropbox: "dropbox_api.DropboxClient | None" = None,
+    state: manifest_module.Manifest | None = None,
+) -> list[Outcome]:
+    """Reconcile one game between Delta and one standalone emulator.
+
+    Returns the outcomes rather than a report, so a caller syncing several
+    emulators can gather them into one.
+    """
+    emulator = installed.emulator
+    system = entry.system
+    name = f"{entry.name} [{emulator.name}]"
+
+    def made(action: Action, detail: str, **flags: bool) -> Outcome:
+        """One outcome, already naming the emulator it is about.
+
+        Every outcome below goes through this. ``Action.PULL``'s own wording is
+        "pull: Delta -> RetroArch", which was true of every outcome this program
+        produced until standalone emulators became a target -- so a save copied
+        into mGBA reported a program that had not been touched. Constructing
+        them in one place is what keeps a branch added later from reintroducing
+        that.
+        """
+        return Outcome(name, action, detail, target=emulator.name, **flags)
+
+    if system is None or not entry.supported:
+        return [made(Action.SKIPPED, "system not enabled for sync")]
+
+    blocked = emulators.blocked_reason(emulator, system.key)
+    if blocked is not None:
+        return [made(Action.SKIPPED, blocked)]
+
+    target, why = emulator_target(installed, entry, rom_dir, override=override)
+    if target is None:
+        return [made(Action.SKIPPED, why)]
+
+    if state is None:
+        state = manifest_module.Manifest.load(paths.manifest_path)
+        owned = True
+    else:
+        owned = False
+
+    # Before the decision, not inside the pull branch. Nobody here has run this
+    # emulator, so what it writes is unknown -- except where it has already
+    # written something, which is evidence and is treated as such.
+    #
+    # It comes first because a shape mismatch outranks every action `decide`
+    # could return, including a conflict. "Both sides changed, resolve it by
+    # hand" invites someone to pick a side, and picking either side is wrong
+    # when the two files are not the same kind of file: this emulator does not
+    # store saves the way Delta does, and no choice between them fixes that.
+    if target.is_file() and entry.save_path is not None and entry.save_path.is_file():
+        try:
+            mismatch = emulators.check_shape(
+                target.read_bytes(), entry.save_path.read_bytes()
+            )
+        except OSError as error:
+            return [made(Action.SKIPPED, f"FAILED: {error}", failed=True)]
+        if mismatch is not None:
+            return [
+                made(
+                    Action.SKIPPED,
+                    f"not written: {mismatch}. Nothing was changed.",
+                )
+            ]
+
+    action, detail = decide(
+        state.get(entry.identifier),
+        entry.save_path,
+        target,
+        target=emulator.key,
+        label=emulator.name,
+    )
+
+    outcomes: list[Outcome] = []
+
+    if action is Action.PULL:
+        assert entry.save_path is not None
+
+        if dry_run:
+            return [made(Action.PULL, f"{detail}; would write {target}")]
+
+        saved = backup(target, paths.backup_dir)
+        try:
+            copy_atomically(entry.save_path, target)
+        except OSError as error:
+            return [made(Action.PULL, f"FAILED: {error}", failed=True)]
+        state.record(entry.identifier, entry.save_path, target, emulator.key)
+
+        note = f"{detail}; copied to {target} ({why})"
+        if saved is not None:
+            note += " (previous version backed up)"
+        outcomes.append(made(Action.PULL, note, applied=True))
+
+    elif action is Action.PUSH:
+        if not allow_push:
+            outcomes.append(
+                made(Action.PUSH, f"{detail}; not pushed (pass --push to enable)")
+            )
+        elif dry_run:
+            outcomes.append(made(Action.PUSH, f"{detail} (dry run)"))
+        elif dropbox is None:
+            outcomes.append(
+                made(Action.PUSH, f"{detail}; {delta_writer.REVISION_MUST_BE_REAL}")
+            )
+        else:
+            # No staging step, unlike RetroArch. A standalone emulator stores one
+            # cartridge storage per file, which is already the shape Delta wants,
+            # so what is on disk is what goes home -- including for N64, where
+            # the RetroArch path has to extract a region from the combined .srm.
+            try:
+                pushed = push_with_revision(paths, entry, target, dropbox)
+            except (OSError, ValueError, dropbox_api.DropboxError) as error:
+                outcomes.append(
+                    made(Action.PUSH, f"{detail}; FAILED: {error}", failed=True)
+                )
+            else:
+                state.record(entry.identifier, entry.save_path, target, emulator.key)
+                outcomes.append(made(Action.PUSH, f"{detail}; {pushed}", applied=True))
+
+    else:
+        outcomes.append(made(action, detail))
+
+    # Said once per game per emulator rather than every run, like the pak notice.
+    if emulator.note and not state.already_said(f"{emulator.key}-note"):
+        outcomes.append(made(Action.NOTHING, emulator.note))
+        if not dry_run:
+            state.record_said(f"{emulator.key}-note")
+
+    if owned and not dry_run:
+        state.save()
+    return outcomes
