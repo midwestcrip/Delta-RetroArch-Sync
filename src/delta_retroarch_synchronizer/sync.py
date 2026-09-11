@@ -1375,7 +1375,9 @@ def run_sync(
 
 
 def emulator_search_dirs(
-    installed: emulators.Installed, rom_dir: Path | None
+    installed: emulators.Installed,
+    rom_dir: Path | None,
+    override: Path | None = None,
 ) -> list[Path]:
     """Where a save for this emulator could already be sitting.
 
@@ -1384,9 +1386,23 @@ def emulator_search_dirs(
     thousands of files across a network drive -- and the question being asked is
     only "has this emulator written here before", which its own folders and the
     ROM folder answer.
+
+    **The first entry is where the sync itself would write**, via
+    ``resolve_save_dir``, rather than a list assembled here. Assembling one by
+    hand left out the two answers only that function knows -- the folder set as
+    ``save_dir`` in config.toml, and the folder the emulator's own config names
+    -- so a save sitting in either was invisible. With nothing in Delta to
+    compare against, that reads as "neither side has a save" and the desktop's
+    progress is never pushed to the phone: the one direction where being wrong
+    loses something that exists nowhere else.
+
+    The hand-built candidates still follow, because a save written before the
+    emulator's config changed is exactly the one somebody wants found.
     """
     directories: list[Path] = []
+    resolved = emulators.resolve_save_dir(installed, rom_dir, override=override)
     for candidate in (
+        resolved.directory,
         rom_dir,
         installed.install_dir,
         *(
@@ -1403,6 +1419,7 @@ def find_emulator_save(
     installed: emulators.Installed,
     entry: inspect_module.GameEntry,
     rom_dir: Path | None,
+    override: Path | None = None,
 ) -> Path | None:
     """An existing save this emulator has already written for this game.
 
@@ -1429,7 +1446,7 @@ def find_emulator_save(
     if stem is None:
         return None
 
-    for directory in emulator_search_dirs(installed, rom_dir):
+    for directory in emulator_search_dirs(installed, rom_dir, override):
         if not directory.is_dir():
             continue
         for extension in extensions:
@@ -1458,7 +1475,7 @@ def emulator_target(
     system = entry.system
     assert system is not None
 
-    existing = find_emulator_save(installed, entry, rom_dir)
+    existing = find_emulator_save(installed, entry, rom_dir, override)
     location = emulators.resolve_save_dir(
         installed, rom_dir, override=override, observed=existing
     )

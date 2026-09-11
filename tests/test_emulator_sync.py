@@ -1128,3 +1128,57 @@ def test_the_emulators_report_names_the_folder_the_sync_will_use(world, monkeypa
     out = capsys.readouterr().out
     assert str(world.roms) in out
     assert "could not be determined" not in out
+
+
+# --- the search has to cover where the sync would write --------------------
+
+
+def test_a_save_in_the_configured_folder_is_pushed_not_missed(world):
+    """The search assembled its folders by hand and left out the two that only
+    `resolve_save_dir` knows: the `save_dir` set in config.toml, and the folder
+    the emulator's own config names.
+
+    With nothing in Delta to compare against, a save in either read as "neither
+    side has a save" -- so the desktop's progress was never pushed to the phone,
+    and the message said there was nothing there. That is the one direction
+    where being wrong loses something that exists nowhere else.
+    """
+    installed = world.install("mgba")
+    chosen = world.root / "my-gba-saves"
+    chosen.mkdir()
+    (chosen / "Pokemon.sav").write_bytes(b"DESKTOP PROGRESS" * 8192)
+    entry = entry_for("gba", "Pokemon", None)  # Delta has nothing
+
+    found = sync.find_emulator_save(installed, entry, world.roms, chosen)
+    target, why = sync.emulator_target(installed, entry, world.roms, override=chosen)
+
+    assert found == chosen / "Pokemon.sav"
+    assert target == chosen / "Pokemon.sav"
+    assert "neither side" not in why
+
+
+def test_a_save_in_the_folder_the_emulators_config_names_is_found(world):
+    """The same gap, reached without any config.toml override at all."""
+    installed = world.install("mgba")
+    named = world.root / "from-config"
+    named.mkdir()
+    (named / "Zelda.sav").write_bytes(b"x" * 8192)
+    (installed.install_dir / "config.ini").write_text(
+        f"savegamePath = {named}\n", encoding="utf-8"
+    )
+    entry = entry_for("gba", "Zelda", None)
+
+    assert sync.find_emulator_save(installed, entry, world.roms) == named / "Zelda.sav"
+
+
+def test_the_resolved_folder_is_searched_first(world):
+    """Ahead of the hand-built candidates, which are still tried after it."""
+    installed = world.install("mgba")
+    chosen = world.root / "elsewhere"
+    chosen.mkdir()
+
+    dirs = sync.emulator_search_dirs(installed, world.roms, chosen)
+
+    assert dirs[0] == chosen
+    assert world.roms in dirs
+    assert installed.install_dir in dirs
