@@ -131,14 +131,14 @@ def command_probe(arguments, out: Reporter) -> int:
     check("Apple device service", "running", True)
     if not devices:
         check(
-            "iPhone",
+            "Device",
             "none connected — plug one in, unlock it, and answer Trust",
             False,
         )
         return out.result(
             ok=True, ready=False, checks=checks, version=__version__
         )
-    check("iPhone", f"{len(devices)} connected", True)
+    check("Device", f"{len(devices)} connected", True)
 
     try:
         apps = DeviceSource.installed_apps()
@@ -302,6 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         description=(
             "Move Nintendo 64 Controller Pak files between Delta on an iPhone "
+            "or iPad "
             "and this PC. Delta does not sync these, so a cable is the only "
             "way — or copy the folder off by hand and use --folder."
         ),

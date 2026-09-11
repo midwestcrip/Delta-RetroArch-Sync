@@ -44,7 +44,28 @@ PROTOCOL = 1
 #: core's ``directoryURL`` appends its name ``Mupen64Plus``, and
 #: ``gameSaveDirectoryURL`` appends ``Saves/``. The same path the iOS Files app
 #: shows at On My iPhone -> Delta -> Cores -> Mupen64Plus -> Saves.
-DELTA_SAVES_PATH = "Cores/Mupen64Plus/Saves"
+#:
+#: **Measured against a real device 2026-09-11, and the Documents prefix is
+#: required.** The path above was written assuming ``documents_only=True``
+#: vends the Documents folder *as the root*, which is what its name suggests.
+#: It does not: it vends the container with ``Documents`` as a subfolder, and
+#: listing ``/`` under it is refused outright (AFC status 10, permission
+#: denied) while a missing path underneath returns status 8. So both spellings
+#: the add-on tried were wrong in the same way, and the only symptom was
+#: "that folder does not exist yet" -- which reads as "you have not played an
+#: N64 game", and was wrong.
+DELTA_SAVES_PATH = "Documents/Cores/Mupen64Plus/Saves"
+
+#: Every spelling worth a round trip, measured one first. The others are kept
+#: because a different pymobiledevice3 may well re-root the vend the way the
+#: flag's name implies, and trying a path costs one round trip where guessing
+#: wrong costs a bug report.
+DELTA_SAVES_CANDIDATES = (
+    DELTA_SAVES_PATH,
+    "/" + DELTA_SAVES_PATH,
+    "Cores/Mupen64Plus/Saves",
+    "/Cores/Mupen64Plus/Saves",
+)
 
 #: Delta's bundle identifier is *not* hard-coded as a certainty. Sideloaded and
 #: AltStore copies differ, and a wrong one fails as "no such app" with nothing

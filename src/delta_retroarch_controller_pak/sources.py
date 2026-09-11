@@ -24,7 +24,7 @@ import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import BUNDLE_HINTS, DELTA_SAVES_PATH
+from . import BUNDLE_HINTS, DELTA_SAVES_CANDIDATES, DELTA_SAVES_PATH
 
 
 class SourceError(Exception):
@@ -166,7 +166,7 @@ class DeviceSource:
 
     @classmethod
     def devices(cls) -> list:
-        """Every connected iPhone, or why there are none."""
+        """Every connected iPhone or iPad, or why there are none."""
         return _run(cls._devices())
 
     @classmethod
@@ -213,7 +213,7 @@ class DeviceSource:
 
         if not await self._devices():
             raise SourceError(
-                "no iPhone is connected. Plug it in with a cable, unlock it, "
+                "no iPhone or iPad is connected. Plug it in with a cable, unlock it, "
                 "and answer Trust if it asks."
             )
 
@@ -254,18 +254,17 @@ class DeviceSource:
 
     @staticmethod
     async def _saves_root(service) -> str:
-        """Where the paks live, tried both spellings.
+        """Where the paks live, tried in measured-first order.
 
-        ``VendDocuments`` roots the session at the app's Documents folder, so
-        the relative path ought to be enough. Whether this build wants a
-        leading slash is not something to be confident about without a device,
-        and trying the other spelling costs one round trip -- where guessing
-        wrong costs a bug report.
+        ``VendDocuments`` does *not* root the session at the app's Documents
+        folder, which is what this used to assume and what the flag's name
+        implies. Measured on a real device: the vend is the container, with
+        ``Documents`` as a subfolder. See ``DELTA_SAVES_CANDIDATES``.
         """
         from pymobiledevice3.exceptions import AfcException
 
         last: Exception | None = None
-        for candidate in (DELTA_SAVES_PATH, "/" + DELTA_SAVES_PATH):
+        for candidate in DELTA_SAVES_CANDIDATES:
             try:
                 await service.listdir(candidate)
                 return candidate

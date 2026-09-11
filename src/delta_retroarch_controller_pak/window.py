@@ -115,11 +115,11 @@ class Window:
 
         if not devices:
             self.say(
-                "  iPhone: none connected. Plug one in, unlock it, and answer "
+                "  Device: none connected. Plug an iPhone or iPad in, unlock it, and answer "
                 "Trust if it asks."
             )
             return
-        self.say(f"  iPhone: {len(devices)} connected")
+        self.say(f"  Device: {len(devices)} connected")
 
         try:
             bundle = DeviceSource.find_delta(DeviceSource.installed_apps())

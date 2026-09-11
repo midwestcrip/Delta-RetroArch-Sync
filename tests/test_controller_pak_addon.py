@@ -32,6 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import delta_retroarch_controller_pak as addon  # noqa: E402
 from delta_retroarch_controller_pak import PROTOCOL, __main__ as cli  # noqa: E402
 from delta_retroarch_controller_pak.sources import (  # noqa: E402
     DeviceSource,
@@ -456,3 +457,31 @@ class TheWholeJourneyTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SavesPathTests(unittest.TestCase):
+    """The path measured against a real device on 2026-09-11.
+
+    The add-on shipped with ``Cores/Mupen64Plus/Saves``, written on the
+    assumption that ``documents_only=True`` vends the app's Documents folder as
+    the root -- which is what the flag's name says. It does not. The vend is the
+    container, with ``Documents`` as a subfolder, so both spellings the add-on
+    tried were wrong in the same way.
+
+    The only symptom was "that folder does not exist yet. If no N64 game has
+    ever been played in Delta" -- which was wrong, and sent the reader looking
+    at their phone instead of at the path.
+    """
+
+    def test_the_documents_prefix_is_required(self):
+        self.assertEqual(
+            addon.DELTA_SAVES_PATH, "Documents/Cores/Mupen64Plus/Saves"
+        )
+
+    def test_the_measured_spelling_is_tried_first(self):
+        self.assertEqual(addon.DELTA_SAVES_CANDIDATES[0], addon.DELTA_SAVES_PATH)
+
+    def test_the_older_spellings_are_still_tried(self):
+        """A different pymobiledevice3 may yet re-root the vend."""
+        self.assertIn("Cores/Mupen64Plus/Saves", addon.DELTA_SAVES_CANDIDATES)
+        self.assertIn("/Cores/Mupen64Plus/Saves", addon.DELTA_SAVES_CANDIDATES)
