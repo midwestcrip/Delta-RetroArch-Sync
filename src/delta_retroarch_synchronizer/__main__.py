@@ -415,55 +415,66 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
         state_dir=paths.state_dir(),
     )
 
-    report = sync_module.SyncReport()
-    for entry in syncable:
-        if entry.system is None:
-            continue
-        core = _core_for(entry.system.retroarch_cores, installed) or ""
-        single = sync_module.run_sync(
-            sync_paths,
-            [entry],
-            core,
-            sorted_by_core,
-            dry_run=dry_run,
-            allow_push=allow_push,
-            rom_dir=rom_dir,
-            playlist_dir=playlist_dir,
-            dropbox=dropbox,
-            cheat_dir=cheat_dir,
-            cheats_by_game=cheats_by_game,
-        )
-        report.outcomes.extend(single.outcomes)
-
-    # Standalone emulators, after RetroArch and only for the ones turned on.
-    # Each keeps its own agreement with Delta, so syncing to several is several
-    # independent reconciles rather than one with several destinations.
     chosen = set(config.emulators_enabled)
-    if chosen:
-        state = manifest.Manifest.load(sync_paths.manifest_path)
-        for installed in installed_emulators(config):
-            if installed.emulator.key not in chosen:
+
+    def one_pass() -> list[sync_module.Outcome]:
+        """Reconcile every target once: RetroArch, then each enabled emulator."""
+        outcomes: list[sync_module.Outcome] = []
+        for entry in syncable:
+            if entry.system is None:
                 continue
-            for entry in syncable:
-                if entry.system is None or not installed.emulator.handles(
-                    entry.system.key
-                ):
+            core = _core_for(entry.system.retroarch_cores, installed) or ""
+            single = sync_module.run_sync(
+                sync_paths,
+                [entry],
+                core,
+                sorted_by_core,
+                dry_run=dry_run,
+                allow_push=allow_push,
+                rom_dir=rom_dir,
+                playlist_dir=playlist_dir,
+                dropbox=dropbox,
+                cheat_dir=cheat_dir,
+                cheats_by_game=cheats_by_game,
+            )
+            outcomes.extend(single.outcomes)
+
+        # Standalone emulators, after RetroArch and only for the ones turned on.
+        # Each keeps its own agreement with Delta, so syncing to several is
+        # several independent reconciles rather than one with several
+        # destinations.
+        if chosen:
+            state = manifest.Manifest.load(sync_paths.manifest_path)
+            for found in installed_emulators(config):
+                if found.emulator.key not in chosen:
                     continue
-                report.outcomes.extend(
-                    sync_module.sync_emulator(
-                        sync_paths,
-                        entry,
-                        installed,
-                        rom_dir=rom_dir,
-                        override=config.emulator_save_dirs.get(installed.emulator.key),
-                        dry_run=dry_run,
-                        allow_push=allow_push,
-                        dropbox=dropbox,
-                        state=state,
+                for entry in syncable:
+                    if entry.system is None or not found.emulator.handles(
+                        entry.system.key
+                    ):
+                        continue
+                    outcomes.extend(
+                        sync_module.sync_emulator(
+                            sync_paths,
+                            entry,
+                            found,
+                            rom_dir=rom_dir,
+                            override=config.emulator_save_dirs.get(found.emulator.key),
+                            dry_run=dry_run,
+                            allow_push=allow_push,
+                            dropbox=dropbox,
+                            state=state,
+                        )
                     )
-                )
-        if not dry_run:
-            state.save()
+            if not dry_run:
+                state.save()
+        return outcomes
+
+    report = sync_module.SyncReport()
+    report.outcomes.extend(one_pass())
+    report.outcomes.extend(
+        sync_module.settle(one_pass, report.outcomes, dry_run=dry_run)
+    )
 
     header = "Sync (dry run -- nothing written)" if dry_run else "Sync"
     print(f"\n{header}\n")

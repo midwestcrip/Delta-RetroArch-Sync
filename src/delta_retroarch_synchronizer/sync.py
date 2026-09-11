@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import glob as glob_module
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -181,6 +182,41 @@ def decide(
     if retro_changed:
         return Action.PUSH, f"{label} changed since the last sync"
     return Action.NOTHING, "unchanged on both sides"
+
+
+def pushed_to_delta(outcomes: "list[Outcome]") -> bool:
+    """Whether this pass actually moved Delta, as opposed to planning to."""
+    return any(o.action is Action.PUSH and o.applied for o in outcomes)
+
+
+def settle(
+    run_pass: "Callable[[], list[Outcome]]",
+    first: "list[Outcome]",
+    *,
+    dry_run: bool = False,
+) -> list[Outcome]:
+    """Reconcile again when a push moved Delta mid-run, and report what that did.
+
+    Targets are reconciled one after another, so a push from a later one leaves
+    every target already visited holding the older save -- while the run reports
+    success, which is the part that makes it dangerous rather than merely
+    untidy. Play RetroArch before the next sync and that push has silently
+    arranged a conflict: both sides will have changed.
+
+    So when Delta actually moved, everything is reconciled once more. Whatever
+    was left behind pulls the new save; anything genuinely divergent surfaces as
+    the conflict it is.
+
+    One extra pass, never a loop. A second push in the second pass is not
+    possible: Delta has changed since every remaining target's agreement, so a
+    target with its own newer save is a conflict now rather than a push. Capping
+    it structurally is better than trusting that argument to stay true -- this
+    runs against the user's real saves, and a reconcile that can iterate is one
+    that can iterate forever.
+    """
+    if dry_run or not pushed_to_delta(first):
+        return []
+    return run_pass()
 
 
 def backup(path: Path, backup_dir: Path, *, keep: int = BACKUP_KEEP) -> Path | None:

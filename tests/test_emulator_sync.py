@@ -605,3 +605,121 @@ def test_a_target_written_before_the_pair_existed_is_read_safely(world):
 
     assert agreed.delta is None
     assert agreed.desktop.sha1 == "abc"
+
+
+# --- a push mid-run leaves earlier targets behind ---------------------------
+
+
+def applied_push(target="mGBA"):
+    return sync.Outcome("Game", sync.Action.PUSH, "", target=target, applied=True)
+
+
+def test_no_second_pass_when_nothing_moved_delta():
+    calls = []
+    assert sync.settle(lambda: calls.append(1) or [], [
+        sync.Outcome("Game", sync.Action.PULL, "", applied=True),
+        sync.Outcome("Game", sync.Action.NOTHING, ""),
+    ]) == []
+    assert calls == []
+
+
+def test_a_push_that_was_only_planned_does_not_trigger_a_pass():
+    """"not pushed (pass --push to enable)" moved nothing, so nothing is stale."""
+    calls = []
+    planned = [sync.Outcome("Game", sync.Action.PUSH, "not pushed")]
+
+    assert sync.settle(lambda: calls.append(1) or [], planned) == []
+    assert calls == []
+
+
+def test_a_push_that_landed_triggers_one_more_pass():
+    calls = []
+
+    def run():
+        calls.append(1)
+        return [sync.Outcome("Game", sync.Action.PULL, "", applied=True)]
+
+    result = sync.settle(run, [applied_push()])
+
+    assert len(calls) == 1
+    assert [o.action for o in result] == [sync.Action.PULL]
+
+
+def test_the_extra_pass_never_loops():
+    """Even if the second pass reports another push, there is no third.
+
+    A reconcile that can iterate is one that can iterate forever, and this runs
+    against real saves. The cap is structural rather than an argument about why
+    a third pass cannot be needed.
+    """
+    calls = []
+
+    def run():
+        calls.append(1)
+        return [applied_push()]
+
+    sync.settle(run, [applied_push()])
+
+    assert len(calls) == 1
+
+
+def test_a_dry_run_never_makes_a_second_pass():
+    calls = []
+
+    sync.settle(lambda: calls.append(1) or [], [applied_push()], dry_run=True)
+
+    assert calls == []
+
+
+def test_retroarch_is_brought_up_to_date_by_the_settle_pass(world):
+    """The whole scenario, end to end.
+
+    RetroArch is reconciled first and has nothing to do. mGBA then pushes a
+    newer save to Delta. Without a second pass the run reports success while
+    RetroArch still holds the old save -- and if it is played before the next
+    sync, that push has silently arranged a conflict.
+    """
+    installed = world.install("mgba")
+    delta = world.delta_save(b"v1" * 512)
+    entry = entry_for("gba", "Pokemon", delta)
+
+    retro = world.paths.save_dir / "Pokemon.srm"
+    retro.parent.mkdir(parents=True)
+    retro.write_bytes(b"v1" * 512)
+    mgba_save = world.roms / "Pokemon.sav"
+    mgba_save.write_bytes(b"v1" * 512)
+
+    state = manifest.Manifest(world.paths.manifest_path)
+    state.record(entry.identifier, delta, retro)
+    state.record(entry.identifier, delta, mgba_save, "mgba")
+    state.save()
+
+    # Played in mGBA. Its push is simulated by writing Delta directly, which is
+    # what push_with_revision ends up doing -- the Dropbox half needs a network.
+    mgba_save.write_bytes(b"v2" * 512)
+
+    def one_pass():
+        outcomes = list(
+            sync.run_sync(
+                world.paths, [entry], "mGBA", False, allow_push=False
+            ).outcomes
+        )
+        fresh = manifest.Manifest.load(world.paths.manifest_path)
+        result = sync.sync_emulator(
+            world.paths, entry, installed, rom_dir=world.roms, state=fresh
+        )
+        # Stand in for the push: Delta takes mGBA's save and the pair is agreed.
+        if any(o.action is sync.Action.PUSH for o in result):
+            delta.write_bytes(mgba_save.read_bytes())
+            fresh.record(entry.identifier, delta, mgba_save, "mgba")
+            result = [applied_push()]
+        fresh.save()
+        return outcomes + result
+
+    first = one_pass()
+    assert delta.read_bytes() == b"v2" * 512
+    assert retro.read_bytes() == b"v1" * 512, "stale, as the bug describes"
+
+    sync.settle(one_pass, first)
+
+    assert retro.read_bytes() == b"v2" * 512

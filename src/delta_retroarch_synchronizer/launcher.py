@@ -2486,7 +2486,45 @@ class LauncherWindow:
         # pass the `sync` command makes -- kept in step with it deliberately,
         # because an emulator that syncs from the command line and silently does
         # nothing from this window is worse than one that is not supported.
-        for outcome in sync_emulators(paths, entries, config, dropbox):
+        emulator_outcomes = sync_emulators(paths, entries, config, dropbox)
+
+        def settle_pass() -> list[sync_module.Outcome]:
+            """Reconcile every target again, RetroArch included.
+
+            RetroArch is the one that most needs it: it runs first, so it is the
+            target a standalone emulator's push leaves behind.
+            """
+            again: list[sync_module.Outcome] = []
+            for entry in entries:
+                if entry.system is None:
+                    continue
+                core = next(
+                    (n for n in entry.system.retroarch_cores if n in installed), None
+                )
+                if not entry.supported or core is None:
+                    continue
+                again.extend(
+                    sync_module.run_sync(
+                        paths,
+                        [entry],
+                        core,
+                        sorted_by_core,
+                        allow_push=config.push_enabled,
+                        rom_dir=config.retroarch_rom_dir if config.sync_roms else None,
+                        playlist_dir=playlist_dir if config.sync_roms else None,
+                        dropbox=dropbox,
+                        cheat_dir=cheat_dir if config.sync_cheats else None,
+                        cheats_by_game=cheats_by_game,
+                    ).outcomes
+                )
+            return again + sync_emulators(paths, entries, config, dropbox)
+
+        # And again if one of them moved Delta, because everything reconciled
+        # before it is now holding the older save while this run reports
+        # success. See ``sync.settle``.
+        emulator_outcomes += sync_module.settle(settle_pass, emulator_outcomes)
+
+        for outcome in emulator_outcomes:
             if outcome.action is sync_module.Action.NOTHING and not outcome.applied:
                 continue
             changed_anything = True

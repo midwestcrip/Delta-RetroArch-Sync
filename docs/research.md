@@ -987,8 +987,17 @@ new architecture. Two things it did not predict:
     target* was a data-loss path: a newly enabled emulator holding its own save
     read as "Delta unchanged, target changed" and **pushed that save to the
     phone** over the real one, with no conflict reported.
-  - The whole suite passed before either fix. Neither bug is reachable with one
-    target, which is what every existing test had.
+  - **Targets are reconciled in order, so a push from a later one leaves every
+    earlier one stale** — while the run reports success, which is what makes it
+    dangerous rather than untidy. Play RetroArch before the next sync and that
+    push has silently arranged a conflict. `sync.settle` reconciles everything
+    once more when Delta actually moved. Exactly one extra pass, capped
+    structurally: a second push in the second pass is impossible (Delta has
+    moved since every remaining agreement, so a divergent target is a conflict
+    now), but a reconcile that *can* iterate is one that can iterate forever,
+    and this runs against real saves.
+  - The whole suite passed before all three fixes. None of these bugs is
+    reachable with one target, which is what every existing test had.
 - **The gate is per-save, not per-emulator.** Nothing here has run any of these
   emulators, so `check_shape` measures the file the emulator has already written
   before replacing it — size, gzip magic, DeSmuME footer. That is stronger than
