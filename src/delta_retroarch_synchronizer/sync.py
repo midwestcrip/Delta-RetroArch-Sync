@@ -259,19 +259,64 @@ def baseline_if_agreed(
     history" -- a conflict with nothing conflicting in it, which the player
     cannot clear by playing because the history it wants was never written.
 
-    Recorded on **every** NOTHING rather than only the empty case, which is what
-    migrates a manifest written before ``desktop_body`` existed. Those
-    fingerprint the whole file; ``FileState.matches`` forgives that, so the run
-    reaches here, and rewriting the pair now is what stops it having to be
-    forgiven again on every future run. Re-recording is safe precisely because
-    the action is NOTHING: that *means* both files still match what was agreed,
-    so this writes the same facts in the current shape.
+    An existing agreement is rewritten too, but only to bring a stale *shape*
+    up to date -- a manifest written before ``desktop_body`` existed
+    fingerprints the whole file, ``FileState.matches`` forgives that, and
+    rewriting it here is what stops it having to be forgiven on every future
+    run.
+
+    **Nothing is agreed to that was not read here.** This is the one place that
+    writes an agreement about files nobody wrote, so the gap between the read
+    ``decide`` made and the write this makes is a gap a save can change in --
+    RetroArch is often running, and the Delta folder is a Dropbox folder being
+    synced from the phone while this loops over every game. Re-reading and
+    trusting the result would agree to whatever landed in that gap: the sync
+    would record the incoming save as already agreed, report "unchanged on both
+    sides" forever after, and the change would simply never arrive. Silent, and
+    exactly the failure this project exists to prevent.
+
+    So each file is read once and every branch is checked against *those* bytes.
+    Anything that no longer lines up means something moved mid-run, and the
+    answer then is to write nothing at all and let the next run see it as the
+    change it is.
     """
     if action is not Action.NOTHING:
         return
-    state.record(
-        entry.identifier, entry.save_path, target, key, desktop_body=desktop_body
+    if entry.save_path is None or target is None:
+        return
+    try:
+        if not entry.save_path.is_file() or not target.is_file():
+            return
+        delta_now = manifest_module.FileState.of(entry.save_path)
+        raw = target.read_bytes()
+    except OSError:
+        return
+
+    whole = manifest_module.FileState.of_bytes(raw)
+    desktop_now = (
+        manifest_module.FileState.of_bytes(desktop_body(raw))
+        if desktop_body is not None
+        else whole
     )
+
+    agreed = state.get(entry.identifier).agreement(key)
+
+    if agreed.empty:
+        # NOTHING with no history means "both sides already identical". If that
+        # is still true of what was just read, it is safe to write down; if it
+        # is not, one of them changed during this pass and must not be agreed.
+        if delta_now == desktop_now:
+            state.record_states(entry.identifier, delta_now, desktop_now, key)
+        return
+
+    if agreed.desktop == desktop_now and agreed.delta == delta_now:
+        return  # Already current in the right shape; nothing to rewrite.
+
+    # The only rewrite left is the stale shape, and it is allowed only while
+    # both halves still answer to what was agreed -- the old fingerprint over
+    # these exact bytes, and Delta unmoved.
+    if agreed.delta == delta_now and agreed.desktop == whole:
+        state.record_states(entry.identifier, delta_now, desktop_now, key)
 
 
 def pushed_to_delta(outcomes: "list[Outcome]") -> bool:

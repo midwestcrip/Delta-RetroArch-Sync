@@ -271,6 +271,59 @@ class BaselineTests(unittest.TestCase):
                 sync.baseline_if_agreed(self.state, entry, action, self.retro)
                 self.assertTrue(self.state.get("abc").agreement().empty)
 
+    def test_a_save_landing_mid_run_is_not_agreed_away(self) -> None:
+        """The gap between deciding and recording is a gap a save can land in.
+
+        RetroArch is often running while this does, and the Delta folder is a
+        Dropbox folder being synced from the phone throughout. Re-reading the
+        file at record time and trusting the result would agree to whatever
+        arrived in that gap: the incoming save is written down as *already
+        agreed*, every later run reports "unchanged on both sides", and the
+        change never arrives anywhere. Nothing is corrupted and nothing is
+        reported -- it simply never syncs.
+        """
+        entry = self.entry()
+        self.state.record("abc", self.delta, self.retro)
+        action, _ = sync.decide(self.state.get("abc"), self.delta, self.retro)
+        self.assertIs(action, sync.Action.NOTHING)
+
+        # Dropbox delivers a save from the phone, right here.
+        self.delta.write_bytes(RETRO_BYTES)
+        sync.baseline_if_agreed(self.state, entry, action, self.retro)
+
+        action, _ = sync.decide(self.state.get("abc"), self.delta, self.retro)
+        self.assertIs(action, sync.Action.PULL)
+
+    def test_a_desktop_save_landing_mid_run_is_not_agreed_away(self) -> None:
+        """The same gap, from the side the emulator writes."""
+        entry = self.entry()
+        self.state.record("abc", self.delta, self.retro)
+        action, _ = sync.decide(self.state.get("abc"), self.delta, self.retro)
+
+        self.retro.write_bytes(RETRO_BYTES)
+        sync.baseline_if_agreed(self.state, entry, action, self.retro)
+
+        action, _ = sync.decide(self.state.get("abc"), self.delta, self.retro)
+        self.assertIs(action, sync.Action.PUSH)
+
+    def test_a_first_baseline_is_not_written_over_a_mid_run_change(self) -> None:
+        """With no history the check is the one NOTHING actually meant.
+
+        "Both sides already identical" is only worth writing down while it is
+        still true. If it is not, these are two different saves with no agreed
+        history, which is a conflict -- unhelpful, and the honest answer.
+        """
+        entry = self.entry()
+        action, _ = sync.decide(self.state.get("abc"), self.delta, self.retro)
+        self.assertIs(action, sync.Action.NOTHING)
+
+        self.delta.write_bytes(RETRO_BYTES)
+        sync.baseline_if_agreed(self.state, entry, action, self.retro)
+
+        self.assertTrue(self.state.get("abc").agreement().empty)
+        action, _ = sync.decide(self.state.get("abc"), self.delta, self.retro)
+        self.assertIs(action, sync.Action.CONFLICT)
+
     def test_re_recording_an_unchanged_pair_writes_the_same_facts(self) -> None:
         """NOTHING means both files still match what was agreed, so this is a no-op.
 

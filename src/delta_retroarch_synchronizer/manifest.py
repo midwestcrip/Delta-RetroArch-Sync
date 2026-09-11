@@ -380,6 +380,26 @@ class Manifest:
             ),
         )
 
+    def record_states(
+        self,
+        identifier: str,
+        delta: "FileState | None",
+        desktop: "FileState | None",
+        target: str = RETROARCH,
+    ) -> None:
+        """Record an agreement the caller has already measured.
+
+        :meth:`record` reads the two files itself, which is right after a copy:
+        what was just written is what should be agreed. It is wrong when the
+        agreement is being written for files *nobody wrote* -- there, the bytes
+        that were examined and the bytes on disk a moment later are not
+        necessarily the same, and re-reading would agree to whichever arrived
+        last rather than to the pair that was actually checked.
+        """
+        self.entries[identifier] = self.entries.get(identifier, Entry()).with_agreement(
+            target, Agreement(delta=delta, desktop=desktop)
+        )
+
     def cheat_code(self, identifier: str) -> str | None:
         """The last agreed code for one cheat, or None if there is no history."""
         state = self.cheats.get(identifier)
