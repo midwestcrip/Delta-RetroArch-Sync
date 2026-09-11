@@ -474,19 +474,43 @@ def test_the_header_name_is_read_for_an_unknown_rom(tmp_path):
     assert stem == f"SUPER MARIO 64-{digest[:8]}"
 
 
-def test_the_header_name_is_trimmed_of_its_padding(tmp_path):
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        # Every row measured against a real 2.6.0 by writing this header into a
+        # ROM, running it, and reading back the save filename it created.
+        (b"SUPER MARIO 64      ", "SUPER MARIO 64"),
+        (b"ZELDA" + b"\x00" * 15, "ZELDA"),   # NUL padding
+        (b"AB" + b" " * 18, "AB"),            # trailing padding stripped
+        (b"  AB" + b" " * 16, "AB"),          # and leading
+        (b" " * 20, ""),                      # strips to nothing, and stays so
+        (b"\x00" * 20, "unknown"),            # empty C string -> substituted
+        (b"\x00AB" + b" " * 17, "unknown"),   # stops at the NUL, so also empty
+    ],
+)
+def test_the_header_name_is_read_the_way_mupen64plus_reads_it(header, expected):
+    """The order matters: emptiness is decided before stripping.
+
+    Twenty NULs and twenty spaces are both nameless to a reader, and the
+    emulator gives them *different* filenames -- "unknown-<md5>" and "-<md5>".
+    Decoding the field and stripping it, which is the obvious implementation and
+    was this one, gets three of these rows wrong.
+    """
     native = bytearray(_rom())
-    native[0x20:0x34] = b"ZELDA\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+    native[0x20:0x34] = header
 
-    assert emulators.internal_name(bytes(native)) == "ZELDA"
+    assert emulators.internal_name(bytes(native)) == expected
 
 
-def test_a_rom_with_neither_a_name_nor_an_entry_is_refused(tmp_path):
-    """There is nothing left to build a filename out of."""
+def test_a_nameless_rom_is_still_named_the_emulator_s_way(tmp_path):
+    """Not refused: a header of twenty spaces really does give it "-<md5>"."""
+    import hashlib
+
     native = bytearray(_rom())
     native[0x20:0x34] = b" " * 20
     rom = tmp_path / "nameless.z64"
     rom.write_bytes(bytes(native))
     (tmp_path / "mupen64plus.ini").write_text("", encoding="utf-8")
+    digest = hashlib.md5(bytes(native)).hexdigest().upper()
 
-    assert emulators.mupen64plus_stem(tmp_path, rom) is None
+    assert emulators.mupen64plus_stem(tmp_path, rom) == f"-{digest[:8]}"

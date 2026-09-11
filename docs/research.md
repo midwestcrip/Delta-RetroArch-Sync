@@ -1086,6 +1086,22 @@ offset 0x20). Hacks, translations and homebrew are all "unknown" here, so
 following that fallback is the difference between the feature working for them
 and refusing.
 
+That header field is read as a **C string, and emptiness is decided before
+stripping** — which is not what anyone would write by eye. Measured across six
+headers:
+
+| header bytes | save is named |
+| --- | --- |
+| `AB` + spaces | `AB-<md5>` |
+| `  AB` + spaces | `AB-<md5>` (stripped both ends) |
+| `ZELDA` + NULs | `ZELDA-<md5>` |
+| twenty spaces | `-<md5>` — strips to nothing, and **stays** nothing |
+| twenty NULs | `unknown-<md5>` |
+| ` AB` + spaces | `unknown-<md5>` — stops at the NUL, so empty |
+
+Twenty NULs and twenty spaces are both nameless to a reader and get *different*
+filenames. Decoding the field and stripping it gets three of those six wrong.
+
 **What it will not open at all:** a file below **0x1000 bytes**. Bisected —
 0x800 gives "core failed to open ROM image file", 0x1000 loads. This project is
 deliberately stricter in one more way: a byte-swapped dump whose length does not

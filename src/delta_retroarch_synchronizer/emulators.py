@@ -678,10 +678,40 @@ def to_z64(data: bytes) -> bytes | None:
 _HEADER_NAME = slice(0x20, 0x34)
 
 
+#: What Mupen64Plus calls a ROM whose header carries no name at all.
+UNNAMED_ROM = "unknown"
+
+
 def internal_name(native: bytes) -> str:
-    """The name a ROM carries in its own header, trimmed."""
+    """The name a ROM carries in its own header, as Mupen64Plus reads it.
+
+    Two steps, in this order, and the order is the whole of it. Measured across
+    five headers against a real 2.6.0:
+
+    ===========================  ===========  ===============================
+    header bytes                 becomes      why
+    ===========================  ===========  ===============================
+    ``b"\\x00AB..."``             ``unknown``  read as a **C string**, so it
+                                              stops at the first NUL and what
+                                              is left is empty
+    twenty NULs                  ``unknown``  same
+    twenty spaces                ``""``       not empty, so no substitution --
+                                              it simply strips to nothing, and
+                                              the save is named ``-<md5>``
+    ``b"AB" + spaces``           ``AB``       stripped
+    ``b"  AB" + spaces``         ``AB``       stripped at both ends
+    ===========================  ===========  ===============================
+
+    So "empty" is decided *before* stripping, not after: twenty NULs and twenty
+    spaces are both nameless to a reader, and Mupen64Plus gives them different
+    filenames. Reading the field as text and stripping it -- which is the
+    obvious implementation, and was this one -- gets all three odd rows wrong.
+    """
     raw = native[_HEADER_NAME]
-    return raw.decode("ascii", "replace").replace("\x00", " ").strip()
+    text = raw.split(b"\x00", 1)[0].decode("ascii", "replace")
+    if not text:
+        return UNNAMED_ROM
+    return text.strip()
 
 
 def mupen64plus_stem(install_dir: Path, rom: Path) -> str | None:
@@ -711,9 +741,11 @@ def mupen64plus_stem(install_dir: Path, rom: Path) -> str | None:
         # Worth following rather than refusing: hacks, translations and
         # homebrew are ordinary things to have in Delta, and every one of them
         # is an "unknown rom" here.
+        # Deliberately not refused when this comes back empty. A header of
+        # twenty spaces really does give Mupen64Plus a save called
+        # "-<md5>.eep", and writing anything else there -- including nothing --
+        # is the same failure as every other name this rule has got wrong.
         good = internal_name(native)
-    if not good:
-        return None
     return mupen64plus_filename(good, digest)
 
 
