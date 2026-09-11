@@ -106,6 +106,24 @@ RETROARCH = "retroarch"
 
 
 @dataclass
+class Agreement:
+    """What both files looked like when one desktop target last agreed with Delta.
+
+    A pair, never two separate facts. "Delta has not changed" is only meaningful
+    *relative to a particular target*: the question a sync asks is "has Delta
+    moved since this emulator last saw it", and two emulators synced at
+    different moments have different answers.
+    """
+
+    delta: FileState | None = None
+    desktop: FileState | None = None
+
+    @property
+    def empty(self) -> bool:
+        return self.delta is None and self.desktop is None
+
+
+@dataclass
 class Entry:
     """The agreed state of one game's save on Delta and on each desktop target.
 
@@ -114,28 +132,46 @@ class Entry:
     collapsing them into one field would make each sync look like a change the
     other side had made -- every run reporting a conflict that is really just the
     other emulator's copy.
+
+    **Both halves are per target, not only the desktop one.** Sharing the Delta
+    half looks harmless, because there is only one Delta -- and it silently
+    starves every target but the first. RetroArch pulls a new save from the
+    phone and records that Delta is now agreed; mGBA is reconciled a moment
+    later, sees a Delta that "has not changed", and is left holding the old save
+    with the sync reporting "unchanged on both sides". Whichever target ran
+    first would quietly decide that none of the others needed the update.
     """
 
     delta: FileState | None = None
     retroarch: FileState | None = None
-    #: Agreed state per standalone emulator, keyed by ``Emulator.key``.
-    targets: dict[str, FileState] = field(default_factory=dict)
+    #: Agreed pairs per standalone emulator, keyed by ``Emulator.key``.
+    #: RetroArch is not in here: its pair is the two fields above, which is the
+    #: shape already written in every existing manifest.
+    targets: dict[str, Agreement] = field(default_factory=dict)
+
+    def agreement(self, target: str = RETROARCH) -> Agreement:
+        """Both halves of one target's agreement, as of its last sync."""
+        if target == RETROARCH:
+            return Agreement(delta=self.delta, desktop=self.retroarch)
+        return self.targets.get(target, Agreement())
 
     def desktop(self, target: str = RETROARCH) -> FileState | None:
-        """The agreed state for one desktop target."""
-        if target == RETROARCH:
-            return self.retroarch
-        return self.targets.get(target)
+        """The agreed desktop state for one target."""
+        return self.agreement(target).desktop
 
-    def with_desktop(self, target: str, state: FileState | None) -> "Entry":
-        """A copy with one target's state replaced and the others untouched."""
+    def with_agreement(self, target: str, agreed: Agreement) -> "Entry":
+        """A copy with one target's pair replaced and every other one untouched."""
         if target == RETROARCH:
-            return Entry(delta=self.delta, retroarch=state, targets=dict(self.targets))
+            return Entry(
+                delta=agreed.delta,
+                retroarch=agreed.desktop,
+                targets=dict(self.targets),
+            )
         targets = dict(self.targets)
-        if state is None:
+        if agreed.empty:
             targets.pop(target, None)
         else:
-            targets[target] = state
+            targets[target] = agreed
         return Entry(delta=self.delta, retroarch=self.retroarch, targets=targets)
 
     def to_json(self) -> dict[str, Any]:
@@ -147,7 +183,11 @@ class Entry:
         # uses RetroArch keeps the shape it has always had.
         if self.targets:
             payload["targets"] = {
-                key: asdict(state) for key, state in sorted(self.targets.items())
+                key: {
+                    "delta": asdict(agreed.delta) if agreed.delta else None,
+                    "desktop": asdict(agreed.desktop) if agreed.desktop else None,
+                }
+                for key, agreed in sorted(self.targets.items())
             }
         return payload
 
@@ -161,12 +201,28 @@ class Entry:
                 return FileState(sha1=str(value["sha1"]), size=int(value["size"]))
             return None
 
+        def agreement(value: Any) -> Agreement:
+            # A bare FileState is how per-target state was written before it was
+            # clear the Delta half has to be per target too. Read as "we know
+            # what the emulator had, not what Delta looked like at the time",
+            # which is exactly true and makes the next sync re-evaluate rather
+            # than trust a pairing that was never recorded.
+            bare = state(value)
+            if bare is not None:
+                return Agreement(delta=None, desktop=bare)
+            if isinstance(value, dict):
+                return Agreement(
+                    delta=state(value.get("delta")),
+                    desktop=state(value.get("desktop")),
+                )
+            return Agreement()
+
         stored = raw.get("targets")
-        targets: dict[str, FileState] = {}
+        targets: dict[str, Agreement] = {}
         if isinstance(stored, dict):
             for key, value in stored.items():
-                parsed = state(value)
-                if parsed is not None:
+                parsed = agreement(value)
+                if not parsed.empty:
                     targets[str(key)] = parsed
 
         return cls(
@@ -262,14 +318,18 @@ class Manifest:
         recording a sync to one emulator does not erase the agreement with
         another -- which would leave the next run with no history for it and
         report a conflict.
+
+        Only this target's pair is touched, *including its Delta half*. Writing
+        the Delta half globally is what made the second target go stale: it said
+        "Delta is agreed" on behalf of emulators that had not seen the new save.
         """
-        existing = self.entries.get(identifier, Entry())
-        updated = existing.with_desktop(
+        self.entries[identifier] = self.entries.get(identifier, Entry()).with_agreement(
             target,
-            FileState.of(desktop) if desktop and desktop.is_file() else None,
+            Agreement(
+                delta=FileState.of(delta) if delta and delta.is_file() else None,
+                desktop=FileState.of(desktop) if desktop and desktop.is_file() else None,
+            ),
         )
-        updated.delta = FileState.of(delta) if delta and delta.is_file() else None
-        self.entries[identifier] = updated
 
     def cheat_code(self, identifier: str) -> str | None:
         """The last agreed code for one cheat, or None if there is no history."""

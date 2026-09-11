@@ -974,12 +974,21 @@ one — with two traps that must be measured rather than assumed.
 The survey's prediction held: it was another table plus its own discovery, not a
 new architecture. Two things it did not predict:
 
-- **The manifest needed a per-target slot.** `Entry` had one desktop side, and a
-  second target sharing it makes every sync look like a change the other side
-  made. `Entry.targets` keyed by emulator fixed that — and keying `decide`'s
-  first-sync branch on the entry as a whole rather than on *this target* left a
-  real data-loss path: a newly enabled emulator with its own save read as
-  "Delta unchanged, target changed" and pushed that save to the phone.
+- **The manifest needed a per-target *pair*, and getting that half-right was
+  worse than not doing it.** `Entry` had one desktop side, so `Entry.targets`
+  keyed by emulator was the obvious fix. It is not enough: the agreement is a
+  *pair* — what Delta looked like **and** what the target looked like — and
+  leaving the Delta half shared silently starves every target but the first.
+  RetroArch pulls a new save and records "Delta agreed"; mGBA is reconciled a
+  moment later, sees an unchanged Delta, and keeps the old save while reporting
+  "unchanged on both sides". Whichever target ran first decided for the rest.
+  Two further traps in the same area, both caught only by running it:
+  - Keying `decide`'s first-sync branch on the entry rather than on *this
+    target* was a data-loss path: a newly enabled emulator holding its own save
+    read as "Delta unchanged, target changed" and **pushed that save to the
+    phone** over the real one, with no conflict reported.
+  - The whole suite passed before either fix. Neither bug is reachable with one
+    target, which is what every existing test had.
 - **The gate is per-save, not per-emulator.** Nothing here has run any of these
   emulators, so `check_shape` measures the file the emulator has already written
   before replacing it — size, gzip magic, DeSmuME footer. That is stronger than

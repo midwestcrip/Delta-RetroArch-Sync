@@ -491,3 +491,117 @@ def test_identical_saves_on_a_new_target_are_simply_agreed(world):
     )
 
     assert outcome.action is sync.Action.NOTHING
+
+
+# --- the shared-Delta-history bug ------------------------------------------
+
+
+def test_a_second_target_still_gets_an_update_retroarch_already_took(world):
+    """The bug a shared Delta half caused, and the reason it is now per target.
+
+    RetroArch is reconciled first and records that Delta is agreed. If that
+    record is global, every target behind it then sees a Delta that "has not
+    changed" and is left holding the old save -- reported, worst of all, as
+    "unchanged on both sides" rather than as anything that looks wrong.
+
+    So whichever target happened to run first quietly decided that none of the
+    others needed the update.
+    """
+    installed = world.install("mgba")
+    delta = world.delta_save(b"v1" * 512)
+    entry = entry_for("gba", "Pokemon", delta)
+
+    # Both sides agreed at v1.
+    state = manifest.Manifest(world.paths.manifest_path)
+    retro = world.paths.save_dir / "Pokemon.srm"
+    retro.parent.mkdir(parents=True)
+    retro.write_bytes(b"v1" * 512)
+    state.record(entry.identifier, delta, retro)
+    sync.sync_emulator(
+        world.paths, entry, installed, rom_dir=world.roms, state=state
+    )
+    mgba_save = world.roms / "Pokemon.sav"
+    assert mgba_save.read_bytes() == b"v1" * 512
+
+    # Delta moves on, and RetroArch takes the update first.
+    delta.write_bytes(b"v2" * 512)
+    retro.write_bytes(b"v2" * 512)
+    state.record(entry.identifier, delta, retro)
+
+    outcome = only(
+        sync.sync_emulator(
+            world.paths, entry, installed, rom_dir=world.roms, state=state
+        )
+    )
+
+    assert outcome.action is sync.Action.PULL
+    assert mgba_save.read_bytes() == b"v2" * 512
+
+
+def test_two_emulators_both_get_the_update(world):
+    """The same thing with no RetroArch involved: neither starves the other."""
+    mgba = world.install("mgba")
+    vbam = world.install("vbam")
+    delta = world.delta_save(b"v1" * 512)
+    entry = entry_for("gba", "Pokemon", delta)
+    state = manifest.Manifest(world.paths.manifest_path)
+
+    mgba_dir = world.root / "mgba-saves"
+    vbam_dir = world.root / "vbam-saves"
+    for directory in (mgba_dir, vbam_dir):
+        directory.mkdir()
+
+    for installed, directory in ((mgba, mgba_dir), (vbam, vbam_dir)):
+        sync.sync_emulator(
+            world.paths, entry, installed, rom_dir=directory, state=state
+        )
+
+    delta.write_bytes(b"v2" * 512)
+    for installed, directory in ((mgba, mgba_dir), (vbam, vbam_dir)):
+        sync.sync_emulator(
+            world.paths, entry, installed, rom_dir=directory, state=state
+        )
+
+    assert (mgba_dir / "Pokemon.sav").read_bytes() == b"v2" * 512
+    assert (vbam_dir / "Pokemon.sav").read_bytes() == b"v2" * 512
+
+
+def test_recording_one_target_leaves_another_s_delta_half_alone(world):
+    """The manifest-level statement of the same fact."""
+    state = manifest.Manifest(world.paths.manifest_path)
+    old = world.delta_save(b"v1" * 512, name="old")
+    new = world.delta_save(b"v2" * 512, name="new")
+    desktop = world.delta_save(b"x" * 64, name="desktop")
+
+    state.record("g", old, desktop, "mgba")
+    state.record("g", new, desktop)  # RetroArch moves on
+
+    assert state.get("g").agreement("mgba").delta.sha1 == manifest.sha1_of(old)
+    assert state.get("g").agreement("retroarch").delta.sha1 == manifest.sha1_of(new)
+
+
+def test_the_pair_survives_a_round_trip(world):
+    state = manifest.Manifest(world.paths.manifest_path)
+    delta = world.delta_save(b"v1" * 512)
+    desktop = world.delta_save(b"x" * 64, name="desktop")
+    state.record("g", delta, desktop, "mgba")
+    state.save()
+
+    agreed = manifest.Manifest.load(world.paths.manifest_path).get("g").agreement("mgba")
+
+    assert agreed.delta.sha1 == manifest.sha1_of(delta)
+    assert agreed.desktop.sha1 == manifest.sha1_of(desktop)
+
+
+def test_a_target_written_before_the_pair_existed_is_read_safely(world):
+    """The first shape of per-target state stored only the desktop half.
+
+    It has to read as "we never recorded what Delta looked like", so the next
+    sync re-evaluates rather than trusting a pairing that was never written.
+    """
+    raw = {"delta": None, "retroarch": None, "targets": {"mgba": {"sha1": "abc", "size": 4}}}
+
+    agreed = manifest.Entry.from_json(raw).agreement("mgba")
+
+    assert agreed.delta is None
+    assert agreed.desktop.sha1 == "abc"

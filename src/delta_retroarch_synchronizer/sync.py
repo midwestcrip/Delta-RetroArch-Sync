@@ -115,7 +115,15 @@ def decide(
     """
     delta_exists = delta_save is not None and delta_save.is_file()
     retro_exists = retroarch_save is not None and retroarch_save.is_file()
-    agreed_desktop = entry.desktop(target)
+
+    # Both halves come from this target's own agreement. Reading the Delta half
+    # from the entry as a whole would mean asking "has Delta changed since
+    # *someone* synced" when the only useful question is "since this target
+    # did" -- and with RetroArch reconciled first, the answer for every
+    # standalone emulator behind it was permanently "no".
+    agreed = entry.agreement(target)
+    agreed_delta = agreed.delta
+    agreed_desktop = agreed.desktop
 
     if not delta_exists and not retro_exists:
         return Action.MISSING, "neither side has a save"
@@ -156,9 +164,9 @@ def decide(
         return Action.PUSH, f"Delta's save is missing; restoring from {label}"
 
     delta_changed = not (
-        entry.delta is not None
+        agreed_delta is not None
         and delta_save is not None
-        and entry.delta.matches(delta_save)
+        and agreed_delta.matches(delta_save)
     )
     retro_changed = not (
         agreed_desktop is not None
