@@ -2085,7 +2085,12 @@ class LauncherWindow:
         sync_paths = prepared[0]
 
         if not point.backup.is_delta:
-            target = restore.find_target(point, sync_paths.save_dir, self.config)
+            target = restore.find_target(
+                point,
+                sync_paths.save_dir,
+                self.config,
+                self.config.retroarch_rom_dir,
+            )
             if target is None:
                 messagebox.showerror(
                     WINDOW_TITLE,
@@ -2126,7 +2131,11 @@ class LauncherWindow:
         try:
             if not point.backup.is_delta:
                 note = restore.restore_retroarch(
-                    point, sync_paths.save_dir, sync_paths.backup_dir, self.config
+                    point,
+                    sync_paths.save_dir,
+                    sync_paths.backup_dir,
+                    self.config,
+                    self.config.retroarch_rom_dir,
                 )
             elif point.backup.kind == "cheat":
                 note = restore.restore_delta_cheat(
