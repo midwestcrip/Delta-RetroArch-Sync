@@ -293,6 +293,12 @@ def no_registry(monkeypatch):
     from delta_retroarch_synchronizer import discovery
 
     monkeypatch.setattr(discovery, "install_dirs", lambda *args, **kwargs: [])
+    # And no folder to scan. `find_installed` falls back to walking wherever
+    # emulators are kept, which on this machine finds the real Mupen64Plus --
+    # a property of the machine, not of the code.
+    monkeypatch.setattr(
+        emulators, "search_roots", lambda extra=(): [Path(d) for d in extra]
+    )
 
 
 def test_an_emulator_is_found_in_a_folder_the_user_named(tmp_path, no_registry):

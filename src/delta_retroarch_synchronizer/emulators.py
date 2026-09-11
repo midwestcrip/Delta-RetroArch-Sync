@@ -30,6 +30,7 @@ of claim this module refuses to bet a save on.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass, field
@@ -108,6 +109,17 @@ class Emulator:
     #: as ``ConfigKey.files``.
     save_dirs: tuple[str, ...] = ()
     config: ConfigKey | None = None
+    #: How this emulator names a save file.
+    #:
+    #: ``"rom"`` -- after the ROM file, which is what most of these do and what
+    #: RetroArch does, so the sanitised game name works.
+    #:
+    #: ``"mupen64plus"`` -- after the ROM's *contents*: the ``GoodName`` from
+    #: its own ``mupen64plus.ini``, looked up by the ROM's MD5, plus the first
+    #: eight hex digits of that MD5. Measured against a real install, because
+    #: nothing short of running it would have said so -- and a save under any
+    #: other name is one the emulator silently never opens.
+    naming: str = "rom"
     note: str = ""
 
     def handles(self, system_key: str) -> bool:
@@ -259,6 +271,7 @@ EMULATORS: dict[str, Emulator] = {
         # The install-relative one is for a portable copy, which keeps its whole
         # data directory beside the executable rather than under %APPDATA%.
         save_dirs=("{appdata}/Mupen64Plus/save", "{install}/save"),
+        naming="mupen64plus",
         config=ConfigKey(
             files=("{appdata}/Mupen64Plus/mupen64plus.cfg",),
             key="SaveSRAMPath",
@@ -361,6 +374,110 @@ class Installed:
         return self.emulator.name
 
 
+#: How far below a search root to look for an executable. Two levels finds
+#: ``Emulators/nintendo/Mupen64Plus/mupen64plus-ui-console.exe`` from
+#: ``Emulators``, which is the layout that prompted this. Deeper would start
+#: walking ROM libraries, which can be tens of thousands of files on a network
+#: drive, for no gain.
+SEARCH_DEPTH = 3
+
+#: A hard stop on how many directories one scan will visit, whatever the depth
+#: allows. A search that is occasionally incomplete is fine -- ``path`` in
+#: config.toml is the answer for an unusual layout -- but one that hangs the
+#: launcher on somebody's NAS is not.
+SEARCH_BUDGET = 4000
+
+
+def scan_for_executables(
+    roots: Sequence[Path], executables: Sequence[str], *, budget: int = SEARCH_BUDGET
+) -> list[Path]:
+    """Look under ``roots`` for any of ``executables``, breadth first.
+
+    The registry cannot answer for most of these. They ship as a zip, so there
+    is no installer to write an uninstall entry or an App Paths registration,
+    and **MuiCache is written by the Windows shell rather than by execution** --
+    so an emulator launched from a terminal, a script or another program leaves
+    no trace there at all. Measured: a fresh Mupen64Plus, extracted and then run
+    from the command line, was invisible to all three registry sources.
+
+    So the last source is looking, and where to look is itself discovered
+    rather than guessed -- the folder RetroArch was found in, because people
+    keep their emulators together. See :func:`search_roots`.
+    """
+    wanted = {name.lower() for name in executables}
+    found: list[Path] = []
+    seen: set[Path] = set()
+    queue: list[tuple[Path, int]] = []
+
+    for root in roots:
+        try:
+            resolved = root.resolve()
+        except OSError:
+            continue
+        if resolved not in seen and resolved.is_dir():
+            seen.add(resolved)
+            queue.append((resolved, 0))
+
+    visited = 0
+    while queue and visited < budget:
+        directory, depth = queue.pop(0)
+        visited += 1
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_file() and entry.name.lower() in wanted:
+                    path = Path(entry.path)
+                    if path not in found:
+                        found.append(path)
+                elif entry.is_dir() and depth < SEARCH_DEPTH:
+                    child = Path(entry.path)
+                    if child not in seen:
+                        seen.add(child)
+                        queue.append((child, depth + 1))
+            except OSError:
+                continue
+    return found
+
+
+def search_roots(extra_dirs: Sequence[Path] = ()) -> list[Path]:
+    """Folders worth scanning, most likely first.
+
+    The first is the folder RetroArch lives in. That is not a guess: RetroArch's
+    own location is discovered from the registry or from its config, and an
+    emulator collection is a folder of folders -- on this machine RetroArch sits
+    at ``Emulators/RetroArch`` and Mupen64Plus at ``Emulators/nintendo/
+    Mupen64Plus``, so the one finds the other.
+    """
+    from . import discovery
+
+    roots: list[Path] = [Path(d) for d in extra_dirs]
+
+    config = discovery.find_retroarch_config()
+    if config.path is not None:
+        roots.append(config.path.parent.parent)
+
+    for directory in discovery.install_dirs(("retroarch.exe",), "retroarch"):
+        roots.append(directory.parent)
+
+    unique: list[Path] = []
+    for root in roots:
+        # Never a drive root. Taking the parent of an install folder is how
+        # "the folder emulators are kept in" is found, and it gives ``C:\`` for
+        # anything installed at the top of a drive -- which this machine has,
+        # as a stale uninstall entry naming a long-deleted C:\RetroArch-Win64.
+        # Measured: that one entry turned a 136-directory scan taking no
+        # measurable time into 29,649 directories and thirteen seconds, on a
+        # path the launcher runs when its window opens.
+        if root.parent == root:
+            continue
+        if root not in unique:
+            unique.append(root)
+    return unique
+
+
 def find_executable(emulator: Emulator, extra_dirs: tuple[Path, ...] = ()) -> Path | None:
     """Locate one emulator's executable, or None.
 
@@ -380,17 +497,136 @@ def find_executable(emulator: Emulator, extra_dirs: tuple[Path, ...] = ()) -> Pa
             candidate = directory / executable
             if candidate.is_file():
                 return candidate
-    return None
+
+    # Nothing in the registry and nowhere the user named. Look where emulators
+    # are kept -- which for most of these is the only source that ever answers,
+    # because a zip install writes no registry entry and running one from
+    # anywhere but Explorer writes no MuiCache entry either.
+    scanned = scan_for_executables(search_roots(), emulator.executables)
+    return scanned[0] if scanned else None
 
 
 def find_installed(extra_dirs: tuple[Path, ...] = ()) -> list[Installed]:
-    """Every emulator from the table that is actually on this machine."""
+    """Every emulator from the table that is actually on this machine.
+
+    One scan for all of them rather than one per emulator: the search roots are
+    the same, and walking a collection folder ten times over would turn a cheap
+    lookup into a visible pause in the launcher.
+    """
     found: list[Installed] = []
+    pending: list[Emulator] = []
+
     for emulator in EMULATORS.values():
-        executable = find_executable(emulator, extra_dirs)
+        executable = _from_registry_or_named(emulator, extra_dirs)
         if executable is not None:
             found.append(Installed(emulator, executable))
+        else:
+            pending.append(emulator)
+
+    if pending:
+        wanted = [name for emulator in pending for name in emulator.executables]
+        by_name: dict[str, Path] = {}
+        for path in scan_for_executables(search_roots(extra_dirs), wanted):
+            by_name.setdefault(path.name.lower(), path)
+        for emulator in pending:
+            for name in emulator.executables:
+                path = by_name.get(name.lower())
+                if path is not None:
+                    found.append(Installed(emulator, path))
+                    break
+
+    found.sort(key=lambda item: item.emulator.name.lower())
     return found
+
+
+def _from_registry_or_named(
+    emulator: Emulator, extra_dirs: Sequence[Path]
+) -> Path | None:
+    """The cheap half of :func:`find_executable`, with no directory walk."""
+    from . import discovery
+
+    directories = list(
+        discovery.install_dirs(emulator.executables, emulator.uninstall_match)
+    )
+    directories.extend(extra_dirs)
+    for directory in directories:
+        for executable in emulator.executables:
+            candidate = Path(directory) / executable
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+#: ``mupen64plus.ini`` is ~430 KB and keyed by ROM MD5. Parsed once per install
+#: and kept, because a sync asks it once per N64 game.
+_GOODNAMES: dict[Path, dict[str, str]] = {}
+
+
+def goodnames(ini_path: Path) -> dict[str, str]:
+    """Map ROM MD5 (upper hex) to GoodName, from ``mupen64plus.ini``.
+
+    The file's section headers *are* the MD5s::
+
+        [20B854B239203BAF6C961B850A4A51A2]
+        GoodName=Super Mario 64 (U) [!]
+        CRC=635A2BFF 8B022326
+        SaveType=Eeprom 4KB
+    """
+    cached = _GOODNAMES.get(ini_path)
+    if cached is not None:
+        return cached
+
+    found: dict[str, str] = {}
+    try:
+        text = ini_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        _GOODNAMES[ini_path] = found
+        return found
+
+    section = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1].strip().upper()
+        elif section and stripped.lower().startswith("goodname="):
+            found[section] = stripped.partition("=")[2].strip()
+    _GOODNAMES[ini_path] = found
+    return found
+
+
+def mupen64plus_stem(install_dir: Path, rom: Path) -> str | None:
+    """What Mupen64Plus will call this ROM's save, without the extension.
+
+    ``<GoodName>-<first eight hex digits of the ROM's MD5>``. Both halves come
+    from the same MD5, so a ROM the database does not know yields None rather
+    than a guessed name -- and a save written under a guessed name is one the
+    emulator never opens, which looks exactly like the sync having done nothing.
+    """
+    try:
+        digest = hashlib.md5(rom.read_bytes()).hexdigest().upper()
+    except OSError:
+        return None
+    good = goodnames(install_dir / "mupen64plus.ini").get(digest)
+    if not good:
+        return None
+    return f"{good}-{digest[:8]}"
+
+
+def save_stem(installed: "Installed", game_name: str, rom: Path | None) -> str | None:
+    """The filename stem this emulator expects for one game, or None.
+
+    None means "this emulator's own name for the save cannot be worked out",
+    which is a refusal rather than a fallback: writing ``Super Mario 64.eep``
+    where Mupen64Plus looks for ``Super Mario 64 (U) [!]-20B854B2.eep`` puts a
+    real save on disk that nothing will ever read.
+    """
+    from . import naming
+
+    if installed.emulator.naming == "mupen64plus":
+        if rom is None or not rom.is_file():
+            return None
+        return mupen64plus_stem(installed.install_dir, rom)
+    return naming.safe_filename(game_name)
 
 
 _SETTING = re.compile(r'^\s*(?P<key>[^=;#\[\]]+?)\s*=\s*"?(?P<value>.*?)"?\s*$')

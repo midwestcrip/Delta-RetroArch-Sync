@@ -29,17 +29,38 @@ GBA_SAVE = b"\xa5" * 131072
 SRAM = b"\x77" * 0x8000
 
 
-def entry_for(key, name, save_path):
+def entry_for(key, name, save_path, rom_path=None):
     system = systems.SYSTEMS[key]
     return inspect_module.GameEntry(
         identifier=f"{key}-sha1",
         name=name,
         delta_type=system.delta_type,
         system=system,
-        rom_path=None,
+        rom_path=rom_path,
         save_path=save_path,
         extra_paths={},
     )
+
+
+def mupen_rom(world, installed, name):
+    """A ROM plus the mupen64plus.ini entry that names its save.
+
+    Mupen64Plus names a save after the ROM's *contents* -- the GoodName from its
+    own database, looked up by the ROM's MD5, plus that MD5's first eight hex
+    digits. Measured against a real install; see `emulators.mupen64plus_stem`.
+    So a test that hands it a ROM it has never heard of is testing the refusal,
+    not the naming.
+    """
+    import hashlib
+
+    rom = world.root / f"{name}.z64"
+    rom.write_bytes(name.encode() * 64)
+    digest = hashlib.md5(rom.read_bytes()).hexdigest().upper()
+    (installed.install_dir / "mupen64plus.ini").write_text(
+        f"[{digest}]\nGoodName={name} (U) [!]\nCRC=00000000 00000000\n",
+        encoding="utf-8",
+    )
+    return rom, f"{name} (U) [!]-{digest[:8]}"
 
 
 @pytest.fixture
@@ -161,13 +182,14 @@ def test_n64_is_a_plain_copy_to_the_extension_the_size_names(world):
     installed = world.install("mupen64plus")
     saves = installed.install_dir / "save"
     saves.mkdir()
-    entry = entry_for("n64", "Ocarina of Time", world.delta_save(SRAM))
+    rom, stem = mupen_rom(world, installed, "Ocarina of Time")
+    entry = entry_for("n64", "Ocarina of Time", world.delta_save(SRAM), rom)
 
     outcomes = sync.sync_emulator(
         world.paths, entry, installed, rom_dir=world.roms, override=saves
     )
 
-    written = saves / "Ocarina of Time.sra"
+    written = saves / f"{stem}.sra"
     assert written.is_file()
     assert written.read_bytes() == SRAM
     assert only(outcomes).action is sync.Action.PULL
@@ -177,13 +199,64 @@ def test_a_4k_eeprom_save_becomes_an_eep(world):
     installed = world.install("mupen64plus")
     saves = installed.install_dir / "save"
     saves.mkdir()
-    entry = entry_for("n64", "Super Mario 64", world.delta_save(b"\x22" * 0x200))
+    rom, stem = mupen_rom(world, installed, "Super Mario 64")
+    entry = entry_for(
+        "n64", "Super Mario 64", world.delta_save(b"\x22" * 0x200), rom
+    )
 
     sync.sync_emulator(
         world.paths, entry, installed, rom_dir=world.roms, override=saves
     )
 
-    assert (saves / "Super Mario 64.eep").is_file()
+    assert (saves / f"{stem}.eep").is_file()
+
+
+def test_the_save_is_named_the_way_mupen64plus_names_it(world):
+    """Measured against a real install, 2026-09-11.
+
+    Mupen64Plus does not name a save after the ROM *file*. It names it after the
+    ROM's contents: the GoodName from its own database, looked up by MD5, plus
+    that MD5's first eight hex digits. A real install, handed
+    ``Super Mario 64.z64``, wrote ``Super Mario 64 (U) [!]-20B854B2.eep``.
+
+    So the display name this project had been using produced a file the emulator
+    silently never opens -- a sync that reports success and changes nothing the
+    player can see.
+    """
+    installed = world.install("mupen64plus")
+    saves = installed.install_dir / "save"
+    saves.mkdir()
+    rom, stem = mupen_rom(world, installed, "Super Mario 64")
+    entry = entry_for("n64", "Super Mario 64", world.delta_save(b"\x22" * 0x200), rom)
+
+    sync.sync_emulator(
+        world.paths, entry, installed, rom_dir=world.roms, override=saves
+    )
+
+    assert stem.startswith("Super Mario 64 (U) [!]-")
+    assert (saves / f"{stem}.eep").is_file()
+    assert not (saves / "Super Mario 64.eep").exists()
+
+
+def test_a_rom_mupen64plus_does_not_know_is_refused(world):
+    """Rather than written under a name it will never look for."""
+    installed = world.install("mupen64plus")
+    saves = installed.install_dir / "save"
+    saves.mkdir()
+    (installed.install_dir / "mupen64plus.ini").write_text("", encoding="utf-8")
+    rom = world.root / "Homebrew.z64"
+    rom.write_bytes(b"nobody knows this one" * 32)
+    entry = entry_for("n64", "Homebrew", world.delta_save(b"\x22" * 0x200), rom)
+
+    outcome = only(
+        sync.sync_emulator(
+            world.paths, entry, installed, rom_dir=world.roms, override=saves
+        )
+    )
+
+    assert outcome.action is sync.Action.SKIPPED
+    assert "never opens" in outcome.detail
+    assert list(saves.iterdir()) == []
 
 
 def test_an_n64_save_of_an_impossible_size_is_refused(world):
@@ -370,12 +443,13 @@ def test_every_n64_extension_is_looked_for(world):
     installed = world.install("mupen64plus")
     saves = installed.install_dir / "save"
     saves.mkdir()
-    (saves / "Majora's Mask.fla").write_bytes(b"\x00" * 0x20000)
-    entry = entry_for("n64", "Majora's Mask", None)
+    rom, stem = mupen_rom(world, installed, "Majora's Mask")
+    (saves / f"{stem}.fla").write_bytes(b"\x00" * 0x20000)
+    entry = entry_for("n64", "Majora's Mask", None, rom)
 
     found = sync.find_emulator_save(installed, entry, world.roms)
 
-    assert found == saves / "Majora's Mask.fla"
+    assert found == saves / f"{stem}.fla"
 
 
 # --- the launcher's pass ---------------------------------------------------

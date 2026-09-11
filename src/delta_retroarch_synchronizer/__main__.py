@@ -543,9 +543,10 @@ def run_emulators_command() -> int:
     if not found:
         print("  None found.")
         print(
-            "  Most of these ship as a zip rather than an installer, so they "
-            "are only\n  found once they have been run at least once. If you "
-            "have one, name its\n  folder in config.toml:\n"
+            "  Most of these ship as a zip rather than an installer, so Windows "
+            "has no\n  record of them. This looks in the registry and then in "
+            "the folder your\n  other emulators are kept in. If yours is "
+            "somewhere else, name it in\n  config.toml:\n"
         )
         print("      [emulators.mgba]")
         print('      path = "C:/Emulators/mGBA"')

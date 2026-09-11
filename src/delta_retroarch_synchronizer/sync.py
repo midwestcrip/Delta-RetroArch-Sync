@@ -293,6 +293,57 @@ CONTROLLER_PAK_ONLY_NOTICE = (
 )
 
 
+BLANK_N64_SAVE_NOTICE = (
+    "Delta's save for this game is entirely unwritten, so the cartridge holds "
+    "nothing. On Nintendo 64 that usually means the game keeps its progress on "
+    "a Controller Pak instead -- which Delta does not sync, so it will not "
+    "arrive this way. Use the Controller Pak download to fetch it. Said once."
+)
+
+
+def blank_n64_save_notice(
+    entry: inspect_module.GameEntry,
+    source: Path,
+    state: manifest_module.Manifest,
+) -> Outcome | None:
+    """Say once when the N64 save that just synced is entirely unwritten.
+
+    The standalone counterpart to :func:`controller_pak_notice`, which cannot
+    serve here: that one reads RetroArch's combined ``.srm`` and asks whether
+    the pak region inside it holds anything, and a standalone emulator has no
+    such region -- its paks are a separate ``.mpk`` file that this sync never
+    touches.
+
+    So the evidence is the other side. A Delta N64 save of nothing but ``0xFF``
+    is an EEPROM the game has never written, which is exactly what a
+    pak-only game looks like from Dropbox: Doom 64's is 512 bytes of filler
+    while its real progress sits in a 131,072-byte pak on the phone.
+
+    Detected from the bytes, not from a list of titles -- a hardcoded list of
+    "games that use the Controller Pak" would be a guess dressed as a fact, and
+    this project has been wrong that way before. The cost of reading the bytes
+    is that a genuinely new save that happens to be blank says this too, which
+    is a sentence rather than a mistake.
+    """
+    system = entry.system
+    if system is None or system.key != "n64":
+        return None
+
+    key = f"{entry.identifier}:blank-n64-save"
+    if state.already_said(key):
+        return None
+
+    try:
+        data = source.read_bytes()
+    except OSError:
+        return None
+    if not data or data != bytes([n64.EMPTY]) * len(data):
+        return None
+
+    state.record_said(key)
+    return Outcome(entry.name, Action.SKIPPED, BLANK_N64_SAVE_NOTICE)
+
+
 def controller_pak_notice(
     entry: inspect_module.GameEntry,
     target: Path,
@@ -1371,11 +1422,18 @@ def find_emulator_save(
         else tuple(emulators.N64_EXTENSIONS.values())
     )
 
+    # The same stem the write would use. Looking for the game's display name
+    # here while writing Mupen64Plus's GoodName would mean never recognising
+    # the emulator's own save -- so every run would read as a first sync.
+    stem = emulators.save_stem(installed, entry.name, entry.rom_path)
+    if stem is None:
+        return None
+
     for directory in emulator_search_dirs(installed, rom_dir):
         if not directory.is_dir():
             continue
         for extension in extensions:
-            candidate = directory / naming.save_filename(entry.name, extension)
+            candidate = directory / f"{stem}.{extension}"
             if candidate.is_file():
                 return candidate
     return None
@@ -1421,8 +1479,18 @@ def emulator_target(
     else:
         return None, "neither side has a save"
 
-    filename = naming.save_filename(entry.name, extension)
-    return location.directory / filename, location.source
+    # The stem is the emulator's business, not ours. Mupen64Plus names a save
+    # after the ROM's *contents* -- its GoodName plus an MD5 prefix -- so the
+    # game's display name produces a file it will never open.
+    stem = emulators.save_stem(installed, entry.name, entry.rom_path)
+    if stem is None:
+        return None, (
+            f"{installed.emulator.name} names this game's save after the ROM "
+            "itself, and this ROM is not in its database "
+            f"({installed.install_dir / 'mupen64plus.ini'}). Writing any other "
+            "name would put a save on disk that it never opens."
+        )
+    return location.directory / f"{stem}.{extension}", location.source
 
 
 def sync_emulator(
@@ -1554,6 +1622,13 @@ def sync_emulator(
         if saved is not None:
             note += " (previous version backed up)"
         outcomes.append(made(Action.PULL, note, applied=True))
+
+        # Said after the copy, not instead of it. The blank save is still worth
+        # writing -- it keeps the two sides agreed -- but a player whose
+        # progress is on a pak needs to know why it did not arrive.
+        blank = blank_n64_save_notice(entry, entry.save_path, state)
+        if blank is not None:
+            outcomes.append(made(blank.action, blank.detail))
 
     elif action is Action.PUSH:
         if not allow_push:
