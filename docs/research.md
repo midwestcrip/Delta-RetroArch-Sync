@@ -1057,6 +1057,30 @@ exists precisely to say *this layout has been checked against this core*. A
 standalone target is another entry in that table plus its own discovery, not a
 new architecture.
 
+### Mupen64Plus builds a save filename in three steps
+
+Measured against a real 2.6.0 install on 2026-09-11, by editing a GoodName in
+its own database, deleting the save, running it, and reading back what it made.
+None of this is guessable, and getting any step wrong writes a real file under a
+name the emulator never opens -- which looks, from outside, exactly like the
+sync having done nothing.
+
+1. Take `GoodName` from `mupen64plus.ini`, looked up by the **MD5 of the ROM in
+   native big-endian order**. A `.v64` or `.n64` dump must be converted first or
+   the lookup misses a game the database knows.
+2. **Cut it to 32 characters.** A 37-character probe kept exactly the first 32.
+   This is not an edge case: `Legend of Zelda, The - Ocarina of Time (U) (V1.2)
+   [!]` is 52 characters, so two of the seven N64 games on this machine were
+   affected.
+3. **Replace each of `< > : " / \ | ? *` with `_`.** Eight real entries in its
+   database carry a colon -- `Doom 64: Complete Edition` among them -- which
+   Windows cannot put in a filename at all.
+
+Then append `-<first eight hex digits of that MD5>` and the extension.
+
+So `Super Mario 64.z64` becomes `Super Mario 64 (U) [!]-20B854B2.eep`, and
+Ocarina of Time becomes `Legend of Zelda, The - Ocarina o-57A9719A.sra`.
+
 ## Safety constraint
 
 Delta's documentation warns that files in the Dropbox folder are not intended to

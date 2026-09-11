@@ -594,22 +594,84 @@ def goodnames(ini_path: Path) -> dict[str, str]:
     return found
 
 
+#: Mupen64Plus cuts the GoodName at 32 characters before using it as a
+#: filename. Measured: a GoodName of 37 characters produced a save whose name
+#: held the first 32 and nothing more.
+MUPEN64PLUS_NAME_LIMIT = 32
+
+#: And replaces each of these with an underscore. Measured by putting all nine
+#: into a GoodName and reading back what it wrote. It is the set Windows
+#: forbids, which is why eight real entries in its own database -- "Doom 64:
+#: Complete Edition" among them -- would otherwise produce a filename Windows
+#: cannot even represent.
+MUPEN64PLUS_ILLEGAL = '<>:"/\\|?*'
+
+
+def mupen64plus_filename(goodname: str, digest: str) -> str:
+    """The stem Mupen64Plus builds from a GoodName and a ROM MD5.
+
+    Three steps, all measured against a real 2.6.0 install rather than read out
+    of its source: cut to 32 characters, replace the characters Windows forbids
+    with underscores, then append the MD5's first eight hex digits.
+
+    Getting any of the three wrong produces a real file under a name the
+    emulator never looks for -- which is indistinguishable, from the outside,
+    from the sync having quietly done nothing.
+    """
+    trimmed = goodname[:MUPEN64PLUS_NAME_LIMIT]
+    safe = "".join("_" if c in MUPEN64PLUS_ILLEGAL else c for c in trimmed)
+    return f"{safe}-{digest[:8].upper()}"
+
+
+#: The first four bytes of an N64 ROM, which say how the rest is arranged.
+#: Every dump is the same data; only the byte order differs.
+Z64_MAGIC = b"\x80\x37\x12\x40"   # big-endian, the cartridge's own order
+V64_MAGIC = b"\x37\x80\x40\x12"   # 16-bit byte-swapped
+N64_MAGIC = b"\x40\x12\x37\x80"   # 32-bit little-endian
+
+
+def to_z64(data: bytes) -> bytes | None:
+    """A ROM in native big-endian order, whatever order it arrived in.
+
+    Mupen64Plus converts a ROM to this order *before* computing the MD5 it looks
+    its database up by, so hashing the file as it sits on disk finds nothing for
+    a byte-swapped dump -- and the refusal would blame its database for not
+    knowing a game it knows perfectly well.
+
+    None for anything that is not an N64 ROM at all, rather than a guess.
+    """
+    head = data[:4]
+    if head == Z64_MAGIC:
+        return data
+    if head == V64_MAGIC:
+        return bytes(data[i ^ 1] for i in range(len(data) - len(data) % 2))
+    if head == N64_MAGIC:
+        out = bytearray(len(data) - len(data) % 4)
+        for i in range(0, len(out), 4):
+            out[i : i + 4] = data[i : i + 4][::-1]
+        return bytes(out)
+    return None
+
+
 def mupen64plus_stem(install_dir: Path, rom: Path) -> str | None:
     """What Mupen64Plus will call this ROM's save, without the extension.
 
-    ``<GoodName>-<first eight hex digits of the ROM's MD5>``. Both halves come
-    from the same MD5, so a ROM the database does not know yields None rather
-    than a guessed name -- and a save written under a guessed name is one the
-    emulator never opens, which looks exactly like the sync having done nothing.
+    Both halves come from the same MD5, so a ROM the database does not know
+    yields None rather than a guessed name -- and a save written under a guessed
+    name is one the emulator never opens, which looks exactly like the sync
+    having done nothing.
     """
     try:
-        digest = hashlib.md5(rom.read_bytes()).hexdigest().upper()
+        native = to_z64(rom.read_bytes())
     except OSError:
         return None
+    if native is None:
+        return None
+    digest = hashlib.md5(native).hexdigest().upper()
     good = goodnames(install_dir / "mupen64plus.ini").get(digest)
     if not good:
         return None
-    return f"{good}-{digest[:8]}"
+    return mupen64plus_filename(good, digest)
 
 
 def save_stem(installed: "Installed", game_name: str, rom: Path | None) -> str | None:

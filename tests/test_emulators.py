@@ -330,3 +330,92 @@ def test_an_unset_environment_variable_yields_no_path(monkeypatch):
     monkeypatch.delenv("APPDATA", raising=False)
 
     assert emulators._expand("{appdata}/Mupen64Plus/save", None) is None
+
+
+# --- how Mupen64Plus builds a save filename --------------------------------
+#
+# Every rule below was measured against a real 2.6.0 install by changing a
+# GoodName in its own database, deleting the save, running it, and reading back
+# the filename it created. None of it is read out of its source, and none of it
+# was guessable: the first version of this feature used the game's display name
+# and produced files the emulator silently never opened.
+
+
+def test_the_stem_is_the_goodname_plus_an_md5_prefix():
+    """Measured: 'Super Mario 64 (U) [!]' + 20B854B2... -> this exact name."""
+    stem = emulators.mupen64plus_filename(
+        "Super Mario 64 (U) [!]", "20B854B239203BAF6C961B850A4A51A2"
+    )
+
+    assert stem == "Super Mario 64 (U) [!]-20B854B2"
+
+
+def test_the_goodname_is_cut_at_32_characters():
+    """A 37-character GoodName produced a name holding the first 32."""
+    long_name = 'AB<CD>EF:GH"IJ/KL\\MN|OP?QR*ST-UV-WXYZ'
+    assert len(long_name) == 37
+
+    stem = emulators.mupen64plus_filename(long_name, "20B854B2")
+
+    assert stem == "AB_CD_EF_GH_IJ_KL_MN_OP_QR_ST-UV-20B854B2"
+    assert stem.split("-20B854B2")[0].endswith("UV")
+
+
+@pytest.mark.parametrize("char", list(r'<>:"/\|?*'))
+def test_every_character_windows_forbids_becomes_an_underscore(char):
+    """Eight real entries in its database carry a colon, 'Doom 64: Complete
+    Edition' among them, and a colon is not a filename Windows can represent."""
+    stem = emulators.mupen64plus_filename(f"A{char}B", "DEADBEEF")
+
+    assert stem == "A_B-DEADBEEF"
+
+
+def test_a_hyphen_is_not_sanitised():
+    """It is ordinary in a GoodName and survives, unlike the forbidden nine."""
+    assert emulators.mupen64plus_filename("A-B", "DEADBEEF") == "A-B-DEADBEEF"
+
+
+# --- byte order ------------------------------------------------------------
+
+
+def _swapped(data, width):
+    return b"".join(data[i:i + width][::-1] for i in range(0, len(data), width))
+
+
+def test_a_native_rom_is_left_alone():
+    rom = emulators.Z64_MAGIC + bytes(range(60))
+
+    assert emulators.to_z64(rom) == rom
+
+
+def test_a_byte_swapped_rom_is_converted():
+    """Mupen64Plus hashes the ROM in native order, so a v64 dump of the same
+    game must hash to the same MD5 or its database is missed entirely."""
+    native = emulators.Z64_MAGIC + bytes(range(60))
+    v64 = _swapped(native, 2)
+    assert v64[:4] == emulators.V64_MAGIC
+
+    assert emulators.to_z64(v64) == native
+
+
+def test_a_little_endian_rom_is_converted():
+    native = emulators.Z64_MAGIC + bytes(range(60))
+    n64 = _swapped(native, 4)
+    assert n64[:4] == emulators.N64_MAGIC
+
+    assert emulators.to_z64(n64) == native
+
+
+def test_something_that_is_not_a_rom_is_refused():
+    """Rather than hashed anyway and looked up as if it were one."""
+    assert emulators.to_z64(b"not a rom at all" * 4) is None
+
+
+def test_an_unknown_rom_yields_no_stem(tmp_path):
+    """Both halves of the name come from the MD5, so an unknown ROM has none."""
+    installed = _installed(tmp_path, "mupen64plus")
+    (installed.install_dir / "mupen64plus.ini").write_text("", encoding="utf-8")
+    rom = tmp_path / "homebrew.z64"
+    rom.write_bytes(emulators.Z64_MAGIC + b"\x00" * 60)
+
+    assert emulators.mupen64plus_stem(installed.install_dir, rom) is None
