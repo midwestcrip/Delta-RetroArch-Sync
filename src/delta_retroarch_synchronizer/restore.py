@@ -252,15 +252,28 @@ RESTORE_IS_A_CHANGE = (
 
 
 def emulator_search_roots(
-    key: str, config: "config_module.Config"
+    key: str,
+    config: "config_module.Config",
+    rom_dir: Path | None = None,
 ) -> list[Path]:
     """Where a standalone emulator's save could be, for a restore.
 
     Same principle as :func:`find_retroarch_target`: the file is searched for
     rather than reconstructed, because where an emulator writes can have changed
     since the backup was taken. The difference is that there is no single folder
-    to search -- most of these write beside the ROM -- so the candidates are the
-    emulator's own folders plus the ROM folder.
+    to search -- most of these write beside the ROM -- so several candidates are
+    tried.
+
+    **The first candidate is the answer the sync itself would give**, via
+    ``resolve_save_dir``, rather than a list assembled here. Re-deriving the
+    candidates by hand is what broke this: that list held the install folder,
+    the emulator's usual folders and the *configured* ROM folder, and so missed
+    both of the automatic answers -- the folder the emulator's own config file
+    names, and the ROM folder derived when none is configured. Either one meant
+    a backup that could not be put back.
+
+    The rest are still tried afterwards, because a save written before the
+    emulator's config changed is exactly the one someone needs back.
     """
     from . import emulators as emulators_module
 
@@ -276,28 +289,40 @@ def emulator_search_roots(
     ):
         if installed.emulator.key != key:
             continue
+        resolved = emulators_module.resolve_save_dir(
+            installed, rom_dir, override=override
+        )
+        if resolved.directory is not None:
+            roots.append(resolved.directory)
         roots.append(installed.install_dir)
         for template in installed.emulator.save_dirs:
             candidate = emulators_module._expand(template, installed.install_dir)
             if candidate is not None:
                 roots.append(candidate)
 
-    if config.retroarch_rom_dir is not None:
-        roots.append(config.retroarch_rom_dir)
-    return [root for root in roots if root.is_dir()]
+    for candidate in (rom_dir, config.retroarch_rom_dir):
+        if candidate is not None:
+            roots.append(candidate)
+
+    seen: list[Path] = []
+    for root in roots:
+        if root.is_dir() and root not in seen:
+            seen.append(root)
+    return seen
 
 
 def find_target(
     point: RestorePoint,
     save_dir: Path,
     config: "config_module.Config | None" = None,
+    rom_dir: Path | None = None,
 ) -> Path | None:
     """Where a desktop-side backup came from, RetroArch's or an emulator's."""
     if not point.backup.emulator:
         return find_retroarch_target(save_dir, point.backup.original_name)
     if config is None:
         return None
-    for root in emulator_search_roots(point.backup.emulator, config):
+    for root in emulator_search_roots(point.backup.emulator, config, rom_dir):
         found = find_retroarch_target(root, point.backup.original_name)
         if found is not None:
             return found
@@ -309,6 +334,7 @@ def restore_retroarch(
     save_dir: Path,
     backup_dir: Path,
     config: "config_module.Config | None" = None,
+    rom_dir: Path | None = None,
 ) -> str:
     """Put a desktop-side file back, backing up what is there now.
 
@@ -319,7 +345,7 @@ def restore_retroarch(
     from .sync import backup as take_backup
     from .sync import copy_atomically
 
-    target = find_target(point, save_dir, config)
+    target = find_target(point, save_dir, config, rom_dir)
     if target is None:
         where = point.backup.side if point.backup.emulator else f"under {save_dir}"
         raise FileNotFoundError(

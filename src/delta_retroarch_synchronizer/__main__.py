@@ -299,7 +299,10 @@ def run_restore_command(number: int, confirmed: bool) -> int:
     print(f"\n  {point.describe()}")
 
     if not point.backup.is_delta:
-        target = restore.find_target(point, save_dir, config_module.load())
+        loaded = config_module.load()
+        target = restore.find_target(
+            point, save_dir, loaded, config_module.rom_dir(loaded, retroarch_config)
+        )
         destination = str(target) if target else "(not found -- restore will fail)"
         print(f"  would overwrite: {destination}")
     else:
@@ -312,8 +315,13 @@ def run_restore_command(number: int, confirmed: bool) -> int:
 
     try:
         if not point.backup.is_delta:
+            loaded = config_module.load()
             note = restore.restore_retroarch(
-                point, save_dir, sync_paths.backup_dir, config_module.load()
+                point,
+                save_dir,
+                sync_paths.backup_dir,
+                loaded,
+                config_module.rom_dir(loaded, retroarch_config),
             )
         elif point.backup.kind == "cheat":
             note = restore.restore_delta_cheat(
@@ -369,7 +377,7 @@ def run_sync_command(dry_run: bool, allow_push: bool) -> int:
     # RetroArch has no canonical ROM location, so default to a folder beside
     # the install and let config.toml override it.
     config = config_module.load()
-    rom_dir = config.retroarch_rom_dir or (retroarch_config.parent / "roms")
+    rom_dir = config_module.rom_dir(config, retroarch_config)
     playlist_dir = discovery.resolve_retroarch_dir(
         settings, "playlist_directory", retroarch_config, "playlists"
     )

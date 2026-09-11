@@ -65,6 +65,25 @@ class Config:
     shortcuts_offered: bool = False
 
 
+def rom_dir(config: Config, retroarch_config: Path | None) -> Path | None:
+    """Where ROMs copied out of Delta go, set or derived.
+
+    RetroArch has no canonical ROM location, so unset means "a folder beside the
+    config". Defined once here because more than one caller needs the answer and
+    they must agree: the `sync` command derived it inline while the restore path
+    read only the configured value, so a save written beside the ROM by default
+    was looked for somewhere that value was ``None`` -- and a standalone
+    emulator's backup could not be put back at all, which is the commonest case
+    rather than an edge one, since beside-the-ROM is most of these emulators'
+    default.
+    """
+    if config.retroarch_rom_dir is not None:
+        return config.retroarch_rom_dir
+    if retroarch_config is not None:
+        return retroarch_config.parent / "roms"
+    return None
+
+
 def _path(raw: object) -> Path | None:
     return Path(str(raw)).expanduser() if isinstance(raw, str) and raw.strip() else None
 

@@ -95,11 +95,13 @@ def resolve_paths(
         if exe is not None:
             config = replace(config, retroarch_exe=exe)
 
-    if config.retroarch_rom_dir is None and config.retroarch_config:
-        config = replace(
-            config,
-            retroarch_rom_dir=config.retroarch_config.parent / "roms",
-        )
+    # Normalised into the config here, so everything downstream -- the sync, the
+    # restore search -- sees the same folder. The same derivation lives in
+    # ``config.rom_dir`` for the command line, which has no normalising step.
+    if config.retroarch_rom_dir is None:
+        derived = config_module.rom_dir(config, config.retroarch_config)
+        if derived is not None:
+            config = replace(config, retroarch_rom_dir=derived)
 
     return config, notes
 

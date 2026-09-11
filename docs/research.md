@@ -1009,7 +1009,16 @@ new architecture. Two things it did not predict:
     conflict that cannot be cleared, because there is no second version to
     choose, and recurs every run. The second one is now refused with that
     explanation and told to set `save_dir`.
-  - The whole suite passed before all five fixes. None of these bugs is
+  - **Restore has to search where the sync actually wrote, and re-deriving
+    that by hand got it wrong.** The first attempt assembled candidates itself
+    -- install folder, usual folders, *configured* ROM folder -- and so missed
+    both automatic answers: the folder the emulator's own config file names, and
+    the ROM folder derived when none is configured. The second is the common
+    case, since beside-the-ROM is most of these emulators' default, so most
+    standalone backups could not be put back. Now it calls `resolve_save_dir`,
+    the same function the sync asks, and `config.rom_dir` is the single
+    definition of the derived folder that both drivers use.
+  - The whole suite passed before all six fixes. None of these bugs is
     reachable with one target, which is what every existing test had.
 - **The gate is per-save, not per-emulator.** Nothing here has run any of these
   emulators, so `check_shape` measures the file the emulator has already written

@@ -22,6 +22,7 @@ import pytest
 
 from delta_retroarch_synchronizer import emulators
 from delta_retroarch_synchronizer import inspect as inspect_module
+from delta_retroarch_synchronizer import config as config_module
 from delta_retroarch_synchronizer import manifest, sync, systems
 
 GBA_SAVE = b"\xa5" * 131072
@@ -910,3 +911,112 @@ def test_without_a_claimed_dict_nothing_changes(world):
     )
 
     assert outcome.action is sync.Action.PULL
+
+
+# --- a backup has to be restorable wherever the sync put it ------------------
+
+
+def _mgba_at(world):
+    installed = world.install("mgba")
+    return installed, config_module.Config(
+        emulator_paths={"mgba": installed.install_dir}
+    )
+
+
+def _backup(world, name="Pokemon.sav"):
+    from delta_retroarch_synchronizer import restore
+
+    folder = world.paths.emulator_backup_dir("mgba")
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{name}.20260910T120000000000.bak").write_bytes(b"older")
+    return restore.restore_points(restore.scan(world.paths.backup_dir), {})[0]
+
+
+def test_a_save_in_the_folder_the_emulators_own_config_names_is_found(world):
+    """The first automatic answer the hand-written candidate list missed."""
+    from delta_retroarch_synchronizer import restore
+
+    installed, config = _mgba_at(world)
+    named = world.root / "from-config"
+    named.mkdir()
+    (installed.install_dir / "config.ini").write_text(
+        f"savegamePath = {named}\n", encoding="utf-8"
+    )
+    live = named / "Pokemon.sav"
+    live.write_bytes(b"current")
+
+    note = restore.restore_retroarch(
+        _backup(world), world.paths.save_dir, world.paths.backup_dir, config
+    )
+
+    assert live.read_bytes() == b"older"
+    assert str(named) in note
+
+
+def test_a_save_beside_the_derived_rom_folder_is_found(world):
+    """The second, and the commonest: beside-the-ROM with no rom dir configured.
+
+    ``retroarch_rom_dir`` unset does not mean there is no ROM folder -- the sync
+    derives one beside retroarch.cfg. Reading only the configured value made
+    every default-placed standalone save unrestorable.
+    """
+    from delta_retroarch_synchronizer import restore
+
+    _, config = _mgba_at(world)
+    assert config.retroarch_rom_dir is None
+    derived = config_module.rom_dir(config, world.paths.retroarch_config)
+    # Which is the fixture's own ROM folder -- retroarch.cfg sits beside it,
+    # exactly as it does in a real install.
+    assert derived == world.roms
+    derived.mkdir(parents=True, exist_ok=True)
+    live = derived / "Pokemon.sav"
+    live.write_bytes(b"current")
+
+    note = restore.restore_retroarch(
+        _backup(world),
+        world.paths.save_dir,
+        world.paths.backup_dir,
+        config,
+        derived,
+    )
+
+    assert live.read_bytes() == b"older"
+    assert str(derived) in note
+
+
+def test_the_rom_dir_derivation_has_one_definition(world):
+    """Both drivers must agree, or the sync writes where restore does not look."""
+    config = config_module.Config()
+
+    assert config_module.rom_dir(config, Path("C:/RetroArch/retroarch.cfg")) == Path(
+        "C:/RetroArch/roms"
+    )
+    assert config_module.rom_dir(config, None) is None
+    assert config_module.rom_dir(
+        config_module.Config(retroarch_rom_dir=Path("D:/Games")), Path("C:/x.cfg")
+    ) == Path("D:/Games")
+
+
+def test_an_older_save_is_still_found_after_the_config_moves(world):
+    """The candidates after the resolved one still matter.
+
+    Someone whose emulator now points somewhere new is exactly who needs a
+    backup from where it used to write.
+    """
+    from delta_retroarch_synchronizer import restore
+
+    installed, config = _mgba_at(world)
+    moved = world.root / "new-location"
+    moved.mkdir()
+    (installed.install_dir / "config.ini").write_text(
+        f"savegamePath = {moved}\n", encoding="utf-8"
+    )
+    # The save still sits in the install folder, where it was written before.
+    live = installed.install_dir / "Pokemon.sav"
+    live.write_bytes(b"current")
+
+    restore.restore_retroarch(
+        _backup(world), world.paths.save_dir, world.paths.backup_dir, config
+    )
+
+    assert live.read_bytes() == b"older"
