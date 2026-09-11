@@ -360,6 +360,91 @@ class ConvertedComparisonTests(unittest.TestCase):
 
         self.assertEqual(self.state.get(self.ident).agreement().desktop.size, SRAM)
 
+    def used_pak(self) -> None:
+        """Write something into a Controller Pak, leaving the cartridge alone.
+
+        What happens to anyone who plays an N64 game on the desktop: the .srm
+        changes, and the part of it Delta has ever stored does not.
+        """
+        data = bytearray(self.target.read_bytes())
+        data[n64.PAKS_START + 900 : n64.PAKS_START + 908] = b"PAKSAVE1"
+        self.target.write_bytes(bytes(data))
+
+    def test_a_pak_written_under_an_old_manifest_is_not_a_desktop_change(
+        self,
+    ) -> None:
+        """The whole-file fallback cannot survive a Controller Pak, by design.
+
+        Once the paks move, the old fingerprint stops matching and can never
+        match again -- while the cartridge save is untouched. The Delta half of
+        the same agreement is what settles it: recording an agreement always
+        meant the desktop side held exactly the save Delta had.
+        """
+        self.state.record(self.ident, self.delta, self.target)
+        self.used_pak()
+
+        action, detail = sync.decide(
+            self.state.get(self.ident),
+            self.delta,
+            self.target,
+            desktop_body=sync.converted_body(self.entry),
+        )
+
+        self.assertIs(action, sync.Action.NOTHING)
+        self.assertEqual(detail, "unchanged on both sides")
+
+    def test_a_pak_and_a_real_phone_session_is_a_pull_not_a_conflict(self) -> None:
+        """The two together are what made this worth fixing.
+
+        A false "RetroArch changed" is only noise on its own. Put it beside a
+        genuine change on the phone and it becomes a conflict over nothing --
+        and one that never clears, because a run reporting a conflict never
+        reaches the code that would migrate the entry.
+        """
+        self.state.record(self.ident, self.delta, self.target)
+        self.used_pak()
+        self.delta.write_bytes(b"\x5a" * SRAM)
+
+        action, _ = sync.decide(
+            self.state.get(self.ident),
+            self.delta,
+            self.target,
+            desktop_body=sync.converted_body(self.entry),
+        )
+
+        self.assertIs(action, sync.Action.PULL)
+
+    def test_a_cartridge_change_under_an_old_manifest_is_still_seen(self) -> None:
+        """Forgiving the paks must not forgive the save sitting next to them."""
+        self.state.record(self.ident, self.delta, self.target)
+        data = bytearray(self.target.read_bytes())
+        data[n64.SRAM.start : n64.SRAM.start + 8] = b"REALPLAY"
+        self.target.write_bytes(bytes(data))
+
+        action, _ = sync.decide(
+            self.state.get(self.ident),
+            self.delta,
+            self.target,
+            desktop_body=sync.converted_body(self.entry),
+        )
+
+        self.assertIs(action, sync.Action.PUSH)
+
+    def test_an_entry_whose_paks_moved_can_still_migrate(self) -> None:
+        """Otherwise the one entry that most needs migrating never can."""
+        self.state.record(self.ident, self.delta, self.target)
+        self.used_pak()
+        body = sync.converted_body(self.entry)
+
+        sync.baseline_if_agreed(
+            self.state, self.entry, sync.Action.NOTHING, self.target,
+            desktop_body=body,
+        )
+
+        self.assertEqual(
+            self.state.get(self.ident).agreement().desktop.size, SRAM
+        )
+
     def test_a_save_the_conversion_cannot_read_falls_back(self) -> None:
         """An .srm of the wrong length must not raise out of the decision.
 

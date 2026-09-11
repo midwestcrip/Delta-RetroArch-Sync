@@ -176,11 +176,7 @@ def decide(
         and delta_save is not None
         and agreed_delta.matches(delta_save)
     )
-    retro_changed = not (
-        agreed_desktop is not None
-        and retroarch_save is not None
-        and agreed_desktop.matches(retroarch_save, body=desktop_body)
-    )
+    retro_changed = not desktop_still_agreed(agreed, retroarch_save, desktop_body)
 
     if delta_changed and retro_changed:
         return Action.CONFLICT, "both sides changed since the last sync"
@@ -189,6 +185,47 @@ def decide(
     if retro_changed:
         return Action.PUSH, f"{label} changed since the last sync"
     return Action.NOTHING, "unchanged on both sides"
+
+
+def desktop_still_agreed(
+    agreed: "manifest_module.Agreement",
+    path: Path | None,
+    body: "manifest_module.Body | None",
+) -> bool:
+    """Whether the desktop side still holds the save it last agreed on.
+
+    Normally that is just its recorded fingerprint. The second test is for
+    manifests written before the fingerprint described the *save* rather than
+    the whole file, and it exists because the whole-file fallback is not enough
+    on its own for a converted system.
+
+    RetroArch's combined ``.srm`` holds four Controller Paks as well as the
+    cartridge. Play an N64 game on the desktop and the paks change, so the old
+    whole-file fingerprint stops matching **and can never match again** -- while
+    the cartridge save, the only part Delta has ever stored, is untouched. That
+    reads as "RetroArch changed", which with a real change on the phone is a
+    conflict over nothing. And because such a run is never NOTHING, the entry
+    never reaches the code that would migrate it: permanently stuck, reporting a
+    conflict every time, for a player who did nothing more unusual than use a
+    memory card.
+
+    The way out is the other half of the same agreement. Recording one always
+    means the desktop side held exactly the save Delta had -- a pull merges
+    Delta's bytes in, a push sends the extracted region out, and a baseline
+    happens only when the two are already identical. So the Delta half doubles
+    as a fingerprint of the cartridge region at that moment, and matching it now
+    proves the save has not moved no matter what happened around it.
+    """
+    if agreed.desktop is None or path is None:
+        return False
+    if agreed.desktop.matches(path, body=body):
+        return True
+    if body is None or agreed.delta is None:
+        return False
+    try:
+        return manifest_module.FileState.of(path, body=body) == agreed.delta
+    except OSError:
+        return False
 
 
 def converted_body(
@@ -313,9 +350,15 @@ def baseline_if_agreed(
         return  # Already current in the right shape; nothing to rewrite.
 
     # The only rewrite left is the stale shape, and it is allowed only while
-    # both halves still answer to what was agreed -- the old fingerprint over
-    # these exact bytes, and Delta unmoved.
-    if agreed.delta == delta_now and agreed.desktop == whole:
+    # both halves still answer to what was agreed: Delta unmoved, and the
+    # desktop side still holding the agreed save. Either kind of evidence will
+    # do for the second -- the old whole-file fingerprint over these exact
+    # bytes, or the extracted save matching the Delta half. Accepting only the
+    # first would leave every .srm whose Controller Paks have moved unable to
+    # migrate, which is precisely the entry that most needs to.
+    if agreed.delta != delta_now:
+        return
+    if agreed.desktop == whole or desktop_now == agreed.delta:
         state.record_states(entry.identifier, delta_now, desktop_now, key)
 
 
